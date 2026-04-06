@@ -14,6 +14,11 @@
           "replace": "5c6571c8-96e6-4df1-ba38-977dd144713a"
         }
       ]
+    },
+    {
+      "type": "write_text_file",
+      "file": "steam_appid.txt",
+      "content": "471710"
     }
   ]
 }
