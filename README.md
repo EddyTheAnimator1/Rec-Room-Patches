@@ -4,6 +4,9 @@ Releasing stage idk give me like a day to figure it out
 
 ## Patch table
 
+These are all of the builds (Yes, literally ever made before April 6 2026, that i've managed to patch.
+
+I'm using RebornRec's Photon ID's, if that's a problem. Issue it! (I did this in hopes of connecting players.)
 <!-- AUTO_TABLE_START -->
 
 # 2016
