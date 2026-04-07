@@ -1,0 +1,82 @@
+name: Test 2016 patches
+
+on:
+  push:
+    paths:
+      - '**/Patch.json'
+  workflow_dispatch:
+    inputs:
+      patch_path:
+        description: Optional path to a specific Patch.json
+        required: false
+        type: string
+      run_seconds:
+        description: How long to keep the build open
+        required: false
+        default: '120'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test-2016-patches:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+      STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+      STEAM_TWO_FACTOR_CODE: ${{ secrets.STEAM_TWO_FACTOR_CODE }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate secrets
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:STEAM_USERNAME)) {
+            throw "Missing secret: STEAM_USERNAME"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:STEAM_PASSWORD)) {
+            throw "Missing secret: STEAM_PASSWORD"
+          }
+
+      - name: Run 2016 patch test
+        shell: pwsh
+        run: |
+          $runSeconds = '120'
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace('${{ inputs.run_seconds }}')) {
+            $runSeconds = '${{ inputs.run_seconds }}'
+          }
+
+          $arguments = @(
+            'test_2016_patches.py',
+            '--repo-root', '.',
+            '--tools-root', "$env:RUNNER_TEMP\rr-patch-tools",
+            '--work-root', "$env:RUNNER_TEMP\rr-patch-work",
+            '--artifacts-root', "$env:GITHUB_WORKSPACE\_patch_test_artifacts",
+            '--patchpc-path', 'HelperPatches/PATCHPC2016.json',
+            '--run-seconds', $runSeconds
+          )
+
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace('${{ inputs.patch_path }}')) {
+            $arguments += @('--patch-path', '${{ inputs.patch_path }}')
+          }
+
+          python @arguments
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-test-logs-${{ github.run_id }}
+          path: _patch_test_artifacts/**
+          if-no-files-found: warn
+          retention-days: 14
