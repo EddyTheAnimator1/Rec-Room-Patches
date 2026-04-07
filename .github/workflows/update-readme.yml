@@ -1,0 +1,44 @@
+name: Update README patch table
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "steamdb.csv"
+      - "manifest/**"
+      - "generate_readme.py"
+      - ".github/workflows/update-readme.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Regenerate README table
+        run: python generate_readme.py --csv steamdb.csv --manifest-root manifest --output README.md
+
+      - name: Commit README changes
+        shell: bash
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "README is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "Auto-update README patch table"
+          git push
