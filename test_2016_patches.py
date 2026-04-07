@@ -384,10 +384,7 @@ def apply_replace_bytes_instruction(build_root: Path, instruction: dict) -> None
     if not relative_file:
         raise PatchError("replace_bytes instruction is missing 'file'")
 
-    target_path = build_root / relative_file
-    if not target_path.is_file():
-        raise PatchError(f"Patch target file does not exist: {target_path}")
-
+    target_path = resolve_existing_patch_target(build_root, relative_file)
     data = target_path.read_bytes()
     replacements = instruction.get("replacements")
     if not isinstance(replacements, list) or not replacements:
@@ -418,6 +415,51 @@ def build_replacement_bytes(replacement: dict) -> tuple[bytes, bytes]:
         return replacement["find"].encode("utf-8"), replacement["replace"].encode("utf-8")
 
     raise PatchError("Replacement must contain either find/replace or find_hex/replace_hex")
+
+
+def resolve_existing_patch_target(build_root: Path, relative_file: str) -> Path:
+    normalized = relative_file.replace("\\", "/").strip()
+    if not normalized:
+        raise PatchError("Patch instruction file path is empty")
+
+    direct_path = build_root / Path(normalized)
+    if direct_path.is_file():
+        return direct_path
+
+    candidates: list[Path] = []
+    basename = Path(normalized).name
+    normalized_lower = normalized.lower()
+
+    for candidate in build_root.rglob(basename):
+        if not candidate.is_file():
+            continue
+
+        relative_candidate = candidate.relative_to(build_root).as_posix()
+        relative_candidate_lower = relative_candidate.lower()
+
+        if "/" in normalized:
+            if relative_candidate_lower == normalized_lower or relative_candidate_lower.endswith("/" + normalized_lower):
+                candidates.append(candidate.resolve())
+        else:
+            candidates.append(candidate.resolve())
+
+    unique_candidates = sorted({str(path): path for path in candidates}.values(), key=lambda path: str(path))
+
+    if not unique_candidates:
+        raise PatchError(
+            "Patch target file does not exist directly under the build root, and no matching file was found "
+            f"while searching recursively for '{relative_file}' under {build_root}"
+        )
+
+    if len(unique_candidates) > 1:
+        formatted = "\n".join(f" - {path}" for path in unique_candidates)
+        raise PatchError(
+            f"Patch target '{relative_file}' matched multiple files under the build root. Refusing to guess.\n{formatted}"
+        )
+
+    resolved = unique_candidates[0]
+    log(f"[INFO] Resolved patch target '{relative_file}' to {resolved}")
+    return resolved
 
 
 def apply_write_text_file_instruction(build_root: Path, instruction: dict) -> None:
