@@ -531,22 +531,19 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
     final_unity_log = case_dir / "unity_output_log.txt"
     legacy_output_log = case_dir / "output_log.txt"
     combined_log = case_dir / "combined_log.txt"
-    forced_log = case_dir / "unity_output_log_capture.txt"
-
-    if forced_log.exists():
-        forced_log.unlink()
+    expected_log = build_root / "Recroom_Release_Data" / "output_log.txt"
 
     started_at = time.time()
 
     with runtime_log.open("w", encoding="utf-8", errors="replace") as console_handle:
         process = subprocess.Popen(
-            [str(exe_path), "-logFile", str(forced_log)],
+            [str(exe_path)],
             cwd=str(exe_path.parent),
             stdout=console_handle,
             stderr=subprocess.STDOUT,
             stdin=None,
         )
-        output_log = forced_log
+        output_log = find_best_output_log(build_root, expected_log, started_at)
         cursor = 0
         recnet_hit = False
         failure_reason = ""
@@ -554,7 +551,7 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
 
         try:
             while time.monotonic() < end_time:
-                current_log = find_best_output_log(build_root, forced_log, started_at)
+                current_log = find_best_output_log(build_root, expected_log, started_at)
                 if current_log != output_log and current_log.exists():
                     output_log = current_log
                     cursor = 0
@@ -590,15 +587,15 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
             except subprocess.TimeoutExpired:
                 pass
 
-    output_log = find_best_output_log(build_root, forced_log, started_at)
+    output_log = find_best_output_log(build_root, expected_log, started_at)
 
     if output_log.exists():
         shutil.copy2(output_log, final_unity_log)
         shutil.copy2(output_log, legacy_output_log)
     else:
         missing_text = (
-            "Unity output log was not found. Tried forced log path and fallback locations.\n"
-            f"Preferred forced path: {forced_log}\n"
+            "Unity output log was not found in the standard or fallback locations.\n"
+            f"Expected default path: {expected_log}\n"
         )
         final_unity_log.write_text(missing_text, encoding="utf-8")
         legacy_output_log.write_text(missing_text, encoding="utf-8")
@@ -623,7 +620,6 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
     if failure_reason:
         return False, failure_reason, output_log
     return True, f"No RecNet error found during {run_seconds} seconds.", output_log
-
 
 def find_build_root(download_root: Path) -> Path:
     exe_path = find_launch_executable(download_root)
