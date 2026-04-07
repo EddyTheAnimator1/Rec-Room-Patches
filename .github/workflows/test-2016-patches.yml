@@ -1,39 +1,57 @@
-$exe = "D:\a\_temp\rr-patch-work\5937396277352677720\download\Recroom_Release.exe"
-$exeDir = Split-Path $exe -Parent
-$dataLog = Join-Path $exeDir "Recroom_Release_Data\output_log.txt"
+name: Test 2016 patches
 
-Write-Host "Launching: $exe"
-$p = Start-Process -FilePath $exe -WorkingDirectory $exeDir -PassThru
+on:
+  workflow_dispatch:
 
-Start-Sleep -Seconds 20
+jobs:
+  test:
+    runs-on: windows-latest
 
-if (-not $p.HasExited) {
-    Write-Host "Process still running, stopping it..."
-    Stop-Process -Id $p.Id -Force
-    $p.WaitForExit()
-}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-Write-Host "Exit code: $($p.ExitCode)"
+      - name: Test build and find Unity log
+        shell: pwsh
+        run: |
+          $exe = "D:\a\_temp\rr-patch-work\5937396277352677720\download\Recroom_Release.exe"
+          $exeDir = Split-Path $exe -Parent
+          $dataLog = Join-Path $exeDir "Recroom_Release_Data\output_log.txt"
 
-Write-Host "`nChecking sibling Data log..."
-if (Test-Path $dataLog) {
-    Write-Host "Found Data log: $dataLog"
-    Get-Content $dataLog -Tail 200
-} else {
-    Write-Host "Data log not found."
-}
+          Write-Host "Launching: $exe"
+          $p = Start-Process -FilePath $exe -WorkingDirectory $exeDir -PassThru
 
-Write-Host "`nSearching LocalLow for output_log.txt..."
-$localLowLogs = Get-ChildItem "$env:USERPROFILE\AppData\LocalLow" -Recurse -Filter output_log.txt -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTime -Descending
+          Start-Sleep -Seconds 20
 
-if ($localLowLogs) {
-    $latest = $localLowLogs[0].FullName
-    Write-Host "Found LocalLow log: $latest"
-    Get-Content $latest -Tail 200
-} else {
-    Write-Host "No LocalLow output_log.txt found."
-}
+          if (-not $p.HasExited) {
+              Write-Host "Process still running, stopping it..."
+              Stop-Process -Id $p.Id -Force
+              $p.WaitForExit()
+          }
 
-Write-Host "`nCrash dump check..."
-Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 10 FullName, LastWriteTime
+          Write-Host "Exit code: $($p.ExitCode)"
+
+          Write-Host "`nChecking sibling Data log..."
+          if (Test-Path $dataLog) {
+              Write-Host "Found Data log: $dataLog"
+              Get-Content $dataLog -Tail 200
+          } else {
+              Write-Host "Data log not found."
+          }
+
+          Write-Host "`nSearching LocalLow for output_log.txt..."
+          $localLowLogs = Get-ChildItem "$env:USERPROFILE\AppData\LocalLow" -Recurse -Filter output_log.txt -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending
+
+          if ($localLowLogs) {
+              $latest = $localLowLogs[0].FullName
+              Write-Host "Found LocalLow log: $latest"
+              Get-Content $latest -Tail 200
+          } else {
+              Write-Host "No LocalLow output_log.txt found."
+          }
+
+          Write-Host "`nCrash dump check..."
+          Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 10 FullName, LastWriteTime
