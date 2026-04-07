@@ -194,23 +194,18 @@ def run_single_manifest_test(
         cwd=manifest_work_dir,
     )
 
-    build_root = manifest_work_dir / "depots" / DEPOT_ID / manifest_id
-    exe_path = build_root / "Recroom_Release.exe"
-    if not exe_path.is_file():
-        raise TestFailure(f"Recroom_Release.exe was not found at expected path: {exe_path}")
-
+    build_root, exe_path = locate_build_root(manifest_work_dir)
     log(f"[INFO] Build root: {build_root}")
+    log(f"[INFO] Game exe: {exe_path}")
+
     log(f"[INFO] Applying helper patch: {helper_patch_path}")
     apply_patch_file(build_root, helper_patch_path)
     log(f"[INFO] Applying manifest patch: {manifest_patch_path}")
     apply_patch_file(build_root, manifest_patch_path)
 
-    output_log_path = build_root / "Recroom_Release_Data" / "output_log.txt"
     run_game_for_duration(exe_path=exe_path, run_seconds=run_seconds)
 
-    if not output_log_path.is_file():
-        raise TestFailure(f"Unity output log was not found at expected path: {output_log_path}")
-
+    output_log_path = locate_output_log(build_root, manifest_work_dir)
     artifact_log_path = artifacts_dir / f"{manifest_id}-output_log.txt"
     shutil.copy2(output_log_path, artifact_log_path)
     log(f"[INFO] Copied Unity output log to {artifact_log_path}")
@@ -220,6 +215,62 @@ def run_single_manifest_test(
         raise TestFailure("Unity output log contains 'RECNET' or 'Rec Net'.")
 
     log(f"[INFO] Manifest {manifest_id} passed. No RecNet references were found in output_log.txt")
+
+
+def locate_build_root(manifest_work_dir: Path) -> tuple[Path, Path]:
+    exe_candidates = sorted(
+        path.resolve()
+        for path in manifest_work_dir.rglob("Recroom_Release.exe")
+        if path.is_file()
+    )
+
+    if not exe_candidates:
+        searched_root = manifest_work_dir / "depots" / DEPOT_ID
+        details = []
+        if searched_root.exists():
+            child_dirs = sorted(str(path) for path in searched_root.iterdir())
+            if child_dirs:
+                details.append("Contents under depots/471711:")
+                details.extend(f" - {path}" for path in child_dirs[:20])
+        if not details:
+            details.append(f"Searched recursively under: {manifest_work_dir}")
+        raise TestFailure(
+            "Recroom_Release.exe was not found after DepotDownloader finished.\n" + "\n".join(details)
+        )
+
+    if len(exe_candidates) > 1:
+        formatted = "\n".join(f" - {path}" for path in exe_candidates)
+        raise TestFailure(f"Multiple Recroom_Release.exe files were found. Refusing to guess.\n{formatted}")
+
+    exe_path = exe_candidates[0]
+    build_root = exe_path.parent
+    return build_root, exe_path
+
+
+def locate_output_log(build_root: Path, manifest_work_dir: Path) -> Path:
+    expected = build_root / "Recroom_Release_Data" / "output_log.txt"
+    if expected.is_file():
+        log(f"[INFO] Unity output log: {expected}")
+        return expected
+
+    log(f"[INFO] Expected Unity output log was not found at: {expected}")
+    candidates = sorted(
+        path.resolve()
+        for path in manifest_work_dir.rglob("output_log.txt")
+        if path.is_file() and path.parent.name == "Recroom_Release_Data"
+    )
+
+    if not candidates:
+        raise TestFailure(
+            "Unity output log was not found in any Recroom_Release_Data folder under the downloaded build."
+        )
+
+    if len(candidates) > 1:
+        formatted = "\n".join(f" - {path}" for path in candidates)
+        raise TestFailure(f"Multiple output_log.txt files were found. Refusing to guess.\n{formatted}")
+
+    log(f"[INFO] Unity output log: {candidates[0]}")
+    return candidates[0]
 
 
 def run_depotdownloader(
