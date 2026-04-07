@@ -2,6 +2,7 @@
 
 Releasing stage idk give me like a day to figure it out
 
+These are ONLY Rec Room Patches, i'll try hosting servers, though i doubt i'll be able to cover even half of them. We will see how i do!
 ## Patch table
 
 These are all of the builds (Yes, literally ever made before April 6 2026, that i've managed to patch.
