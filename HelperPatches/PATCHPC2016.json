@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "notes": "Hex-based DLL patch for early non-VR bypass on supported 2016 Rec Room builds.",
+  "instructions": [
+    {
+      "type": "replace_bytes",
+      "file": "Recroom_Release_Data/Managed/Assembly-CSharp.dll",
+      "replacements": [
+        {
+          "find_hex": "800e0004220000003f28af0b00062a001a28be05000a2a001330070039000000000000000272ec",
+          "replace_hex": "800e0004220000003f28af0b00062a001a00000000002a001330070039000000000000000272ec",
+          "expected_count": 1
+        }
+      ]
+    },
+    {
+      "type": "replace_bytes",
+      "file": "Recroom_Release_Data/Managed/Assembly-CSharp.dll",
+      "replacements": [
+        {
+          "find_hex": "0000001680b50d00047eb60d00042a004228eb05000a7eb602000a28bc02000a2a0000001b3008007d000000e301001116",
+          "replace_hex": "0000001680b50d00047eb60d00042a0042172a00000000000000000000000000000000001b3008007d000000e301001116",
+          "expected_count": 1
+        }
+      ]
+    }
+  ]
+}
