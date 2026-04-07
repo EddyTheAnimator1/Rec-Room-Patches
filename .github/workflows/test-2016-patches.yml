@@ -33,6 +33,9 @@ jobs:
           $before = "${{ github.event.before }}"
           $after = "${{ github.sha }}"
 
+          Write-Host "Before SHA: $before"
+          Write-Host "After SHA:  $after"
+
           if (-not $before -or $before -eq "0000000000000000000000000000000000000000") {
             $diffPaths = git diff-tree --no-commit-id --name-only -r $after
           }
@@ -63,23 +66,27 @@ jobs:
               match = re.fullmatch(r"manifest/(\d+)/Patch\.json", relative_path)
               if not match:
                   continue
+
               manifest_id = match.group(1)
               if manifest_id not in manifests_2016:
                   print(f"Skipping non-2016 manifest: {relative_path}")
                   continue
+
               if relative_path in seen:
                   continue
+
               if not (repo / relative_path).is_file():
                   print(f"Skipping removed patch file: {relative_path}")
                   continue
+
               seen.add(relative_path)
               targets.append(relative_path)
 
           with output_path.open("a", encoding="utf-8") as fh:
-              fh.write(f"should_run={'true' if targets else 'false'}\\n")
-              fh.write("targets<<EOF\\n")
-              fh.write("\\n".join(targets))
-              fh.write("\\nEOF\\n")
+              fh.write(f"should_run={'true' if targets else 'false'}\n")
+              fh.write("targets<<EOF\n")
+              fh.write("\n".join(targets))
+              fh.write("\nEOF\n")
 
           print("Diff paths:")
           if diff_paths:
@@ -132,14 +139,35 @@ jobs:
             throw "Missing STEAM_PASSWORD secret."
           }
 
-          python test_2016_patches.py `
-            --depotdownloader "$env:DEPOTDOWNLOADER_EXE" `
-            --steam-username "$env:STEAM_USERNAME" `
-            --steam-password "$env:STEAM_PASSWORD" `
-            --run-seconds "$env:RUN_SECONDS" `
-            --repo-root "$PWD" `
-            --work-root "$env:RUNNER_TEMP\rr-patch-work" `
-            --artifacts-dir "$PWD\artifacts"
+          $targets = @'
+          ${{ steps.detect.outputs.targets }}
+          '@ -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
+          if (-not $targets -or $targets.Count -eq 0) {
+            throw "Detection said should_run=true but no targets were passed."
+          }
+
+          Write-Host "Running tests for targets:"
+          foreach ($target in $targets) {
+            Write-Host " - $target"
+          }
+
+          $args = @(
+            "test_2016_patches.py",
+            "--depotdownloader", "$env:DEPOTDOWNLOADER_EXE",
+            "--steam-username", "$env:STEAM_USERNAME",
+            "--steam-password", "$env:STEAM_PASSWORD",
+            "--run-seconds", "$env:RUN_SECONDS",
+            "--repo-root", "$PWD",
+            "--work-root", "$env:RUNNER_TEMP\rr-patch-work",
+            "--artifacts-dir", "$PWD\artifacts"
+          )
+
+          foreach ($target in $targets) {
+            $args += @("--patch-path", $target)
+          }
+
+          python @args
 
       - name: Nothing to test
         if: steps.detect.outputs.should_run != 'true'

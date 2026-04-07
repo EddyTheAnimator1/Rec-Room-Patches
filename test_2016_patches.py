@@ -6,11 +6,9 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterable
 
 APP_ID = "471710"
 DEPOT_ID = "471711"
@@ -48,9 +46,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory where output logs should be copied for artifact upload",
     )
     parser.add_argument(
-        "--event-path",
-        default=os.environ.get("GITHUB_EVENT_PATH", ""),
-        help="Path to the GitHub event JSON payload",
+        "--patch-path",
+        action="append",
+        default=[],
+        help="Relative path to a manifest/<id>/Patch.json file to test. Can be passed multiple times.",
     )
     return parser.parse_args()
 
@@ -62,7 +61,6 @@ def main() -> int:
     work_root = Path(args.work_root).resolve()
     artifacts_dir = Path(args.artifacts_dir).resolve()
     depotdownloader = Path(args.depotdownloader).resolve()
-    event_path = Path(args.event_path).resolve() if args.event_path else None
 
     if not depotdownloader.is_file():
         raise FileNotFoundError(f"DepotDownloader.exe was not found: {depotdownloader}")
@@ -74,23 +72,23 @@ def main() -> int:
         raise FileNotFoundError(f"README.md was not found: {readme_path}")
     if not helper_patch_path.is_file():
         raise FileNotFoundError(f"Helper patch was not found: {helper_patch_path}")
-    if event_path is None or not event_path.is_file():
-        raise FileNotFoundError("GITHUB_EVENT_PATH was not set or the event payload file does not exist.")
 
     manifests_2016 = parse_2016_manifest_ids(readme_path)
-    changed_patch_paths = get_changed_manifest_patch_paths(event_path)
+    requested_patch_paths = normalize_patch_paths(args.patch_path)
 
     log(f"[INFO] Loaded {len(manifests_2016)} manifest IDs from the 2016 table in README.md")
-    if changed_patch_paths:
-        for path in changed_patch_paths:
-            log(f"[INFO] Changed patch path: {path}")
+    if requested_patch_paths:
+        for path in requested_patch_paths:
+            log(f"[INFO] Requested patch path: {path}")
     else:
-        log("[INFO] No manifest Patch.json changes were found in the push payload.")
+        log("[INFO] No patch paths were provided.")
+        return 0
 
     targets: list[tuple[str, Path]] = []
-    for relative_path in changed_patch_paths:
+    for relative_path in requested_patch_paths:
         match = MANIFEST_PATCH_RE.match(relative_path)
         if not match:
+            log(f"[INFO] Skipping non-manifest patch path: {relative_path}")
             continue
 
         manifest_id = match.group(1)
@@ -106,7 +104,7 @@ def main() -> int:
         targets.append((manifest_id, patch_path))
 
     if not targets:
-        log("[INFO] No changed Patch.json files matched an existing 2016 manifest entry. Nothing to test.")
+        log("[INFO] No requested Patch.json files matched an existing 2016 manifest entry. Nothing to test.")
         return 0
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -138,8 +136,22 @@ def main() -> int:
             log(f"[ERROR] - {failure}")
         return 1
 
-    log("[INFO] All changed 2016 manifest patches passed.")
+    log("[INFO] All requested 2016 manifest patches passed.")
     return 0
+
+
+def normalize_patch_paths(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        path = value.replace("\\", "/").strip()
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        normalized.append(path)
+    return normalized
 
 
 def parse_2016_manifest_ids(readme_path: Path) -> set[str]:
@@ -152,24 +164,6 @@ def parse_2016_manifest_ids(readme_path: Path) -> set[str]:
     if not manifest_ids:
         raise PatchError("No 2016 manifest IDs were found in README.md")
     return manifest_ids
-
-
-def get_changed_manifest_patch_paths(event_path: Path) -> list[str]:
-    payload = json.loads(event_path.read_text(encoding="utf-8"))
-    seen: set[str] = set()
-    ordered_paths: list[str] = []
-
-    for commit in payload.get("commits", []):
-        for key in ("added", "modified", "removed"):
-            for path in commit.get(key, []):
-                if not MANIFEST_PATCH_RE.match(path):
-                    continue
-                if path in seen:
-                    continue
-                seen.add(path)
-                ordered_paths.append(path)
-
-    return ordered_paths
 
 
 def run_single_manifest_test(
