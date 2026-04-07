@@ -1,0 +1,138 @@
+name: Test 2016 patches
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - manifest/**/Patch.json
+
+jobs:
+  test-2016-patches:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RUN_SECONDS: "120"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Detect changed 2016 Patch.json files that still exist
+        id: detect
+        shell: pwsh
+        run: |
+          $script = @'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          repo = Path(os.environ["GITHUB_WORKSPACE"])
+          event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+
+          readme_text = (repo / "README.md").read_text(encoding="utf-8")
+          section_match = re.search(r"(?ms)^# 2016\s*$\n(.*?)^# 2017\s*$", readme_text)
+          if not section_match:
+              raise SystemExit("Could not find the 2016 section in README.md")
+
+          manifests_2016 = set(re.findall(r"`(\d+)`", section_match.group(1)))
+          payload = json.loads(event_path.read_text(encoding="utf-8"))
+
+          targets = []
+          seen = set()
+          for commit in payload.get("commits", []):
+              for key in ("added", "modified", "removed"):
+                  for relative_path in commit.get(key, []):
+                      match = re.fullmatch(r"manifest/(\d+)/Patch\.json", relative_path)
+                      if not match:
+                          continue
+                      manifest_id = match.group(1)
+                      if manifest_id not in manifests_2016:
+                          continue
+                      if relative_path in seen:
+                          continue
+                      if not (repo / relative_path).is_file():
+                          continue
+                      seen.add(relative_path)
+                      targets.append(relative_path)
+
+          with output_path.open("a", encoding="utf-8") as fh:
+              fh.write(f"should_run={'true' if targets else 'false'}\\n")
+              fh.write("targets<<EOF\\n")
+              fh.write("\\n".join(targets))
+              fh.write("\\nEOF\\n")
+
+          print("Eligible targets:")
+          if targets:
+              for target in targets:
+                  print(target)
+          else:
+              print("(none)")
+          '@
+
+          python -c $script
+
+      - name: Download DepotDownloader
+        if: steps.detect.outputs.should_run == 'true'
+        shell: pwsh
+        run: |
+          $zipPath = Join-Path $env:RUNNER_TEMP "DepotDownloader.zip"
+          $extractPath = Join-Path $env:RUNNER_TEMP "DepotDownloader"
+          $downloadUrl = "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-windows-x64.zip"
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+          $exePath = Join-Path $extractPath "DepotDownloader.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "DepotDownloader.exe was not found after extraction: $exePath"
+          }
+
+          "DEPOTDOWNLOADER_EXE=$exePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run changed 2016 patch tests
+        if: steps.detect.outputs.should_run == 'true'
+        shell: pwsh
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+        run: |
+          if (-not $env:STEAM_USERNAME) {
+            throw "Missing STEAM_USERNAME secret."
+          }
+          if (-not $env:STEAM_PASSWORD) {
+            throw "Missing STEAM_PASSWORD secret."
+          }
+
+          python test_2016_patches.py `
+            --depotdownloader "$env:DEPOTDOWNLOADER_EXE" `
+            --steam-username "$env:STEAM_USERNAME" `
+            --steam-password "$env:STEAM_PASSWORD" `
+            --run-seconds "$env:RUN_SECONDS" `
+            --repo-root "$PWD" `
+            --work-root "$env:RUNNER_TEMP\rr-patch-work" `
+            --artifacts-dir "$PWD\artifacts"
+
+      - name: Nothing to test
+        if: steps.detect.outputs.should_run != 'true'
+        shell: pwsh
+        run: |
+          Write-Host "No changed 2016 Patch.json files currently exist in this push. Skipping workload."
+
+      - name: Upload Unity logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-output-logs
+          path: artifacts/*.txt
+          if-no-files-found: ignore
