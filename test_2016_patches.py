@@ -464,15 +464,65 @@ def kill_process_tree(pid: int) -> None:
     )
 
 
-def first_output_log(build_root: Path) -> Path:
-    expected = build_root / "Recroom_Release_Data" / "output_log.txt"
-    if expected.exists():
-        return expected
-    matches = list(build_root.rglob("output_log.txt"))
-    if matches:
-        matches.sort(key=lambda path: len(str(path)))
-        return matches[0]
-    return expected
+def candidate_output_logs(build_root: Path, preferred_log: Path | None = None) -> list[Path]:
+    candidates: list[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    if preferred_log is not None:
+        add(preferred_log)
+
+    add(build_root / "Recroom_Release_Data" / "output_log.txt")
+    add(build_root / "Recroom_Release_Data" / "Player.log")
+
+    for name in ("output_log.txt", "Player.log"):
+        for match in build_root.rglob(name):
+            add(match)
+
+    local_low = Path(os.environ.get("USERPROFILE", "")) / "AppData" / "LocalLow"
+    if local_low.exists():
+        for name in ("output_log.txt", "Player.log"):
+            for match in local_low.rglob(name):
+                add(match)
+
+    return candidates
+
+
+def find_best_output_log(build_root: Path, preferred_log: Path, started_at: float) -> Path:
+    scored: list[tuple[int, float, int, Path]] = []
+    for path in candidate_output_logs(build_root, preferred_log):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+
+        score = 0
+        if path == preferred_log:
+            score += 10000
+        lower = str(path).lower()
+        if "locallow" in lower:
+            score += 2500
+        if "against gravity" in lower:
+            score += 1200
+        if "rec room" in lower:
+            score += 1200
+        if "recroom_release_data" in lower:
+            score += 800
+        if stat.st_mtime >= started_at - 5:
+            score += 1500
+        if path.name.lower() == "output_log.txt":
+            score += 100
+        scored.append((score, stat.st_mtime, -len(str(path)), path))
+
+    if not scored:
+        return preferred_log
+
+    scored.sort(reverse=True)
+    return scored[0][3]
 
 
 def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Path) -> tuple[bool, str, Path]:
@@ -481,16 +531,22 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
     final_unity_log = case_dir / "unity_output_log.txt"
     legacy_output_log = case_dir / "output_log.txt"
     combined_log = case_dir / "combined_log.txt"
+    forced_log = case_dir / "unity_output_log_capture.txt"
+
+    if forced_log.exists():
+        forced_log.unlink()
+
+    started_at = time.time()
 
     with runtime_log.open("w", encoding="utf-8", errors="replace") as console_handle:
         process = subprocess.Popen(
-            [str(exe_path)],
+            [str(exe_path), "-logFile", str(forced_log)],
             cwd=str(exe_path.parent),
             stdout=console_handle,
             stderr=subprocess.STDOUT,
             stdin=None,
         )
-        output_log = first_output_log(build_root)
+        output_log = forced_log
         cursor = 0
         recnet_hit = False
         failure_reason = ""
@@ -498,6 +554,12 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
 
         try:
             while time.monotonic() < end_time:
+                current_log = find_best_output_log(build_root, forced_log, started_at)
+                if current_log != output_log and current_log.exists():
+                    output_log = current_log
+                    cursor = 0
+                    gh_notice(f"Using Unity log file: {output_log}")
+
                 if output_log.exists():
                     with output_log.open("r", encoding="utf-8", errors="replace") as handle:
                         handle.seek(cursor)
@@ -528,11 +590,16 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
             except subprocess.TimeoutExpired:
                 pass
 
+    output_log = find_best_output_log(build_root, forced_log, started_at)
+
     if output_log.exists():
         shutil.copy2(output_log, final_unity_log)
         shutil.copy2(output_log, legacy_output_log)
     else:
-        missing_text = f"Unity output log was not found at expected path: {output_log}\n"
+        missing_text = (
+            "Unity output log was not found. Tried forced log path and fallback locations.\n"
+            f"Preferred forced path: {forced_log}\n"
+        )
         final_unity_log.write_text(missing_text, encoding="utf-8")
         legacy_output_log.write_text(missing_text, encoding="utf-8")
 
