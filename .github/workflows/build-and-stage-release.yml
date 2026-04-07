@@ -1,4 +1,4 @@
-name: Build and stage Release.exe
+name: Build and Stage Release
 
 on:
   push:
@@ -6,18 +6,14 @@ on:
       - main
       - master
     paths:
-      - 'Release.py'
+      - Release.py
   workflow_dispatch:
 
 permissions:
   contents: write
 
-concurrency:
-  group: release-exe-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-stage:
+  build-release:
     runs-on: windows-latest
 
     steps:
@@ -25,124 +21,82 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          fetch-tags: true
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
-      - name: Install build dependencies
-        shell: pwsh
+      - name: Calculate next release version
+        id: version
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          if (Test-Path requirements.txt) {
-            pip install -r requirements.txt
-          }
-          pip install pyinstaller
+          set -euo pipefail
+          git fetch --tags --force
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
 
-      - name: Verify Release.py exists
-        shell: pwsh
+          if [[ -z "$latest_tag" ]]; then
+            next_tag="v0.0.1"
+          else
+            version="${latest_tag#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+            major="${major:-0}"
+            minor="${minor:-0}"
+            patch="${patch:-0}"
+            next_tag="v${major}.${minor}.$((patch + 1))"
+          fi
+
+          echo "release_tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "release_version=${next_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version into Release.py
+        shell: python
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
         run: |
-          if (-not (Test-Path Release.py)) {
-            throw 'Release.py was not found at the repository root.'
-          }
+          import os
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path("Release.py")
+          text = path.read_text(encoding="utf-8")
+          version = os.environ["RELEASE_VERSION"]
+          updated, count = re.subn(
+              r'(?m)^APP_VERSION\s*=\s*["\'][^"\']+["\']',
+              f'APP_VERSION = "{version}"',
+              text,
+              count=1,
+          )
+
+          if count != 1:
+            print("APP_VERSION line was not found exactly once in Release.py", file=sys.stderr)
+            raise SystemExit(1)
+
+          path.write_text(updated, encoding="utf-8")
+          print(f"Stamped APP_VERSION = {version}")
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
 
       - name: Build Release.exe
-        shell: pwsh
-        run: |
-          pyinstaller --noconfirm --clean --onefile --name Release Release.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --name Release Release.py
 
-      - name: Prepare uploaded files
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force release | Out-Null
-          Copy-Item dist/Release.exe release/Release.exe
-
-      - name: Upload EXE artifact
-        id: upload_artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Release-exe-${{ github.run_number }}
-          path: release/Release.exe
-          retention-days: 14
-          compression-level: 0
+          name: Release-${{ steps.version.outputs.release_tag }}
+          path: dist/Release.exe
+          if-no-files-found: error
 
-      - name: Compute next patch version
-        id: next_version
-        shell: pwsh
+      - name: Create draft GitHub release
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: |
-          $json = gh api "repos/${env:GITHUB_REPOSITORY}/releases?per_page=100"
-          $releases = $json | ConvertFrom-Json
-          $versions = @()
-
-          foreach ($rel in $releases) {
-            $tag = [string]$rel.tag_name
-            if ($tag -match '^v?(\d+)\.(\d+)\.(\d+)$') {
-              $versions += [pscustomobject]@{
-                Major = [int]$Matches[1]
-                Minor = [int]$Matches[2]
-                Patch = [int]$Matches[3]
-              }
-            }
-          }
-
-          if ($versions.Count -eq 0) {
-            $nextTag = 'v0.0.1'
-          }
-          else {
-            $latest = $versions | Sort-Object Major, Minor, Patch | Select-Object -Last 1
-            $nextTag = "v$($latest.Major).$($latest.Minor).$([int]$latest.Patch + 1)"
-          }
-
-          "tag=$nextTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Create draft release notes
-        shell: pwsh
-        run: |
-          @"
-          Describe what changed here before publishing.
-
-          Added:
-          - 
-
-          Removed:
-          - 
-
-          Changed:
-          - 
-          "@ | Out-File -FilePath release-notes.md -Encoding utf8
-
-      - name: Create draft release
-        id: create_release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEXT_TAG: ${{ steps.next_version.outputs.tag }}
-        run: |
-          gh release create $env:NEXT_TAG "release/Release.exe#Release.exe" `
-            --title $env:NEXT_TAG `
-            --draft `
-            --notes-file release-notes.md
-
-          $draftUrl = gh release view $env:NEXT_TAG --json url --jq .url
-          "url=$draftUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Write summary
-        shell: pwsh
-        run: |
-          @"
-          ## Build ready
-
-          Version: `${{ steps.next_version.outputs.tag }}`
-
-          Artifact:
-          ${{ steps.upload_artifact.outputs.artifact-url }}
-
-          Draft release:
-          ${{ steps.create_release.outputs.url }}
-
-          Open the draft release, write what you added, removed, and changed, then click **Publish release**.
-          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" dist/Release.exe \
+            --draft \
+            --title "$RELEASE_TAG" \
+            --notes "Edit this draft and describe what you added, removed, and changed."
