@@ -15,7 +15,7 @@ I'm using RebornRec's Photon ID's, if that's a problem. Issue it! (I did this in
 | Date | Manifest | Patched? |
 | --- | --- | --- |
 | 28 June 2016 | `4180590405597713716` | ✅ |
-| 29 June 2016 | `7926661550074548930` | ✅ |
+| 29 June 2016 | `7926661550074548930` | ❌ |
 | 30 June 2016 | `5937396277352677720` | ✅ |
 | 6 July 2016 | `5234716332756009057` | ✅ |
 | 8 July 2016 | `675319925160172554` | ✅ |
