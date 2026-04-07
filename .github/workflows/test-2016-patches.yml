@@ -30,15 +30,25 @@ jobs:
         id: detect
         shell: pwsh
         run: |
+          $before = "${{ github.event.before }}"
+          $after = "${{ github.sha }}"
+
+          if (-not $before -or $before -eq "0000000000000000000000000000000000000000") {
+            $diffPaths = git diff-tree --no-commit-id --name-only -r $after
+          }
+          else {
+            $diffPaths = git diff --name-only $before $after
+          }
+
           $script = @'
-          import json
           import os
           import re
           from pathlib import Path
 
           repo = Path(os.environ["GITHUB_WORKSPACE"])
-          event_path = Path(os.environ["GITHUB_EVENT_PATH"])
           output_path = Path(os.environ["GITHUB_OUTPUT"])
+          diff_paths_raw = os.environ.get("DIFF_PATHS", "")
+          diff_paths = [line.strip() for line in diff_paths_raw.splitlines() if line.strip()]
 
           readme_text = (repo / "README.md").read_text(encoding="utf-8")
           section_match = re.search(r"(?ms)^# 2016\s*$\n(.*?)^# 2017\s*$", readme_text)
@@ -46,25 +56,24 @@ jobs:
               raise SystemExit("Could not find the 2016 section in README.md")
 
           manifests_2016 = set(re.findall(r"`(\d+)`", section_match.group(1)))
-          payload = json.loads(event_path.read_text(encoding="utf-8"))
 
           targets = []
           seen = set()
-          for commit in payload.get("commits", []):
-              for key in ("added", "modified", "removed"):
-                  for relative_path in commit.get(key, []):
-                      match = re.fullmatch(r"manifest/(\d+)/Patch\.json", relative_path)
-                      if not match:
-                          continue
-                      manifest_id = match.group(1)
-                      if manifest_id not in manifests_2016:
-                          continue
-                      if relative_path in seen:
-                          continue
-                      if not (repo / relative_path).is_file():
-                          continue
-                      seen.add(relative_path)
-                      targets.append(relative_path)
+          for relative_path in diff_paths:
+              match = re.fullmatch(r"manifest/(\d+)/Patch\.json", relative_path)
+              if not match:
+                  continue
+              manifest_id = match.group(1)
+              if manifest_id not in manifests_2016:
+                  print(f"Skipping non-2016 manifest: {relative_path}")
+                  continue
+              if relative_path in seen:
+                  continue
+              if not (repo / relative_path).is_file():
+                  print(f"Skipping removed patch file: {relative_path}")
+                  continue
+              seen.add(relative_path)
+              targets.append(relative_path)
 
           with output_path.open("a", encoding="utf-8") as fh:
               fh.write(f"should_run={'true' if targets else 'false'}\\n")
@@ -72,14 +81,23 @@ jobs:
               fh.write("\\n".join(targets))
               fh.write("\\nEOF\\n")
 
+          print("Diff paths:")
+          if diff_paths:
+              for path in diff_paths:
+                  print(f" - {path}")
+          else:
+              print("(none)")
+
           print("Eligible targets:")
           if targets:
               for target in targets:
-                  print(target)
+                  print(f" - {target}")
           else:
               print("(none)")
           '@
 
+          $diffJoined = ($diffPaths | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join "`n"
+          $env:DIFF_PATHS = $diffJoined
           python -c $script
 
       - name: Download DepotDownloader
