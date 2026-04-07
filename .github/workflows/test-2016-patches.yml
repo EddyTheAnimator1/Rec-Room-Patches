@@ -3,11 +3,11 @@ name: Test 2016 patches
 on:
   push:
     paths:
-      - '**/Patch.json'
+      - 'manifest/*/Patch.json'
   workflow_dispatch:
     inputs:
       patch_path:
-        description: Optional path to a specific Patch.json
+        description: Optional path to a specific 2016 manifest Patch.json
         required: false
         type: string
       run_seconds:
@@ -22,16 +22,13 @@ permissions:
 jobs:
   test-2016-patches:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
       STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
-      STEAM_TWO_FACTOR_CODE: ${{ secrets.STEAM_TWO_FACTOR_CODE }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,11 +39,29 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:STEAM_USERNAME)) {
-            throw "Missing secret: STEAM_USERNAME"
+            throw 'Missing secret: STEAM_USERNAME'
           }
           if ([string]::IsNullOrWhiteSpace($env:STEAM_PASSWORD)) {
-            throw "Missing secret: STEAM_PASSWORD"
+            throw 'Missing secret: STEAM_PASSWORD'
           }
+
+      - name: Download DepotDownloader
+        shell: pwsh
+        run: |
+          $toolsRoot = Join-Path $env:RUNNER_TEMP 'rr-patch-tools'
+          $downloadZip = Join-Path $toolsRoot 'DepotDownloader-windows-x64.zip'
+          $extractRoot = Join-Path $toolsRoot 'DepotDownloader'
+
+          New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
+          Invoke-WebRequest -Uri 'https://github.com/SteamRE/DepotDownloader/releases/latest/download/DepotDownloader-windows-x64.zip' -OutFile $downloadZip
+          Expand-Archive -Path $downloadZip -DestinationPath $extractRoot -Force
+
+          $exe = Get-ChildItem -Path $extractRoot -Filter 'DepotDownloader.exe' -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($exe)) {
+            throw 'DepotDownloader.exe was not found after extraction.'
+          }
+
+          "DEPOTDOWNLOADER_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run 2016 patch test
         shell: pwsh
@@ -59,11 +74,12 @@ jobs:
           $arguments = @(
             'test_2016_patches.py',
             '--repo-root', '.',
-            '--tools-root', "$env:RUNNER_TEMP\rr-patch-tools",
             '--work-root', "$env:RUNNER_TEMP\rr-patch-work",
             '--artifacts-root', "$env:GITHUB_WORKSPACE\_patch_test_artifacts",
             '--patchpc-path', 'HelperPatches/PATCHPC2016.json',
-            '--run-seconds', $runSeconds
+            '--depotdownloader-exe', $env:DEPOTDOWNLOADER_EXE,
+            '--run-seconds', $runSeconds,
+            '--event-path', $env:GITHUB_EVENT_PATH
           )
 
           if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace('${{ inputs.patch_path }}')) {
