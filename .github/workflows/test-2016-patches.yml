@@ -1,98 +1,39 @@
-name: Test 2016 patches
+$exe = "D:\a\_temp\rr-patch-work\5937396277352677720\download\Recroom_Release.exe"
+$exeDir = Split-Path $exe -Parent
+$dataLog = Join-Path $exeDir "Recroom_Release_Data\output_log.txt"
 
-on:
-  push:
-    paths:
-      - 'manifest/*/Patch.json'
-  workflow_dispatch:
-    inputs:
-      patch_path:
-        description: Optional path to a specific 2016 manifest Patch.json
-        required: false
-        type: string
-      run_seconds:
-        description: How long to keep the build open
-        required: false
-        default: '120'
-        type: string
+Write-Host "Launching: $exe"
+$p = Start-Process -FilePath $exe -WorkingDirectory $exeDir -PassThru
 
-permissions:
-  contents: read
+Start-Sleep -Seconds 20
 
-jobs:
-  test-2016-patches:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    env:
-      STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
-      STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+if (-not $p.HasExited) {
+    Write-Host "Process still running, stopping it..."
+    Stop-Process -Id $p.Id -Force
+    $p.WaitForExit()
+}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+Write-Host "Exit code: $($p.ExitCode)"
 
-      - name: Validate secrets
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:STEAM_USERNAME)) {
-            throw 'Missing secret: STEAM_USERNAME'
-          }
-          if ([string]::IsNullOrWhiteSpace($env:STEAM_PASSWORD)) {
-            throw 'Missing secret: STEAM_PASSWORD'
-          }
+Write-Host "`nChecking sibling Data log..."
+if (Test-Path $dataLog) {
+    Write-Host "Found Data log: $dataLog"
+    Get-Content $dataLog -Tail 200
+} else {
+    Write-Host "Data log not found."
+}
 
-      - name: Download DepotDownloader
-        shell: pwsh
-        run: |
-          $toolsRoot = Join-Path $env:RUNNER_TEMP 'rr-patch-tools'
-          $downloadZip = Join-Path $toolsRoot 'DepotDownloader-windows-x64.zip'
-          $extractRoot = Join-Path $toolsRoot 'DepotDownloader'
+Write-Host "`nSearching LocalLow for output_log.txt..."
+$localLowLogs = Get-ChildItem "$env:USERPROFILE\AppData\LocalLow" -Recurse -Filter output_log.txt -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending
 
-          New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
-          Invoke-WebRequest -Uri 'https://github.com/SteamRE/DepotDownloader/releases/latest/download/DepotDownloader-windows-x64.zip' -OutFile $downloadZip
-          Expand-Archive -Path $downloadZip -DestinationPath $extractRoot -Force
+if ($localLowLogs) {
+    $latest = $localLowLogs[0].FullName
+    Write-Host "Found LocalLow log: $latest"
+    Get-Content $latest -Tail 200
+} else {
+    Write-Host "No LocalLow output_log.txt found."
+}
 
-          $exe = Get-ChildItem -Path $extractRoot -Filter 'DepotDownloader.exe' -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          if ([string]::IsNullOrWhiteSpace($exe)) {
-            throw 'DepotDownloader.exe was not found after extraction.'
-          }
-
-          "DEPOTDOWNLOADER_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Run 2016 patch test
-        shell: pwsh
-        run: |
-          $runSeconds = '120'
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace('${{ inputs.run_seconds }}')) {
-            $runSeconds = '${{ inputs.run_seconds }}'
-          }
-
-          $arguments = @(
-            'test_2016_patches.py',
-            '--repo-root', '.',
-            '--work-root', "$env:RUNNER_TEMP\rr-patch-work",
-            '--artifacts-root', "$env:GITHUB_WORKSPACE\_patch_test_artifacts",
-            '--patchpc-path', 'HelperPatches/PATCHPC2016.json',
-            '--depotdownloader-exe', $env:DEPOTDOWNLOADER_EXE,
-            '--run-seconds', $runSeconds,
-            '--event-path', $env:GITHUB_EVENT_PATH
-          )
-
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace('${{ inputs.patch_path }}')) {
-            $arguments += @('--patch-path', '${{ inputs.patch_path }}')
-          }
-
-          python @arguments
-
-      - name: Upload test artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: patch-test-logs-${{ github.run_id }}
-          path: _patch_test_artifacts/**
-          if-no-files-found: warn
-          retention-days: 14
+Write-Host "`nCrash dump check..."
+Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 10 FullName, LastWriteTime
