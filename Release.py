@@ -30,7 +30,7 @@ PATCH_BRANCHES = ("main", "master")
 GITHUB_TREE_API = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
 GITHUB_RAW_FILE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
 RELEASE_DATA_DIR_NAME = "Recroom_Release_Data"
-APP_VERSION = "0.0.0"
+APP_VERSION = "0.0.1"
 SELF_UPDATE_REPO_OWNER = "EddyTheAnimator1"
 SELF_UPDATE_REPO_NAME = "Rec-Room-Patches"
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
