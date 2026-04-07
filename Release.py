@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import traceback
 import zipfile
+import sys
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from urllib import error, request
@@ -28,6 +30,11 @@ PATCH_BRANCHES = ("main", "master")
 GITHUB_TREE_API = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
 GITHUB_RAW_FILE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
 RELEASE_DATA_DIR_NAME = "Recroom_Release_Data"
+APP_VERSION = "0.0.0"
+SELF_UPDATE_REPO_OWNER = "EddyTheAnimator1"
+SELF_UPDATE_REPO_NAME = "Rec-Room-Patches"
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
+GITHUB_RELEASES_PAGE_URL = "https://github.com/{owner}/{repo}/releases/latest"
 
 INVALID_WIN_CHARS = {
     '<': '‹',
@@ -435,6 +442,98 @@ def request_json(url: str) -> dict:
             },
         )
     )
+
+
+def normalize_version_tag(value: str) -> str:
+    return value.strip().lstrip("vV")
+
+
+def parse_version_parts(value: str) -> tuple[int | str, ...]:
+    normalized = normalize_version_tag(value)
+    parts: list[int | str] = []
+    for chunk in normalized.replace("-", ".").split("."):
+        item = chunk.strip()
+        if not item:
+            continue
+        parts.append(int(item) if item.isdigit() else item.lower())
+    return tuple(parts)
+
+
+def is_probably_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def current_executable_path() -> Path:
+    return Path(sys.executable if is_probably_frozen() else __file__).resolve()
+
+
+def latest_release_api_url() -> str:
+    return GITHUB_LATEST_RELEASE_API.format(
+        owner=SELF_UPDATE_REPO_OWNER,
+        repo=SELF_UPDATE_REPO_NAME,
+    )
+
+
+def latest_release_page_url() -> str:
+    return GITHUB_RELEASES_PAGE_URL.format(
+        owner=SELF_UPDATE_REPO_OWNER,
+        repo=SELF_UPDATE_REPO_NAME,
+    )
+
+
+def fetch_latest_release_version() -> str | None:
+    payload = request_json(latest_release_api_url())
+    tag_name = payload.get("tag_name")
+    if isinstance(tag_name, str) and tag_name.strip():
+        return normalize_version_tag(tag_name)
+    return None
+
+
+def is_outdated_version(current_version: str, latest_version: str) -> bool:
+    current_parts = parse_version_parts(current_version)
+    latest_parts = parse_version_parts(latest_version)
+    return current_parts < latest_parts
+
+
+def enforce_latest_release() -> int:
+    if not is_probably_frozen():
+        return 0
+
+    current_version = normalize_version_tag(APP_VERSION)
+    if not current_version or current_version.endswith("-dev"):
+        UI.warn("Release version is not embedded in this build. Update lock check skipped.")
+        return 0
+
+    try:
+        latest_version = fetch_latest_release_version()
+    except Exception as exc:
+        UI.warn(f"Could not check for updates right now: {exc}")
+        return 0
+
+    if not latest_version:
+        UI.warn("Could not determine the latest GitHub release version.")
+        return 0
+
+    if not is_outdated_version(current_version, latest_version):
+        return 0
+
+    UI.huge_warning(
+        [
+            "This Release.exe is outdated and will now close.",
+            f"Current version : v{current_version}",
+            f"Latest version  : v{latest_version}",
+            "The GitHub releases page will open so you can download the latest version.",
+        ]
+    )
+
+    try:
+        webbrowser.open(latest_release_page_url())
+        UI.ok("Opened GitHub releases page.")
+    except Exception as exc:
+        UI.warn(f"Could not open the browser automatically: {exc}")
+        UI.info(f"Open this page manually: {latest_release_page_url()}")
+
+    return 2
 
 
 
@@ -1497,6 +1596,10 @@ def main() -> int:
     if os.name != "nt":
         UI.err("This script is Windows-only because credential storage and shortcut creation use Windows features.")
         return 1
+
+    update_exit_code = enforce_latest_release()
+    if update_exit_code != 0:
+        return update_exit_code
 
     config = load_config()
 
