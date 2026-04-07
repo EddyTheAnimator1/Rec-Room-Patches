@@ -477,7 +477,10 @@ def first_output_log(build_root: Path) -> Path:
 
 def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Path) -> tuple[bool, str, Path]:
     runtime_log = case_dir / "runtime_console.log"
-    mirrored_log = case_dir / "output_log_live.txt"
+    live_unity_log = case_dir / "unity_output_log_live.txt"
+    final_unity_log = case_dir / "unity_output_log.txt"
+    legacy_output_log = case_dir / "output_log.txt"
+    combined_log = case_dir / "combined_log.txt"
 
     with runtime_log.open("w", encoding="utf-8", errors="replace") as console_handle:
         process = subprocess.Popen(
@@ -501,7 +504,7 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
                         chunk = handle.read()
                         cursor = handle.tell()
                     if chunk:
-                        with mirrored_log.open("a", encoding="utf-8", errors="replace") as mirror:
+                        with live_unity_log.open("a", encoding="utf-8", errors="replace") as mirror:
                             mirror.write(chunk)
                         if RECNET_RE.search(chunk):
                             recnet_hit = True
@@ -526,7 +529,27 @@ def monitor_run(exe_path: Path, build_root: Path, run_seconds: int, case_dir: Pa
                 pass
 
     if output_log.exists():
-        shutil.copy2(output_log, case_dir / "output_log.txt")
+        shutil.copy2(output_log, final_unity_log)
+        shutil.copy2(output_log, legacy_output_log)
+    else:
+        missing_text = f"Unity output log was not found at expected path: {output_log}\n"
+        final_unity_log.write_text(missing_text, encoding="utf-8")
+        legacy_output_log.write_text(missing_text, encoding="utf-8")
+
+    combined_parts: list[str] = []
+    combined_parts.append("===== runtime_console.log =====\n")
+    if runtime_log.exists():
+        combined_parts.append(runtime_log.read_text(encoding="utf-8", errors="replace"))
+    else:
+        combined_parts.append("<missing>\n")
+
+    combined_parts.append("\n===== unity_output_log.txt =====\n")
+    if final_unity_log.exists():
+        combined_parts.append(final_unity_log.read_text(encoding="utf-8", errors="replace"))
+    else:
+        combined_parts.append("<missing>\n")
+
+    combined_log.write_text("".join(combined_parts), encoding="utf-8", errors="replace")
 
     if recnet_hit:
         return False, failure_reason, output_log
@@ -702,6 +725,9 @@ def test_one_patch(
         result["passed"] = passed
         result["message"] = message
         result["output_log_path"] = str(output_log)
+        result["artifact_runtime_console_log"] = str(case_dir / "runtime_console.log")
+        result["artifact_unity_output_log"] = str(case_dir / "unity_output_log.txt")
+        result["artifact_combined_log"] = str(case_dir / "combined_log.txt")
         if not passed:
             gh_error(f"{manifest_id}: {message}")
         else:
@@ -781,6 +807,7 @@ def main() -> int:
     for result in results:
         status = "PASS" if result["passed"] else "FAIL"
         summary_lines.append(f"- **{result['manifest_id']}** — {status} — {result['message']}")
+        summary_lines.append("  - Artifacts: `runtime_console.log`, `unity_output_log.txt`, `output_log.txt`, `combined_log.txt`")
     summary_lines.append("")
 
     summary_text = "\n".join(summary_lines) + "\n"
