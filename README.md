@@ -12,7 +12,7 @@ If you want to know how it works. Check out https://github.com/EddyTheAnimator1/
 
 These are all of the builds (Yes, literally ever made before April 6 2026) that i've managed to patch.
 
-Along with if you'd like to download original builds (NOT patched), this is so that if the steam game gets deleted. Files are available here.
+Along with downloads to actual original builds (NOT patched), this is so that if the steam game gets deleted. Files will be available here incase the Steam APP gets deleted.
 
 I'm using RebornRec's Photon ID's, if that's a problem. Issue it! (I did this in hopes of connecting players.)
 <!-- AUTO_TABLE_START -->
