@@ -1,11 +1,18 @@
 # Rec-Room-Patches
 
-Okay! It's here!
+This repository tries to recover old rec room builds (Almost ALL of them), providing servers, easy downloading.
 
-These are ONLY Rec Room Patches, i'll try hosting servers, though i doubt i'll be able to cover even half of them. We will see how i do!
-## Patch table
+# Installation
+1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the latest Release.exe
+2. Put the Release.exe in a folder (It downloads Depotdownloader, and i didn't feel like moving that into Temp)
+
+If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
+
+## Patch table + Downloads table
 
 These are all of the builds (Yes, literally ever made before April 6 2026) that i've managed to patch.
+
+Along with if you'd like to download original builds (NOT patched), this is so that if the steam game gets deleted. Files are available here.
 
 I'm using RebornRec's Photon ID's, if that's a problem. Issue it! (I did this in hopes of connecting players.)
 <!-- AUTO_TABLE_START -->
