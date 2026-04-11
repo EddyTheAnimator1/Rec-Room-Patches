@@ -970,6 +970,19 @@ def finalize_downloaded_folder(
 
 
 
+def get_instruction_base_dir(item: dict) -> str | None:
+    for key in ("base_dir", "base", "root", "base_path"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise PatchError(f"{key} must be a string when provided.")
+        cleaned = value.strip()
+        return cleaned or None
+    return None
+
+
+
 def normalize_patch_instructions(payload: dict | list) -> list[dict]:
     if isinstance(payload, list):
         items = payload
@@ -993,6 +1006,8 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
         if not isinstance(file_value, str) or not file_value.strip():
             raise PatchError("Each patch instruction needs a file/path string.")
 
+        base_dir_value = get_instruction_base_dir(item)
+
         if kind in {"write_text_file", "create_text_file", "write_text"}:
             content = item.get("content")
             if content is None:
@@ -1007,6 +1022,7 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
                     "content": content,
                     "encoding": str(item.get("encoding") or "utf-8"),
                     "overwrite": bool(item.get("overwrite", True)),
+                    "base_dir": base_dir_value,
                 }
             )
             continue
@@ -1029,6 +1045,7 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
                 "file": file_value.strip(),
                 "replacements": replacements,
                 "encoding": str(item.get("encoding") or "utf-8"),
+                "base_dir": base_dir_value,
             }
         )
 
@@ -1060,8 +1077,18 @@ def resolve_target_file(base_dir: Path, file_value: str) -> Path:
 
 
 
-def resolve_patch_target_file(build_dir: Path, file_value: str, kind: str) -> Path:
+def resolve_patch_target_file(build_dir: Path, file_value: str, kind: str, base_dir_value: str | None = None) -> Path:
     relative_path = Path(file_value)
+
+    if base_dir_value is not None:
+        base_relative = Path(base_dir_value)
+        if base_relative.is_absolute():
+            raise PatchError(f"Patch instruction base_dir must be relative to the build folder: {base_dir_value}")
+        base_dir = build_dir / base_relative
+        if kind in {"write_text_file", "create_text_file", "write_text"}:
+            return base_dir / relative_path
+        return resolve_target_file(base_dir, file_value)
+
     if kind in {"write_text_file", "create_text_file", "write_text"}:
         return build_dir / relative_path
 
@@ -1137,7 +1164,12 @@ def apply_patch_payload(build_dir: Path, payload: dict | list) -> list[PatchResu
     UI.info(f"replace_bytes target root   : {release_data_dir(build_dir)}")
     for instruction in instructions:
         kind = instruction["type"]
-        target_file = resolve_patch_target_file(build_dir, instruction["file"], kind)
+        target_file = resolve_patch_target_file(
+            build_dir,
+            instruction["file"],
+            kind,
+            instruction.get("base_dir"),
+        )
 
         if kind in {"write_text_file", "create_text_file", "write_text"}:
             write_text_file(
