@@ -1684,10 +1684,12 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
 
 def release_data_dir(build_dir: Path) -> Path:
     data_dir = build_dir / RELEASE_DATA_DIR_NAME
-    if not data_dir.exists() or not data_dir.is_dir():
-        raise PatchError(f"{RELEASE_DATA_DIR_NAME} was not found in the build folder: {build_dir}")
-    return data_dir
-
+    if data_dir.exists() and data_dir.is_dir():
+        return data_dir
+    raise PatchError(
+        f"{RELEASE_DATA_DIR_NAME} was not found in the build folder: {build_dir}. "
+        f"Use base_dir in Patch.json."
+    )
 
 
 def resolve_target_file(base_dir: Path, file_value: str) -> Path:
@@ -1706,27 +1708,48 @@ def resolve_target_file(base_dir: Path, file_value: str) -> Path:
 
 
 
+def resolve_patch_base_dir(build_dir: Path, base_dir_value: str | None, *, allow_create: bool = False) -> Path | None:
+    if base_dir_value is None:
+        return None
+
+    cleaned = base_dir_value.strip()
+    if not cleaned or cleaned == ".":
+        return build_dir
+
+    relative_path = Path(cleaned)
+    if relative_path.is_absolute():
+        raise PatchError(f"Patch instruction base_dir must be relative to the build folder: {base_dir_value}")
+
+    candidate = build_dir / relative_path
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+
+    if allow_create:
+        return candidate
+
+    raise PatchError(f"Patch base directory was not found: {base_dir_value}")
+
+
 def resolve_patch_target_file(build_dir: Path, file_value: str, kind: str, base_dir_value: str | None = None) -> Path:
     relative_path = Path(file_value)
-
-    if base_dir_value is not None:
-        base_relative = Path(base_dir_value)
-        if base_relative.is_absolute():
-            raise PatchError(f"Patch instruction base_dir must be relative to the build folder: {base_dir_value}")
-        base_dir = build_dir / base_relative
+    explicit_base_dir = resolve_patch_base_dir(
+        build_dir,
+        base_dir_value,
+        allow_create=kind in {"write_text_file", "create_text_file", "write_text"},
+    )
+    if explicit_base_dir is not None:
         if kind in {"write_text_file", "create_text_file", "write_text"}:
-            return base_dir / relative_path
-        return resolve_target_file(base_dir, file_value)
+            return explicit_base_dir / relative_path
+        return resolve_target_file(explicit_base_dir, file_value)
 
     if kind in {"write_text_file", "create_text_file", "write_text"}:
         return build_dir / relative_path
 
     base_dir = release_data_dir(build_dir)
     parts_lower = [part.lower() for part in relative_path.parts]
-    if RELEASE_DATA_DIR_NAME.lower() in parts_lower:
+    if any(part.lower() == RELEASE_DATA_DIR_NAME.lower() for part in parts_lower):
         return resolve_target_file(build_dir, file_value)
     return resolve_target_file(base_dir, file_value)
-
 
 
 def ensure_backup(path: Path) -> None:
@@ -1856,7 +1879,17 @@ def apply_patch_payload(build_dir: Path, payload: dict | list, patch_file_path: 
 
     UI.section("Applying Patch Instructions")
     UI.info(f"write_text_file target root : {build_dir}")
-    UI.info(f"replace_bytes target root   : {release_data_dir(build_dir)}")
+
+    needs_default_data_root = any(
+        instruction["type"] not in {"write_text_file", "create_text_file", "write_text"}
+        and not (isinstance(instruction.get("base_dir"), str) and instruction.get("base_dir").strip())
+        for instruction in instructions
+    )
+    if needs_default_data_root:
+        UI.info(f"replace_bytes target root   : {release_data_dir(build_dir)}")
+    else:
+        UI.info("replace_bytes target root   : using instruction base_dir values")
+
     for instruction in instructions:
         kind = instruction["type"]
 
