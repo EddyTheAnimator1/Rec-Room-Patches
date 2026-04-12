@@ -982,6 +982,8 @@ DOTNET_USER_STRING_PATCH_KINDS = {
     "replace_dotnet_user_string",
     "replace_managed_strings",
     "replace_managed_string",
+    "replace_csharp_string",
+    "replace_csharp_strings",
 }
 
 
@@ -1202,7 +1204,7 @@ def _find_all_occurrences(haystack: bytes | bytearray, needle: bytes) -> list[in
         start = index + 1
 
 
-def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str) -> int | None:
+def _find_dotnet_user_string_tokens(us_data: bytes | bytearray, text: str) -> list[int]:
     utf16 = text.encode("utf-16le")
     matches = _find_all_occurrences(us_data, utf16)
     valid_tokens: list[int] = []
@@ -1212,14 +1214,177 @@ def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str)
         except PatchError:
             continue
         valid_tokens.append(0x70000000 + entry_start)
+    return sorted(set(valid_tokens))
 
-    unique_tokens = sorted(set(valid_tokens))
+
+def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str) -> int | None:
+    unique_tokens = _find_dotnet_user_string_tokens(us_data, text)
     if not unique_tokens:
         return None
     if len(unique_tokens) > 1:
         raise PatchError(f"Managed string '{text}' appears multiple times in the #US heap. Refusing to guess.")
     return unique_tokens[0]
 
+
+
+
+def _build_dotnet_blob_entry(text: str) -> bytes:
+    utf16 = text.encode("utf-16le")
+    return _encode_compressed_uint(len(utf16)) + utf16
+
+
+def _find_dotnet_blob_tokens(blob_data: bytes | bytearray, text: str) -> list[int]:
+    utf16 = text.encode("utf-16le")
+    matches = _find_all_occurrences(blob_data, utf16)
+    valid_tokens: list[int] = []
+    for match_offset in matches:
+        for prefix_len in (1, 2, 4):
+            start = match_offset - prefix_len
+            if start < 0:
+                continue
+            try:
+                value, actual_len = _decode_compressed_uint(blob_data, start)
+            except PatchError:
+                continue
+            if actual_len == prefix_len and value == len(utf16) and start + actual_len == match_offset:
+                valid_tokens.append(start)
+                break
+    return sorted(set(valid_tokens))
+
+
+def _get_table_index_size(row_count: int) -> int:
+    return 2 if row_count < 0x10000 else 4
+
+
+def _get_coded_index_size(row_counts: dict[int, int], table_ids: list[int], tag_bits: int) -> int:
+    max_rows = max((row_counts.get(table_id, 0) for table_id in table_ids), default=0)
+    return 2 if max_rows < (1 << (16 - tag_bits)) else 4
+
+
+def _get_dotnet_tables_stream_info(data: bytes | bytearray, meta: dict) -> dict:
+    tables_stream = meta["stream_map"].get("#~")
+    if tables_stream is None:
+        raise PatchError("Managed assembly does not contain a #~ tables stream.")
+
+    tables_offset = meta["metadata_offset"] + tables_stream["offset"]
+    heap_sizes = data[tables_offset + 6]
+    valid_mask = int.from_bytes(data[tables_offset + 8:tables_offset + 16], "little")
+
+    row_counts: dict[int, int] = {}
+    present_tables: list[int] = []
+    cursor = tables_offset + 24
+    for table_id in range(64):
+        if (valid_mask >> table_id) & 1:
+            row_counts[table_id] = _read_u32_le(data, cursor)
+            present_tables.append(table_id)
+            cursor += 4
+
+    string_index_size = 4 if (heap_sizes & 0x01) else 2
+    guid_index_size = 4 if (heap_sizes & 0x02) else 2
+    blob_index_size = 4 if (heap_sizes & 0x04) else 2
+
+    def row_size(table_id: int) -> int:
+        if table_id == 0:
+            return 2 + string_index_size + guid_index_size + guid_index_size + guid_index_size
+        if table_id == 1:
+            return _get_coded_index_size(row_counts, [0, 26, 35, 1], 2) + string_index_size + string_index_size
+        if table_id == 2:
+            return (
+                4
+                + string_index_size
+                + string_index_size
+                + _get_coded_index_size(row_counts, [2, 1, 27], 2)
+                + _get_table_index_size(row_counts.get(4, 0))
+                + _get_table_index_size(row_counts.get(6, 0))
+            )
+        if table_id == 3:
+            return _get_table_index_size(row_counts.get(4, 0))
+        if table_id == 4:
+            return 2 + string_index_size + blob_index_size
+        if table_id == 5:
+            return _get_table_index_size(row_counts.get(6, 0))
+        if table_id == 6:
+            return 4 + 2 + 2 + string_index_size + blob_index_size + _get_table_index_size(row_counts.get(8, 0))
+        if table_id == 7:
+            return _get_table_index_size(row_counts.get(8, 0))
+        if table_id == 8:
+            return 2 + 2 + string_index_size
+        if table_id == 9:
+            return _get_table_index_size(row_counts.get(2, 0)) + _get_coded_index_size(row_counts, [2, 1, 27], 2)
+        if table_id == 10:
+            return _get_coded_index_size(row_counts, [2, 1, 26, 6, 27], 3) + string_index_size + blob_index_size
+        if table_id == 11:
+            return 1 + 1 + _get_coded_index_size(row_counts, [4, 8, 23], 2) + blob_index_size
+        raise PatchError(f"Metadata table {table_id} is not supported for managed string constant patching.")
+
+    return {
+        "tables_data_offset": cursor,
+        "row_counts": row_counts,
+        "present_tables": present_tables,
+        "blob_index_size": blob_index_size,
+        "constant_parent_size": _get_coded_index_size(row_counts, [4, 8, 23], 2),
+        "row_size": row_size,
+    }
+
+
+def _get_dotnet_constant_table_info(data: bytes | bytearray, meta: dict) -> dict:
+    tables = _get_dotnet_tables_stream_info(data, meta)
+    if 11 not in tables["row_counts"]:
+        raise PatchError("Managed assembly does not contain a Constant table.")
+
+    offset = tables["tables_data_offset"]
+    for table_id in tables["present_tables"]:
+        if table_id == 11:
+            return {
+                **tables,
+                "constant_table_offset": offset,
+                "constant_row_count": tables["row_counts"][11],
+                "constant_row_size": tables["row_size"](11),
+            }
+        offset += tables["row_counts"][table_id] * tables["row_size"](table_id)
+
+    raise PatchError("Could not locate the Constant table in the managed metadata.")
+
+
+def _grow_dotnet_metadata_stream(data: bytearray, meta: dict, stream_name: str, entry_bytes: bytes) -> None:
+    stream = meta["stream_map"].get(stream_name)
+    if stream is None:
+        raise PatchError(f"Managed assembly does not contain a {stream_name} stream.")
+
+    insertion_offset = meta["metadata_offset"] + stream["offset"] + stream["size"]
+    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
+
+    delta = _align_up(len(entry_bytes), 4)
+    _ensure_metadata_growth_capacity(data, meta, delta)
+
+    move_size = metadata_end - insertion_offset
+    if move_size > 0:
+        data[insertion_offset + delta:insertion_offset + delta + move_size] = data[insertion_offset:metadata_end]
+
+    padded_entry = entry_bytes + (b"\x00" * (delta - len(entry_bytes)))
+    data[insertion_offset:insertion_offset + delta] = padded_entry
+
+    for stream_header in meta["stream_headers"]:
+        if stream_header["name"] == stream_name:
+            _write_u32_le(data, stream_header["header_offset"] + 4, stream_header["size"] + delta)
+        elif stream_header["offset"] > stream["offset"]:
+            _write_u32_le(data, stream_header["header_offset"], stream_header["offset"] + delta)
+
+    _write_u32_le(data, meta["metadata_size_offset"], meta["metadata_size"] + delta)
+
+    section = meta["metadata_section"]
+    section_relative_end = (metadata_end + delta) - section["raw_ptr"]
+    if section_relative_end > section["virtual_size"]:
+        _write_u32_le(data, section["header_offset"] + 8, section_relative_end)
+        size_of_image = _read_u32_le(data, meta["size_of_image_offset"])
+        section_alignment = max(meta["section_alignment"], 1)
+        section_end_rva = section["virtual_address"] + _align_up(section_relative_end, section_alignment)
+        if section_end_rva > size_of_image:
+            _write_u32_le(data, meta["size_of_image_offset"], section_end_rva)
+
+
+def _grow_dotnet_blob_heap(data: bytearray, meta: dict, entry_bytes: bytes) -> None:
+    _grow_dotnet_metadata_stream(data, meta, "#Blob", entry_bytes)
 
 def _expand_metadata_section_raw_space(data: bytearray, meta: dict, delta: int) -> None:
     if delta <= 0:
@@ -1319,38 +1484,95 @@ def apply_dotnet_user_string_replacements(file_path: Path, replacements: list[di
         us_size = us_stream["size"]
         us_data = data[us_offset:us_offset + us_size]
 
-        old_token = _find_unique_dotnet_user_string_token(us_data, find_value)
-        if old_token is None:
+        old_tokens = _find_dotnet_user_string_tokens(us_data, find_value)
+        if not old_tokens:
             raise PatchError(f"Replacement #{index} could not find managed string '{find_value}' inside {file_path.name}.")
 
-        new_token = _find_unique_dotnet_user_string_token(us_data, replace_value)
-        if new_token is None:
+        new_tokens = _find_dotnet_user_string_tokens(us_data, replace_value)
+        if new_tokens:
+            new_token = new_tokens[0]
+        else:
             new_token = 0x70000000 + us_size
             _grow_dotnet_user_string_heap(data, meta, _build_dotnet_user_string_entry(replace_value))
             modified = True
+            meta = _parse_dotnet_metadata(data)
 
-        old_sig = b"\x72" + int(old_token).to_bytes(4, "little")
         new_sig = b"\x72" + int(new_token).to_bytes(4, "little")
-
         code_search_end = meta["metadata_offset"]
-        count = 0
-        cursor = 0
-        while True:
-            hit = bytes(data).find(old_sig, cursor, code_search_end)
-            if hit < 0:
-                break
-            data[hit:hit + 5] = new_sig
-            count += 1
-            cursor = hit + 5
+        data_bytes = bytes(data)
 
-        if count <= 0:
+        ldstr_count = 0
+        for old_token in old_tokens:
+            if old_token == new_token:
+                continue
+
+            old_sig = b"\x72" + int(old_token).to_bytes(4, "little")
+            cursor = 0
+            while True:
+                hit = data_bytes.find(old_sig, cursor, code_search_end)
+                if hit < 0:
+                    break
+                data[hit:hit + 5] = new_sig
+                ldstr_count += 1
+                cursor = hit + 5
+
+        blob_stream = meta["stream_map"].get("#Blob")
+        if blob_stream is None:
+            raise PatchError(f"Managed assembly does not contain a #Blob stream in {file_path.name}.")
+
+        blob_offset = meta["metadata_offset"] + blob_stream["offset"]
+        blob_size = blob_stream["size"]
+        blob_data = data[blob_offset:blob_offset + blob_size]
+
+        old_blob_tokens = _find_dotnet_blob_tokens(blob_data, find_value)
+        if not old_blob_tokens:
             raise PatchError(
-                f"Replacement #{index} found managed string '{find_value}', but no ldstr references were found in {file_path.name}."
+                f"Replacement #{index} found managed string '{find_value}' in #US, but not in the #Blob heap of {file_path.name}."
             )
 
-        total_reference_rewrites += count
+        new_blob_tokens = _find_dotnet_blob_tokens(blob_data, replace_value)
+        if new_blob_tokens:
+            new_blob_token = new_blob_tokens[0]
+        else:
+            new_blob_token = blob_size
+            _grow_dotnet_blob_heap(data, meta, _build_dotnet_blob_entry(replace_value))
+            modified = True
+            meta = _parse_dotnet_metadata(data)
+
+        constant_info = _get_dotnet_constant_table_info(data, meta)
+        constant_table_offset = constant_info["constant_table_offset"]
+        constant_row_size = constant_info["constant_row_size"]
+        constant_parent_size = constant_info["constant_parent_size"]
+        blob_index_size = constant_info["blob_index_size"]
+
+        constant_count = 0
+        for row_index in range(constant_info["constant_row_count"]):
+            row_offset = constant_table_offset + (row_index * constant_row_size)
+            constant_type = data[row_offset]
+            if constant_type != 0x0E:
+                continue
+
+            blob_value_offset = row_offset + 2 + constant_parent_size
+            blob_token = int.from_bytes(data[blob_value_offset:blob_value_offset + blob_index_size], "little")
+            if blob_token in old_blob_tokens and blob_token != new_blob_token:
+                data[blob_value_offset:blob_value_offset + blob_index_size] = int(new_blob_token).to_bytes(
+                    blob_index_size,
+                    "little",
+                )
+                constant_count += 1
+
+        if ldstr_count <= 0 and constant_count <= 0:
+            raise PatchError(
+                f"Replacement #{index} found managed string '{find_value}', but no ldstr or Constant metadata references were found "
+                f"in {file_path.name}."
+            )
+
+        total_reference_rewrites += ldstr_count + constant_count
         modified = True
-        UI.ok(f"{file_path.name}: managed replacement #{index} rewired {count} ldstr reference(s)")
+        UI.ok(
+            f"{file_path.name}: managed replacement #{index} rewired {ldstr_count} ldstr reference(s) "
+            f"from {len(old_tokens)} matching #US token(s) and {constant_count} Constant row(s)"
+        )
 
     if modified:
         ensure_backup(file_path)
@@ -1508,9 +1730,7 @@ def resolve_patch_target_file(build_dir: Path, file_value: str, kind: str, base_
 
 
 def ensure_backup(path: Path) -> None:
-    backup = path.with_name(path.name + ".bak")
-    if not backup.exists():
-        shutil.copy2(path, backup)
+    return
 
 
 
