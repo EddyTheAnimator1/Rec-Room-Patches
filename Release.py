@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import struct
 import traceback
 import zipfile
 import sys
@@ -970,6 +971,354 @@ def finalize_downloaded_folder(
 
 
 
+
+DOTNET_USER_STRING_PATCH_KINDS = {
+    "replace_dotnet_user_strings",
+    "replace_dotnet_user_string",
+    "replace_managed_strings",
+    "replace_managed_string",
+}
+
+
+def _read_u16_le(data: bytes | bytearray, offset: int) -> int:
+    return int.from_bytes(data[offset:offset + 2], "little")
+
+
+def _read_u32_le(data: bytes | bytearray, offset: int) -> int:
+    return int.from_bytes(data[offset:offset + 4], "little")
+
+
+def _write_u32_le(data: bytearray, offset: int, value: int) -> None:
+    data[offset:offset + 4] = int(value).to_bytes(4, "little")
+
+
+def _align_up(value: int, alignment: int) -> int:
+    if alignment <= 0:
+        return value
+    return (value + alignment - 1) & ~(alignment - 1)
+
+
+def _decode_compressed_uint(buffer: bytes | bytearray, start: int) -> tuple[int, int]:
+    first = buffer[start]
+    if (first & 0x80) == 0:
+        return first, 1
+    if (first & 0xC0) == 0x80:
+        if start + 1 >= len(buffer):
+            raise PatchError("Compressed integer is truncated.")
+        return ((first & 0x3F) << 8) | buffer[start + 1], 2
+    if (first & 0xE0) == 0xC0:
+        if start + 3 >= len(buffer):
+            raise PatchError("Compressed integer is truncated.")
+        return (
+            ((first & 0x1F) << 24)
+            | (buffer[start + 1] << 16)
+            | (buffer[start + 2] << 8)
+            | buffer[start + 3]
+        ), 4
+    raise PatchError("Unsupported compressed integer encoding in .NET metadata.")
+
+
+def _encode_compressed_uint(value: int) -> bytes:
+    if value < 0:
+        raise PatchError("Compressed integer cannot be negative.")
+    if value <= 0x7F:
+        return bytes([value])
+    if value <= 0x3FFF:
+        return bytes([
+            0x80 | ((value >> 8) & 0x3F),
+            value & 0xFF,
+        ])
+    if value <= 0x1FFFFFFF:
+        return bytes([
+            0xC0 | ((value >> 24) & 0x1F),
+            (value >> 16) & 0xFF,
+            (value >> 8) & 0xFF,
+            value & 0xFF,
+        ])
+    raise PatchError("Compressed integer is too large for .NET metadata.")
+
+
+def _dotnet_user_string_needs_special_handling(text: str) -> int:
+    for ch in text:
+        code = ord(ch)
+        if code > 0x7F:
+            return 1
+        if 0x01 <= code <= 0x08:
+            return 1
+        if 0x0E <= code <= 0x1F:
+            return 1
+        if code in {0x27, 0x2D, 0x7F}:
+            return 1
+    return 0
+
+
+def _build_dotnet_user_string_entry(text: str) -> bytes:
+    utf16 = text.encode("utf-16le")
+    trailing_flag = _dotnet_user_string_needs_special_handling(text)
+    payload_len = len(utf16) + 1
+    return _encode_compressed_uint(payload_len) + utf16 + bytes([trailing_flag])
+
+
+def _parse_dotnet_metadata(file_bytes: bytes | bytearray) -> dict:
+    if file_bytes[0:2] != b"MZ":
+        raise PatchError("Managed-string patching requires a PE/.NET assembly file.")
+
+    pe_offset = _read_u32_le(file_bytes, 0x3C)
+    if file_bytes[pe_offset:pe_offset + 4] != b"PE\0\0":
+        raise PatchError("Invalid PE signature while parsing managed assembly.")
+
+    number_of_sections = _read_u16_le(file_bytes, pe_offset + 6)
+    size_of_optional_header = _read_u16_le(file_bytes, pe_offset + 20)
+    optional_header_offset = pe_offset + 24
+    optional_magic = _read_u16_le(file_bytes, optional_header_offset)
+
+    if optional_magic == 0x10B:
+        data_directories_offset = optional_header_offset + 96
+        size_of_image_offset = optional_header_offset + 56
+        section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
+    elif optional_magic == 0x20B:
+        data_directories_offset = optional_header_offset + 112
+        size_of_image_offset = optional_header_offset + 56
+        section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
+    else:
+        raise PatchError("Unsupported PE optional-header format for managed patching.")
+
+    section_table_offset = optional_header_offset + size_of_optional_header
+    sections: list[dict] = []
+    for index in range(number_of_sections):
+        header_offset = section_table_offset + (index * 40)
+        name = bytes(file_bytes[header_offset:header_offset + 8]).split(b"\0", 1)[0].decode("ascii", errors="replace")
+        virtual_size = _read_u32_le(file_bytes, header_offset + 8)
+        virtual_address = _read_u32_le(file_bytes, header_offset + 12)
+        raw_size = _read_u32_le(file_bytes, header_offset + 16)
+        raw_ptr = _read_u32_le(file_bytes, header_offset + 20)
+        sections.append(
+            {
+                "name": name,
+                "virtual_size": virtual_size,
+                "virtual_address": virtual_address,
+                "raw_size": raw_size,
+                "raw_ptr": raw_ptr,
+                "header_offset": header_offset,
+            }
+        )
+
+    def rva_to_offset(rva: int) -> tuple[int, dict]:
+        for section in sections:
+            start = section["virtual_address"]
+            span = max(section["virtual_size"], section["raw_size"])
+            if start <= rva < start + span:
+                return section["raw_ptr"] + (rva - start), section
+        raise PatchError(f"RVA {hex(rva)} could not be mapped into a file offset.")
+
+    cli_dir_offset = data_directories_offset + (14 * 8)
+    cli_rva = _read_u32_le(file_bytes, cli_dir_offset)
+    if cli_rva == 0:
+        raise PatchError("Assembly does not expose a .NET CLI header.")
+    cli_offset, _ = rva_to_offset(cli_rva)
+
+    metadata_rva = _read_u32_le(file_bytes, cli_offset + 8)
+    metadata_size = _read_u32_le(file_bytes, cli_offset + 12)
+    metadata_offset, metadata_section = rva_to_offset(metadata_rva)
+    metadata_size_offset = cli_offset + 12
+
+    if _read_u32_le(file_bytes, metadata_offset) != 0x424A5342:
+        raise PatchError("Invalid .NET metadata signature.")
+
+    version_length = _read_u32_le(file_bytes, metadata_offset + 12)
+    stream_count_offset = metadata_offset + 16 + _align_up(version_length, 4) + 2
+    stream_count = _read_u16_le(file_bytes, stream_count_offset)
+
+    stream_header_offset = metadata_offset + 16 + _align_up(version_length, 4) + 4
+    stream_headers: list[dict] = []
+    cursor = stream_header_offset
+    for _ in range(stream_count):
+        relative_offset = _read_u32_le(file_bytes, cursor)
+        size = _read_u32_le(file_bytes, cursor + 4)
+        name_end = bytes(file_bytes).find(b"\0", cursor + 8)
+        name = bytes(file_bytes[cursor + 8:name_end]).decode("ascii", errors="replace")
+        header_len = 8 + _align_up((name_end - (cursor + 8)) + 1, 4)
+        stream_headers.append(
+            {
+                "name": name,
+                "offset": relative_offset,
+                "size": size,
+                "header_offset": cursor,
+            }
+        )
+        cursor += header_len
+
+    stream_map = {item["name"]: item for item in stream_headers}
+    if "#US" not in stream_map:
+        raise PatchError("Managed assembly does not contain a #US user-string stream.")
+
+    return {
+        "metadata_offset": metadata_offset,
+        "metadata_size": metadata_size,
+        "metadata_size_offset": metadata_size_offset,
+        "metadata_section": metadata_section,
+        "stream_headers": stream_headers,
+        "stream_map": stream_map,
+        "section_alignment": section_alignment,
+        "size_of_image_offset": size_of_image_offset,
+    }
+
+
+def _find_dotnet_user_string_entry_start(us_data: bytes | bytearray, utf16_offset: int, utf16_len: int) -> int:
+    expected_payload_len = utf16_len + 1
+    for prefix_len in (1, 2, 4):
+        start = utf16_offset - prefix_len
+        if start < 0:
+            continue
+        try:
+            value, actual_len = _decode_compressed_uint(us_data, start)
+        except PatchError:
+            continue
+        if actual_len == prefix_len and value == expected_payload_len and start + actual_len == utf16_offset:
+            return start
+    raise PatchError("Could not resolve the .NET user-string heap entry for the requested text.")
+
+
+def _find_all_occurrences(haystack: bytes | bytearray, needle: bytes) -> list[int]:
+    if not needle:
+        return []
+    positions: list[int] = []
+    start = 0
+    haystack_bytes = bytes(haystack)
+    while True:
+        index = haystack_bytes.find(needle, start)
+        if index < 0:
+            return positions
+        positions.append(index)
+        start = index + 1
+
+
+def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str) -> int | None:
+    utf16 = text.encode("utf-16le")
+    matches = _find_all_occurrences(us_data, utf16)
+    valid_tokens: list[int] = []
+    for match_offset in matches:
+        try:
+            entry_start = _find_dotnet_user_string_entry_start(us_data, match_offset, len(utf16))
+        except PatchError:
+            continue
+        valid_tokens.append(0x70000000 + entry_start)
+
+    unique_tokens = sorted(set(valid_tokens))
+    if not unique_tokens:
+        return None
+    if len(unique_tokens) > 1:
+        raise PatchError(f"Managed string '{text}' appears multiple times in the #US heap. Refusing to guess.")
+    return unique_tokens[0]
+
+
+def _ensure_metadata_growth_capacity(meta: dict, delta: int) -> None:
+    if delta <= 0:
+        return
+    section = meta["metadata_section"]
+    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
+    raw_end = section["raw_ptr"] + section["raw_size"]
+    if metadata_end + delta > raw_end:
+        raise PatchError(
+            "Managed-string replacement needs more .NET metadata space than this build currently has. "
+            "That growth path is not safe in this patcher."
+        )
+
+
+def _grow_dotnet_user_string_heap(data: bytearray, meta: dict, entry_bytes: bytes) -> None:
+    us_stream = meta["stream_map"]["#US"]
+    insertion_offset = meta["metadata_offset"] + us_stream["offset"] + us_stream["size"]
+    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
+
+    delta = _align_up(len(entry_bytes), 4)
+    _ensure_metadata_growth_capacity(meta, delta)
+
+    move_size = metadata_end - insertion_offset
+    if move_size > 0:
+        data[insertion_offset + delta:insertion_offset + delta + move_size] = data[insertion_offset:metadata_end]
+
+    padded_entry = entry_bytes + (b"\x00" * (delta - len(entry_bytes)))
+    data[insertion_offset:insertion_offset + delta] = padded_entry
+
+    for stream in meta["stream_headers"]:
+        if stream["name"] == "#US":
+            _write_u32_le(data, stream["header_offset"] + 4, stream["size"] + delta)
+        elif stream["offset"] > us_stream["offset"]:
+            _write_u32_le(data, stream["header_offset"], stream["offset"] + delta)
+
+    _write_u32_le(data, meta["metadata_size_offset"], meta["metadata_size"] + delta)
+
+    section = meta["metadata_section"]
+    section_relative_end = (metadata_end + delta) - section["raw_ptr"]
+    if section_relative_end > section["virtual_size"]:
+        _write_u32_le(data, section["header_offset"] + 8, section_relative_end)
+        size_of_image = _read_u32_le(data, meta["size_of_image_offset"])
+        section_alignment = max(meta["section_alignment"], 1)
+        section_end_rva = section["virtual_address"] + _align_up(section_relative_end, section_alignment)
+        if section_end_rva > size_of_image:
+            _write_u32_le(data, meta["size_of_image_offset"], section_end_rva)
+
+
+def apply_dotnet_user_string_replacements(file_path: Path, replacements: list[dict]) -> int:
+    data = bytearray(file_path.read_bytes())
+    total_reference_rewrites = 0
+    modified = False
+
+    for index, replacement in enumerate(replacements, start=1):
+        if not isinstance(replacement, dict):
+            raise PatchError(f"Replacement #{index} is not a JSON object.")
+
+        find_value = replacement.get("find")
+        replace_value = replacement.get("replace")
+        if not isinstance(find_value, str) or not isinstance(replace_value, str):
+            raise PatchError(f"Replacement #{index} needs string find and replace values.")
+
+        meta = _parse_dotnet_metadata(data)
+        us_stream = meta["stream_map"]["#US"]
+        us_offset = meta["metadata_offset"] + us_stream["offset"]
+        us_size = us_stream["size"]
+        us_data = data[us_offset:us_offset + us_size]
+
+        old_token = _find_unique_dotnet_user_string_token(us_data, find_value)
+        if old_token is None:
+            raise PatchError(f"Replacement #{index} could not find managed string '{find_value}' inside {file_path.name}.")
+
+        new_token = _find_unique_dotnet_user_string_token(us_data, replace_value)
+        if new_token is None:
+            new_token = 0x70000000 + us_size
+            _grow_dotnet_user_string_heap(data, meta, _build_dotnet_user_string_entry(replace_value))
+            modified = True
+
+        old_sig = b"\x72" + int(old_token).to_bytes(4, "little")
+        new_sig = b"\x72" + int(new_token).to_bytes(4, "little")
+
+        code_search_end = meta["metadata_offset"]
+        count = 0
+        cursor = 0
+        while True:
+            hit = bytes(data).find(old_sig, cursor, code_search_end)
+            if hit < 0:
+                break
+            data[hit:hit + 5] = new_sig
+            count += 1
+            cursor = hit + 5
+
+        if count <= 0:
+            raise PatchError(
+                f"Replacement #{index} found managed string '{find_value}', but no ldstr references were found in {file_path.name}."
+            )
+
+        total_reference_rewrites += count
+        modified = True
+        UI.ok(f"{file_path.name}: managed replacement #{index} rewired {count} ldstr reference(s)")
+
+    if modified:
+        ensure_backup(file_path)
+        file_path.write_bytes(data)
+
+    return total_reference_rewrites
+
+
 def get_instruction_base_dir(item: dict) -> str | None:
     for key in ("base_dir", "base", "root", "base_path"):
         value = item.get(key)
@@ -1043,14 +1392,13 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
             {
                 "type": kind,
                 "file": file_value.strip(),
+                "base_dir": base_dir_value,
                 "replacements": replacements,
                 "encoding": str(item.get("encoding") or "utf-8"),
-                "base_dir": base_dir_value,
             }
         )
 
     return normalized
-
 
 
 def release_data_dir(build_dir: Path) -> Path:
@@ -1180,6 +1528,19 @@ def apply_patch_payload(build_dir: Path, payload: dict | list) -> list[PatchResu
             )
             UI.ok(f"{target_file.relative_to(build_dir)}: text file written")
             results.append(PatchResult(file_path=target_file, summary="text file written"))
+            continue
+
+        if kind in DOTNET_USER_STRING_PATCH_KINDS:
+            replacements_applied = apply_dotnet_user_string_replacements(
+                target_file,
+                instruction["replacements"],
+            )
+            results.append(
+                PatchResult(
+                    file_path=target_file,
+                    summary=f"{replacements_applied} managed string reference(s) updated",
+                )
+            )
             continue
 
         if kind not in {"replace_bytes", "replace_text", "replace_strings"}:
