@@ -256,7 +256,7 @@ def dpapi_decrypt_from_b64(value: str) -> str:
 
 
 def script_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return current_executable_path().parent
 
 
 
@@ -281,13 +281,6 @@ def depot_root() -> Path:
 
 
 def build_storage_root(config: dict | None = None) -> Path:
-    if config is None:
-        config = load_config()
-
-    raw = config.get("build_storage_dir")
-    if isinstance(raw, str) and raw.strip():
-        return Path(os.path.expandvars(raw.strip().strip('"'))).expanduser().resolve(strict=False)
-
     return depot_root()
 
 
@@ -315,10 +308,22 @@ def load_config() -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         UI.warn("Config exists but could not be read. Starting with a new one.")
         return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    if "build_storage_dir" in data:
+        data.pop("build_storage_dir", None)
+        try:
+            save_config(data)
+        except Exception:
+            pass
+
+    return data
 
 
 
@@ -354,6 +359,43 @@ def prompt_nonempty(label: str, default: str | None = None) -> str:
         UI.warn("This field cannot be empty.")
 
 
+def prompt_password(label: str) -> str:
+    prompt = f"{label}: "
+    if os.name != "nt":
+        return getpass.getpass(prompt)
+
+    import msvcrt
+
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    chars: list[str] = []
+
+    while True:
+        key = msvcrt.getwch()
+
+        if key in {"\r", "\n"}:
+            print()
+            return "".join(chars)
+
+        if key == "\003":
+            print()
+            raise KeyboardInterrupt
+
+        if key == "\b":
+            if chars:
+                chars.pop()
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+            continue
+
+        if key in {"\x00", "\xe0"}:
+            msvcrt.getwch()
+            continue
+
+        if key.isprintable():
+            chars.append(key)
+            sys.stdout.write("*")
+            sys.stdout.flush()
 
 def prompt_yes_no(label: str, default: bool = True) -> bool:
     suffix = "Y/n" if default else "y/N"
@@ -678,7 +720,7 @@ def ensure_credentials(config: dict) -> tuple[str, str]:
     UI.section("Steam Login Setup")
     UI.info("Password is protected with Windows DPAPI and stored in the local JSON file.")
     username = prompt_nonempty("Steam username")
-    password = getpass.getpass("Steam password: ").strip()
+    password = prompt_password("Steam password").strip()
     if not password:
         raise ValueError("Steam password cannot be empty.")
 
@@ -2348,34 +2390,28 @@ def build_storage_settings_menu(config: dict) -> None:
         print_intro(count_local_builds())
         UI.section("Build Storage Settings")
         print(f"Current storage : {current_root}")
-        print(f"Default storage : {depot_root()}")
+        print("Downloads are forced to stay beside this script or .exe.")
         UI.line(color=UI.MAGENTA)
-        print("1. Change build storage folder")
-        print("2. Reset to default storage")
-        print("3. Open current storage folder")
+        print("1. Open current storage folder")
+        print("2. Remove any old custom storage setting from config")
         print("0. Back")
         UI.line(color=UI.MAGENTA)
 
-        choice = prompt_menu_choice({"1", "2", "3", "0"})
+        choice = prompt_menu_choice({"1", "2", "0"})
         if choice == "0":
             return
         if choice == "1":
-            raw_path = prompt_nonempty("New build storage folder", str(current_root))
-            target = Path(os.path.expandvars(raw_path.strip().strip('"'))).expanduser().resolve(strict=False)
-            target.mkdir(parents=True, exist_ok=True)
-            config["build_storage_dir"] = str(target)
-            save_config(config)
-            UI.ok(f"Build storage changed to: {target}")
-            press_enter()
-        elif choice == "2":
-            config.pop("build_storage_dir", None)
-            save_config(config)
-            UI.ok(f"Build storage reset to default: {depot_root()}")
-            press_enter()
-        elif choice == "3":
             current_root.mkdir(parents=True, exist_ok=True)
             open_path(current_root)
             UI.ok(f"Opened build storage: {current_root}")
+            press_enter()
+        elif choice == "2":
+            removed = config.pop("build_storage_dir", None)
+            save_config(config)
+            if removed is None:
+                UI.ok("No old custom storage setting was found.")
+            else:
+                UI.ok("Old custom storage setting removed. Storage stays beside the script or .exe.")
             press_enter()
 
 
