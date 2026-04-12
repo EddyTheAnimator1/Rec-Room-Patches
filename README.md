@@ -53,7 +53,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | 24 August 2016 | `5360232407282512201` | ✅ |
 | 31 August 2016 | `3233729662911539772` | ✅ |
 | 31 August 2016 | `3798172550462140867` | ❌ |
-| 8 September 2016 | `394935228226334493` | ❌ |
+| 8 September 2016 | `394935228226334493` | ✅ |
 | 15 September 2016 | `6639491001730954404` | ❌ |
 | 21 September 2016 | `7007068986923462121` | ❌ |
 | 21 September 2016 | `386252387837028876` | ❌ |
