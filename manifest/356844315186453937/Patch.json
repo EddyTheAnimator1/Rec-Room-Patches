@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "instructions": [
+    {
+      "type": "replace_csharp_string",
+      "base_dir": "Recroom_Release_Data/Managed",
+      "file": "Assembly-CSharp.dll",
+      "find": "http://www.againstgrav.com/motd",
+      "replace": "https://raw.githubusercontent.com/EddyTheAnimator1/Rec-Room-Patches/refs/heads/main/ApiGetsnSorts/motd.txt"
+    },
+    {
+      "type": "replace_bytes",
+      "file": "resources.assets",
+      "replacements": [
+        {
+          "find": "9372aa8d-d3f4-44a0-986d-419e145a2b83",
+          "replace": "5d2e311b-82db-442a-8b3b-7851a2e25a60"
+        },
+        {
+          "find": "e93ae440-f238-4b6c-848f-1df89faf14f5",
+          "replace": "5c6571c8-96e6-4df1-ba38-977dd144713a"
+        }
+      ]
+    },
+    {
+      "type": "write_text_file",
+      "file": "steam_appid.txt",
+      "content": "471710"
+    }
+  ]
+}
