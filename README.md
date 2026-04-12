@@ -14,13 +14,6 @@ If you want to know how it works. Check out https://github.com/EddyTheAnimator1/
 3. Open Release.exe, Press 1, Input steam username + password that OWNS rec room, enter manifest id.
 4. After it completes the downloading and patching. Decide if you want a shortcut (on your desktop) then press y. It will open the directory. Lauch Recroom_Release.exe !! And, that's it!
 
-# Why do i need patches? Just bundle the game for me!
-You need patches because rec room comes with it's own website reaches within it / connections. Patches make it possible for me to modify the data and ensure you can connect.
-
-I'm trying to save storage as much as i can while saving time on other builds. Making them available for me to patch.
-
-Plus, i can recopy patch.json files to OTHER manifests. Literally saving hours of manual editing of other files. It's effective and quick!
-
 ## Patch table + Downloads table
 
 These are all of the builds (Yes, literally ever made before April 6 2026) that i've managed to patch.
