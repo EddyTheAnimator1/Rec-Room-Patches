@@ -16,14 +16,12 @@
       ]
     },
     {
-      "type": "replace_managed_string",
-      "file": "Assembly-CSharp.dll",
-      "find": "http://www.againstgrav.com/motd",
-      "replace": "https://raw.githubusercontent.com/EddyTheAnimator1/Rec-Room-Patches/refs/heads/main/ApiGetsnSorts/motd.txt"
+      "type": "install_patch_file",
+      "source": "Assembly-CSharp.dll",
+      "file": "Recroom_Release_Data/Managed/Assembly-CSharp.dll"
     },
     {
       "type": "write_text_file",
-      "base_dir": "Recroom_Release_Data",
       "file": "steam_appid.txt",
       "content": "471710"
     }

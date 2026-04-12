@@ -65,6 +65,7 @@ EXE_NAME_BLOCKLIST = {
 }
 
 _TREE_CACHE: dict[str, list[str]] = {}
+_CURRENT_GITHUB_PATCH_BRANCH: str | None = None
 
 
 class UI:
@@ -742,6 +743,9 @@ def open_patch_file_dialog() -> Path | None:
 
 
 def load_github_patch_payload(bundle: PatchLookup) -> tuple[str | None, dict | list | None]:
+    global _CURRENT_GITHUB_PATCH_BRANCH
+    _CURRENT_GITHUB_PATCH_BRANCH = None
+
     UI.section("GitHub Patch Lookup")
     if not bundle.found:
         UI.warn("Manifest folder was not found in the GitHub repo. Download will continue without patch instructions.")
@@ -755,6 +759,7 @@ def load_github_patch_payload(bundle: PatchLookup) -> tuple[str | None, dict | l
         UI.warn("Patch.json was found on GitHub, but it could not be loaded. Download will continue without patch instructions.")
         return bundle.patch_path, None
 
+    _CURRENT_GITHUB_PATCH_BRANCH = bundle.branch
     UI.ok(f"GitHub patch loaded: {bundle.patch_path}")
     return bundle.patch_path, bundle.patch_payload
 
@@ -1076,10 +1081,12 @@ def _parse_dotnet_metadata(file_bytes: bytes | bytearray) -> dict:
         data_directories_offset = optional_header_offset + 96
         size_of_image_offset = optional_header_offset + 56
         section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
+        file_alignment = _read_u32_le(file_bytes, optional_header_offset + 36)
     elif optional_magic == 0x20B:
         data_directories_offset = optional_header_offset + 112
         size_of_image_offset = optional_header_offset + 56
         section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
+        file_alignment = _read_u32_le(file_bytes, optional_header_offset + 36)
     else:
         raise PatchError("Unsupported PE optional-header format for managed patching.")
 
@@ -1160,7 +1167,9 @@ def _parse_dotnet_metadata(file_bytes: bytes | bytearray) -> dict:
         "stream_headers": stream_headers,
         "stream_map": stream_map,
         "section_alignment": section_alignment,
+        "file_alignment": file_alignment,
         "size_of_image_offset": size_of_image_offset,
+        "sections": sections,
     }
 
 
@@ -1212,17 +1221,48 @@ def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str)
     return unique_tokens[0]
 
 
-def _ensure_metadata_growth_capacity(meta: dict, delta: int) -> None:
+def _expand_metadata_section_raw_space(data: bytearray, meta: dict, delta: int) -> None:
+    if delta <= 0:
+        return
+
+    section = meta["metadata_section"]
+    sections = sorted(meta.get("sections", []), key=lambda item: item["raw_ptr"])
+    file_alignment = max(int(meta.get("file_alignment") or 0), 1)
+    growth_raw = _align_up(delta, file_alignment)
+
+    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
+    raw_end = section["raw_ptr"] + section["raw_size"]
+    if metadata_end > raw_end:
+        raise PatchError(".NET metadata extends beyond the containing section's raw size.")
+
+    next_sections = [item for item in sections if item["raw_ptr"] > section["raw_ptr"]]
+    if next_sections:
+        next_virtual_start = min(item["virtual_address"] for item in next_sections)
+        grown_virtual_end = section["virtual_address"] + max(section["virtual_size"], section["raw_size"] + growth_raw)
+        if grown_virtual_end > next_virtual_start:
+            raise PatchError(
+                "Managed-string replacement needs more section space than this build can safely expose without moving RVAs."
+            )
+
+    insert_at = raw_end
+    data[insert_at:insert_at] = b"\x00" * growth_raw
+
+    _write_u32_le(data, section["header_offset"] + 16, section["raw_size"] + growth_raw)
+    section["raw_size"] += growth_raw
+
+    for item in next_sections:
+        item["raw_ptr"] += growth_raw
+        _write_u32_le(data, item["header_offset"] + 20, item["raw_ptr"])
+
+
+def _ensure_metadata_growth_capacity(data: bytearray, meta: dict, delta: int) -> None:
     if delta <= 0:
         return
     section = meta["metadata_section"]
     metadata_end = meta["metadata_offset"] + meta["metadata_size"]
     raw_end = section["raw_ptr"] + section["raw_size"]
     if metadata_end + delta > raw_end:
-        raise PatchError(
-            "Managed-string replacement needs more .NET metadata space than this build currently has. "
-            "That growth path is not safe in this patcher."
-        )
+        _expand_metadata_section_raw_space(data, meta, (metadata_end + delta) - raw_end)
 
 
 def _grow_dotnet_user_string_heap(data: bytearray, meta: dict, entry_bytes: bytes) -> None:
@@ -1231,7 +1271,7 @@ def _grow_dotnet_user_string_heap(data: bytearray, meta: dict, entry_bytes: byte
     metadata_end = meta["metadata_offset"] + meta["metadata_size"]
 
     delta = _align_up(len(entry_bytes), 4)
-    _ensure_metadata_growth_capacity(meta, delta)
+    _ensure_metadata_growth_capacity(data, meta, delta)
 
     move_size = metadata_end - insertion_offset
     if move_size > 0:
@@ -1351,7 +1391,26 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
             raise PatchError("Every patch instruction must be a JSON object.")
 
         kind = str(item.get("type") or item.get("kind") or "replace_bytes").strip().lower()
-        file_value = item.get("file") or item.get("path")
+        file_value = item.get("file") or item.get("path") or item.get("target") or item.get("destination") or item.get("to")
+        source_value = item.get("source") or item.get("src") or item.get("from")
+
+        if kind in {"copy_patch_file", "copy_file_from_patch", "install_patch_file", "move_patch_file", "move_file_from_patch"}:
+            if not isinstance(file_value, str) or not file_value.strip():
+                raise PatchError("Patch file move/copy instructions need a target file/path string.")
+            if not isinstance(source_value, str) or not source_value.strip():
+                raise PatchError("Patch file move/copy instructions need a source/src/from string.")
+
+            normalized.append(
+                {
+                    "type": kind,
+                    "file": file_value.strip(),
+                    "source": source_value.strip(),
+                    "overwrite": bool(item.get("overwrite", True)),
+                    "base_dir": get_instruction_base_dir(item),
+                }
+            )
+            continue
+
         if not isinstance(file_value, str) or not file_value.strip():
             raise PatchError("Each patch instruction needs a file/path string.")
 
@@ -1502,8 +1561,76 @@ def write_text_file(target_path: Path, content: str, encoding: str, overwrite: b
         handle.write(content)
 
 
+def resolve_patch_source_bytes(patch_file_path: str | None, source_value: str) -> bytes:
+    if not patch_file_path:
+        raise PatchError("Patch file copy/move instructions need a real Patch.json source path.")
 
-def apply_patch_payload(build_dir: Path, payload: dict | list) -> list[PatchResult]:
+    source_relative = Path(source_value)
+    if source_relative.is_absolute():
+        raise PatchError(f"Patch source path must be relative to the Patch.json folder: {source_value}")
+
+    local_patch_path = Path(patch_file_path)
+    if local_patch_path.is_absolute() or local_patch_path.exists():
+        source_path = local_patch_path.parent / source_relative
+        if not source_path.exists() or not source_path.is_file():
+            raise PatchError(f"Patch source file was not found next to Patch.json: {source_value}")
+        return source_path.read_bytes()
+
+    if _CURRENT_GITHUB_PATCH_BRANCH is None:
+        raise PatchError("Patch source file could not be resolved because the GitHub patch branch is unknown.")
+
+    patch_posix = Path(patch_file_path).as_posix()
+    source_posix = (Path(patch_posix).parent / source_relative).as_posix()
+    try:
+        return request_bytes(
+            GITHUB_RAW_FILE_URL.format(
+                owner=PATCH_REPO_OWNER,
+                repo=PATCH_REPO_NAME,
+                branch=_CURRENT_GITHUB_PATCH_BRANCH,
+                path=source_posix,
+            )
+        )
+    except Exception as exc:
+        raise PatchError(f"Patch source file could not be downloaded from GitHub: {source_value} ({exc})") from exc
+
+
+def install_patch_source_file(
+    build_dir: Path,
+    patch_file_path: str | None,
+    source_value: str,
+    target_value: str,
+    overwrite: bool,
+    base_dir_value: str | None = None,
+    delete_local_source: bool = False,
+) -> Path:
+    target_path = resolve_patch_target_file(build_dir, target_value, "write_text_file", base_dir_value)
+    source_bytes = resolve_patch_source_bytes(patch_file_path, source_value)
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_path.exists() and target_path.is_dir():
+        raise PatchError(f"Patch target path is a directory, not a file: {target_path}")
+    if target_path.exists():
+        if not overwrite:
+            raise PatchError(f"Patch target file already exists and overwrite is disabled: {target_path.name}")
+        ensure_backup(target_path)
+
+    target_path.write_bytes(source_bytes)
+
+    if delete_local_source and patch_file_path:
+        local_patch_path = Path(patch_file_path)
+        if local_patch_path.is_absolute() or local_patch_path.exists():
+            source_path = local_patch_path.parent / Path(source_value)
+            try:
+                if source_path.exists() and source_path.is_file():
+                    source_path.unlink()
+            except Exception as exc:
+                UI.warn(f"Could not remove moved patch source file {source_path.name}: {exc}")
+
+    return target_path
+
+
+
+def apply_patch_payload(build_dir: Path, payload: dict | list, patch_file_path: str | None = None) -> list[PatchResult]:
     instructions = normalize_patch_instructions(payload)
     results: list[PatchResult] = []
 
@@ -1512,6 +1639,22 @@ def apply_patch_payload(build_dir: Path, payload: dict | list) -> list[PatchResu
     UI.info(f"replace_bytes target root   : {release_data_dir(build_dir)}")
     for instruction in instructions:
         kind = instruction["type"]
+
+        if kind in {"copy_patch_file", "copy_file_from_patch", "install_patch_file", "move_patch_file", "move_file_from_patch"}:
+            target_file = install_patch_source_file(
+                build_dir,
+                patch_file_path,
+                instruction["source"],
+                instruction["file"],
+                instruction["overwrite"],
+                instruction.get("base_dir"),
+                delete_local_source=kind in {"move_patch_file", "move_file_from_patch"},
+            )
+            action = "moved" if kind in {"move_patch_file", "move_file_from_patch"} else "copied"
+            UI.ok(f"{target_file.relative_to(build_dir)}: patch source file {action} in")
+            results.append(PatchResult(file_path=target_file, summary=f"patch source file {action} in"))
+            continue
+
         target_file = resolve_patch_target_file(
             build_dir,
             instruction["file"],
@@ -1881,7 +2024,7 @@ def download_build_workflow(config: dict) -> None:
 
     if patch_payload is not None:
         try:
-            results = apply_patch_payload(renamed_dir, patch_payload)
+            results = apply_patch_payload(renamed_dir, patch_payload, patch_file_path)
         except Exception as exc:
             UI.huge_warning([
                 "GitHub Patch.json was loaded, but patching failed.",
