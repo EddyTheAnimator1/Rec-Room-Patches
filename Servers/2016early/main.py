@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
@@ -16,6 +16,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", ".")).resolve()
 PLAYERS_PATH = DATA_DIR / "players.json"
 REQUESTS_PATH = DATA_DIR / "request_log.json"
 OBJECTIVES_CONFIG_V1_PATH = DATA_DIR / "objectives_config_v1.json"
+MOTD_PATH = DATA_DIR / "motd.txt"
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -23,6 +24,7 @@ DEFAULT_PLATFORM = int(os.environ.get("DEFAULT_PLATFORM", "0"))
 DEFAULT_REPUTATION = int(os.environ.get("DEFAULT_REPUTATION", "0"))
 DEFAULT_LEVEL = int(os.environ.get("DEFAULT_LEVEL", "1"))
 DEFAULT_XP = int(os.environ.get("DEFAULT_XP", "0"))
+DEFAULT_MOTD_TEXT = os.environ.get("DEFAULT_MOTD_TEXT", "Online on RecNet! Welcome to Rec Room!")
 
 DEFAULT_OBJECTIVES = [
     {
@@ -282,6 +284,33 @@ def load_objectives_config_v1(today: date | None = None) -> list[list[dict[str, 
 
     return normalize_objectives_config_v1(payload)
 
+
+
+def load_motd_text() -> str:
+    if MOTD_PATH.exists():
+        try:
+            return MOTD_PATH.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    return DEFAULT_MOTD_TEXT
+
+
+def save_motd_text(text: str) -> None:
+    ensure_data_dir()
+    MOTD_PATH.write_text(text, encoding="utf-8")
+
+
+def normalize_motd_payload(payload: Any, raw_text: str) -> str:
+    if isinstance(payload, dict):
+        for key in ("motd", "message", "text", "value", "content"):
+            value = payload.get(key)
+            if value is not None:
+                return str(value)
+    stripped = raw_text.strip("﻿")
+    if stripped:
+        return stripped
+    return DEFAULT_MOTD_TEXT
+
 def log_request() -> None:
     rows = load_requests()
     try:
@@ -476,6 +505,20 @@ def objectives_v1(subpath: str = "") -> Any:
 @app.route("/api/config/v1/objectives/", methods=["GET"])
 def objectives_config_v1() -> Any:
     return jsonify(load_objectives_config_v1())
+
+
+
+@app.route("/api/config/v1/motd", methods=["GET"])
+@app.route("/api/config/v1/motd/", methods=["GET"])
+def motd_config_v1() -> Any:
+    if request.method == "GET":
+        return Response(load_motd_text(), mimetype="text/plain")
+
+    payload = request.get_json(silent=True)
+    raw_text = request.get_data(cache=True, as_text=True)
+    text = normalize_motd_payload(payload, raw_text)
+    save_motd_text(text)
+    return jsonify({"ok": True, "motd": text})
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
