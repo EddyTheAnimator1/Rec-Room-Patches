@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import random
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ app = Flask(__name__)
 DATA_DIR = Path(os.environ.get("DATA_DIR", ".")).resolve()
 PLAYERS_PATH = DATA_DIR / "players.json"
 REQUESTS_PATH = DATA_DIR / "request_log.json"
+OBJECTIVES_CONFIG_V1_PATH = DATA_DIR / "objectives_config_v1.json"
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -32,6 +34,69 @@ DEFAULT_OBJECTIVES = [
         ],
     }
 ]
+
+# October 18, 2016+ clients expect a plain top-level JSON array with 7 weekday entries.
+# Each weekday entry is a list of objects using lowercase keys: type, score, xp.
+# Keep impossible / unsupported objective types out of this pool.
+DEFAULT_OBJECTIVE_POOL = [
+    {"type": 100, "score": 1, "xp": 100},
+    {"type": 101, "score": 1, "xp": 100},
+    {"type": 200, "score": 1, "xp": 100},
+    {"type": 201, "score": 1, "xp": 100},
+    {"type": 202, "score": 3, "xp": 100},
+    {"type": 300, "score": 1, "xp": 100},
+    {"type": 301, "score": 1, "xp": 100},
+    {"type": 302, "score": 5, "xp": 100},
+    {"type": 400, "score": 1, "xp": 100},
+    {"type": 402, "score": 5, "xp": 100},
+    {"type": 500, "score": 1, "xp": 100},
+    {"type": 501, "score": 1, "xp": 100},
+    {"type": 502, "score": 5, "xp": 100},
+    {"type": 603, "score": 1, "xp": 100},
+    {"type": 701, "score": 1, "xp": 100},
+    {"type": 702, "score": 5, "xp": 100},
+    {"type": 801, "score": 1, "xp": 100},
+    {"type": 802, "score": 2, "xp": 100},
+]
+
+DEFAULT_OBJECTIVES_CONFIG_V1 = [
+    [
+        {"type": 301, "score": 1, "xp": 100},
+        {"type": 302, "score": 5, "xp": 100},
+        {"type": 801, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 801, "score": 1, "xp": 100},
+        {"type": 802, "score": 2, "xp": 100},
+        {"type": 400, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 201, "score": 1, "xp": 100},
+        {"type": 202, "score": 3, "xp": 100},
+        {"type": 302, "score": 3, "xp": 100},
+    ],
+    [
+        {"type": 500, "score": 1, "xp": 100},
+        {"type": 502, "score": 5, "xp": 100},
+        {"type": 603, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 701, "score": 1, "xp": 100},
+        {"type": 702, "score": 5, "xp": 100},
+        {"type": 501, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 100, "score": 1, "xp": 100},
+        {"type": 101, "score": 1, "xp": 100},
+        {"type": 300, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 400, "score": 1, "xp": 100},
+        {"type": 402, "score": 5, "xp": 100},
+        {"type": 200, "score": 1, "xp": 100},
+    ],
+]
+
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,6 +126,135 @@ def load_requests() -> list[dict[str, Any]]:
 
 def save_requests(rows: list[dict[str, Any]]) -> None:
     save_json(REQUESTS_PATH, rows[-500:])
+
+
+def _normalize_objective_entry(entry: Any) -> dict[str, int] | None:
+    if not isinstance(entry, dict):
+        return None
+
+    raw_type = entry.get("type", entry.get("ObjectiveType", entry.get("objectiveType")))
+    raw_score = entry.get("score", entry.get("RequiredScore", entry.get("requiredScore")))
+    raw_xp = entry.get("xp", entry.get("Xp", entry.get("XP", entry.get("rewardXp", 100))))
+
+    try:
+        objective_type = int(raw_type)
+        required_score = int(raw_score)
+        xp = int(raw_xp)
+    except Exception:
+        return None
+
+    if objective_type < 0 or required_score <= 0:
+        return None
+
+    # CharadesWinsGuesser (102) never completes in this client; map it to performer wins.
+    if objective_type == 102:
+        objective_type = 101
+
+    return {"type": objective_type, "score": required_score, "xp": max(1, xp)}
+
+
+def normalize_objectives_config_v1(payload: Any) -> list[list[dict[str, int]]]:
+    normalized_days: list[list[dict[str, int]]] = []
+
+    if isinstance(payload, dict):
+        payload = payload.get("DailyObjectives", payload.get("objectives", payload.get("days", payload)))
+
+    if not isinstance(payload, list):
+        return deepcopy(DEFAULT_OBJECTIVES_CONFIG_V1)
+
+    for raw_day in payload:
+        day_objectives: list[dict[str, int]] = []
+
+        if isinstance(raw_day, dict):
+            raw_day = raw_day.get("Objectives", raw_day.get("objectives", raw_day))
+
+        if not isinstance(raw_day, list):
+            continue
+
+        for raw_objective in raw_day:
+            normalized = _normalize_objective_entry(raw_objective)
+            if normalized is not None:
+                day_objectives.append(normalized)
+
+        if day_objectives:
+            normalized_days.append(day_objectives[:3])
+
+    if not normalized_days:
+        return deepcopy(DEFAULT_OBJECTIVES_CONFIG_V1)
+
+    while len(normalized_days) < 7:
+        normalized_days.append(deepcopy(normalized_days[len(normalized_days) % len(normalized_days)]))
+
+    return normalized_days[:7]
+
+
+
+def _normalize_objective_pool(payload: Any) -> list[dict[str, int]]:
+    if isinstance(payload, dict):
+        payload = payload.get("pool", payload.get("objectives", payload.get("entries", payload)))
+
+    if not isinstance(payload, list):
+        return deepcopy(DEFAULT_OBJECTIVE_POOL)
+
+    normalized_pool: list[dict[str, int]] = []
+    seen_types: set[int] = set()
+
+    for raw_objective in payload:
+        normalized = _normalize_objective_entry(raw_objective)
+        if normalized is None:
+            continue
+
+        objective_type = int(normalized["type"])
+        if objective_type in seen_types:
+            continue
+
+        seen_types.add(objective_type)
+        normalized_pool.append(normalized)
+
+    return normalized_pool if len(normalized_pool) >= 3 else deepcopy(DEFAULT_OBJECTIVE_POOL)
+
+
+def _current_week_seed(today: date | None = None) -> int:
+    today = today or datetime.now(timezone.utc).date()
+    iso_year, iso_week, _ = today.isocalendar()
+    return iso_year * 100 + iso_week
+
+
+def generate_weekly_objectives_config_v1(today: date | None = None, pool: Any = None) -> list[list[dict[str, int]]]:
+    normalized_pool = _normalize_objective_pool(pool if pool is not None else DEFAULT_OBJECTIVE_POOL)
+    rng = random.Random(_current_week_seed(today))
+    weekly_days: list[list[dict[str, int]]] = []
+
+    if len(normalized_pool) < 3:
+        return deepcopy(DEFAULT_OBJECTIVES_CONFIG_V1)
+
+    for _ in range(7):
+        selected = rng.sample(normalized_pool, 3)
+        weekly_days.append([deepcopy(item) for item in selected])
+
+    return weekly_days
+
+
+def load_objectives_config_v1(today: date | None = None) -> list[list[dict[str, int]]]:
+    if not OBJECTIVES_CONFIG_V1_PATH.exists():
+        return generate_weekly_objectives_config_v1(today=today)
+
+    payload = load_json(OBJECTIVES_CONFIG_V1_PATH, None)
+
+    if isinstance(payload, dict):
+        mode = str(payload.get("mode", "")).strip().lower()
+
+        if mode == "weekly":
+            pool = payload.get("pool", DEFAULT_OBJECTIVE_POOL)
+            return generate_weekly_objectives_config_v1(today=today, pool=pool)
+
+        if "pool" in payload and "days" not in payload and "DailyObjectives" not in payload and "objectives" not in payload:
+            return generate_weekly_objectives_config_v1(today=today, pool=payload.get("pool"))
+
+    if payload is None:
+        return generate_weekly_objectives_config_v1(today=today)
+
+    return normalize_objectives_config_v1(payload)
 
 def log_request() -> None:
     rows = load_requests()
@@ -250,6 +444,12 @@ def objectives_v1(subpath: str = "") -> Any:
         "DateUtc": datetime.now(timezone.utc).date().isoformat(),
         "DailyObjectives": DEFAULT_OBJECTIVES,
     })
+
+
+@app.route("/api/config/v1/objectives", methods=["GET"])
+@app.route("/api/config/v1/objectives/", methods=["GET"])
+def objectives_config_v1() -> Any:
+    return jsonify(load_objectives_config_v1())
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
