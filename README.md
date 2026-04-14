@@ -4,7 +4,7 @@ This repository tries to recover old rec room builds (Almost ALL of them), provi
 
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the latest Release.exe
-2. Put the Release.exe in a folder (It downloads Depotdownloader, and i didn't feel like moving that into Temp)
+2. Put the Release.exe in a folder (It downloads Depotdownloader)
 
 If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
 
