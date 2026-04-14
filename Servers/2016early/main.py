@@ -223,14 +223,40 @@ def _current_week_seed(today: date | None = None) -> int:
 def generate_weekly_objectives_config_v1(today: date | None = None, pool: Any = None) -> list[list[dict[str, int]]]:
     normalized_pool = _normalize_objective_pool(pool if pool is not None else DEFAULT_OBJECTIVE_POOL)
     rng = random.Random(_current_week_seed(today))
-    weekly_days: list[list[dict[str, int]]] = []
 
     if len(normalized_pool) < 3:
         return deepcopy(DEFAULT_OBJECTIVES_CONFIG_V1)
 
+    # Build a deterministic weekly deck so the same week always gets the same
+    # rotation, while still spreading repeats across the week instead of
+    # re-sampling blindly each day.
+    working_pool = [deepcopy(item) for item in normalized_pool]
+    rng.shuffle(working_pool)
+
+    weekly_days: list[list[dict[str, int]]] = []
+    cursor = 0
+
     for _ in range(7):
-        selected = rng.sample(normalized_pool, 3)
-        weekly_days.append([deepcopy(item) for item in selected])
+        day: list[dict[str, int]] = []
+        seen_types: set[int] = set()
+
+        while len(day) < 3:
+            if cursor >= len(working_pool):
+                working_pool = [deepcopy(item) for item in normalized_pool]
+                rng.shuffle(working_pool)
+                cursor = 0
+
+            candidate = deepcopy(working_pool[cursor])
+            cursor += 1
+
+            objective_type = int(candidate["type"])
+            if objective_type in seen_types:
+                continue
+
+            seen_types.add(objective_type)
+            day.append(candidate)
+
+        weekly_days.append(day)
 
     return weekly_days
 
