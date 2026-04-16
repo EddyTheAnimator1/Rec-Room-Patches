@@ -25,6 +25,9 @@ OBJECTIVES_CONFIG_V1_PATH = DATA_DIR / "objectives_config_v1.json"
 MOTD_PATH = DATA_DIR / "motd.txt"
 IMAGES_DIR = DATA_DIR / "player_images"
 VERIFY_LOG_PATH = DATA_DIR / "verification_requests.json"
+SETTINGS_PATH = DATA_DIR / "player_settings.json"
+AVATARS_PATH = DATA_DIR / "avatars.json"
+AVATAR_ITEMS_PATH = DATA_DIR / "avatar_items.json"
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -33,10 +36,11 @@ DEFAULT_REPUTATION = int(os.environ.get("DEFAULT_REPUTATION", "0"))
 DEFAULT_LEVEL = int(os.environ.get("DEFAULT_LEVEL", "1"))
 DEFAULT_XP = int(os.environ.get("DEFAULT_XP", "0"))
 DEFAULT_MOTD_TEXT = os.environ.get("DEFAULT_MOTD_TEXT", "Online on RecNet! Welcome to Rec Room!")
+DEFAULT_VERIFIED_EMAIL = os.environ.get("DEFAULT_VERIFIED_EMAIL", "NotAnEmail@gmail.com")
 ENABLE_DEBUG_ENDPOINTS = os.environ.get("ENABLE_DEBUG_ENDPOINTS", "false").strip().lower() in {"1", "true", "yes", "y"}
 TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "true").strip().lower() in {"1", "true", "yes", "y"}
 REQUEST_LOG_RETENTION = max(10, int(os.environ.get("REQUEST_LOG_RETENTION", "500")))
-AUTO_VERIFY_EMAIL = os.environ.get("AUTO_VERIFY_EMAIL", "false").strip().lower() in {"1", "true", "yes", "y"}
+AUTO_VERIFY_EMAIL = os.environ.get("AUTO_VERIFY_EMAIL", "true").strip().lower() in {"1", "true", "yes", "y"}
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "recroom@gmail.com")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "recnet87")
@@ -123,6 +127,8 @@ DEFAULT_OBJECTIVES_CONFIG_V1 = [
     ],
 ]
 
+DEFAULT_AVATAR = {"OutfitSelections": "", "SkinColor": "", "HairColor": ""}
+
 _TRANSPARENT_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9s2w0v8AAAAASUVORK5CYII="
 )
@@ -184,6 +190,345 @@ def load_verification_requests() -> list[dict[str, Any]]:
 
 def save_verification_requests(rows: list[dict[str, Any]]) -> None:
     save_json(VERIFY_LOG_PATH, rows[-REQUEST_LOG_RETENTION:])
+
+
+def load_player_settings() -> dict[str, list[dict[str, str]]]:
+    payload = load_json(SETTINGS_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_player_settings(settings_payload: dict[str, list[dict[str, str]]]) -> None:
+    save_json(SETTINGS_PATH, settings_payload)
+
+
+def _settings_storage_key(player_id: int) -> str:
+    return str(_safe_int(player_id, 0))
+
+
+def _sanitize_settings_entries(entries: Any) -> list[dict[str, str]]:
+    sanitized: list[dict[str, str]] = []
+    if not isinstance(entries, list):
+        return sanitized
+
+    seen_keys: set[str] = set()
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("Key") or item.get("key") or "").strip()
+        if not key:
+            continue
+        value = item.get("Value", item.get("value", ""))
+        if value is None:
+            continue
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        sanitized.append({"Key": key, "Value": str(value)})
+    return sanitized
+
+
+def get_player_settings_list(player_id: int) -> list[dict[str, str]]:
+    rows = load_player_settings()
+    return _sanitize_settings_entries(rows.get(_settings_storage_key(player_id), []))
+
+
+def set_player_setting(player_id: int, key: str, value: Any) -> list[dict[str, str]]:
+    key = str(key).strip()
+    if not key:
+        return get_player_settings_list(player_id)
+
+    settings_payload = load_player_settings()
+    storage_key = _settings_storage_key(player_id)
+    current = get_player_settings_list(player_id)
+    replaced = False
+
+    for entry in current:
+        if entry["Key"] == key:
+            entry["Value"] = "" if value is None else str(value)
+            replaced = True
+            break
+
+    if not replaced:
+        current.append({"Key": key, "Value": "" if value is None else str(value)})
+
+    settings_payload[storage_key] = current
+    save_player_settings(settings_payload)
+    return current
+
+
+def remove_player_setting(player_id: int, key: str) -> list[dict[str, str]]:
+    key = str(key).strip()
+    settings_payload = load_player_settings()
+    storage_key = _settings_storage_key(player_id)
+    current = [entry for entry in get_player_settings_list(player_id) if entry.get("Key") != key]
+    settings_payload[storage_key] = current
+    save_player_settings(settings_payload)
+    return current
+
+
+def _normalize_settings_mutation_entries(payload: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    def ingest(item: Any) -> None:
+        if isinstance(item, list):
+            for sub_item in item:
+                ingest(sub_item)
+            return
+        if not isinstance(item, dict):
+            return
+
+        if isinstance(item.get("settings"), list):
+            ingest(item.get("settings"))
+            return
+        if isinstance(item.get("Settings"), list):
+            ingest(item.get("Settings"))
+            return
+
+        key = str(item.get("Key") or item.get("key") or "").strip()
+        if not key:
+            return
+
+        has_value = "Value" in item or "value" in item
+        value = item.get("Value", item.get("value"))
+        remove = parse_bool(item.get("Remove"), False) or parse_bool(item.get("remove"), False)
+        if remove or request.method == "DELETE":
+            normalized.append({"Key": key, "Remove": True})
+            return
+        if has_value:
+            normalized.append({"Key": key, "Value": "" if value is None else str(value), "Remove": False})
+
+    ingest(payload)
+    return normalized
+
+
+def load_avatars() -> dict[str, dict[str, str]]:
+    payload = load_json(AVATARS_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_avatars(avatars: dict[str, dict[str, str]]) -> None:
+    save_json(AVATARS_PATH, avatars)
+
+
+def _avatar_storage_key(player_id: int) -> str:
+    return str(_safe_int(player_id, 0))
+
+
+def _sanitize_avatar_for_response(avatar: Any) -> dict[str, str]:
+    if not isinstance(avatar, dict):
+        avatar = {}
+    return {
+        "OutfitSelections": str(avatar.get("OutfitSelections") or ""),
+        "SkinColor": str(avatar.get("SkinColor") or ""),
+        "HairColor": str(avatar.get("HairColor") or ""),
+    }
+
+
+def get_or_create_avatar(player_id: int) -> dict[str, str]:
+    avatars = load_avatars()
+    storage_key = _avatar_storage_key(player_id)
+    avatar = _sanitize_avatar_for_response(avatars.get(storage_key, DEFAULT_AVATAR))
+    avatars[storage_key] = avatar
+    save_avatars(avatars)
+    return avatar
+
+
+def update_avatar(player_id: int, payload: Any) -> dict[str, str]:
+    avatars = load_avatars()
+    storage_key = _avatar_storage_key(player_id)
+    current = _sanitize_avatar_for_response(avatars.get(storage_key, DEFAULT_AVATAR))
+    if isinstance(payload, dict):
+        for field in ("OutfitSelections", "SkinColor", "HairColor"):
+            if field in payload:
+                current[field] = str(payload.get(field) or "")
+    avatars[storage_key] = current
+    save_avatars(avatars)
+    return current
+
+
+def load_avatar_items() -> dict[str, list[str]]:
+    payload = load_json(AVATAR_ITEMS_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_avatar_items(items_payload: dict[str, list[str]]) -> None:
+    save_json(AVATAR_ITEMS_PATH, items_payload)
+
+
+def get_unlocked_avatar_items(player_id: int) -> list[str]:
+    payload = load_avatar_items()
+    storage_key = _avatar_storage_key(player_id)
+    rows = payload.get(storage_key, [])
+    if not isinstance(rows, list):
+        return []
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for item in rows:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        sanitized.append(text)
+    return sanitized
+
+
+def add_unlocked_avatar_item(player_id: int, avatar_item_desc: str) -> list[str]:
+    payload = load_avatar_items()
+    storage_key = _avatar_storage_key(player_id)
+    current = get_unlocked_avatar_items(player_id)
+    value = str(avatar_item_desc or "").strip()
+    if value and value not in current:
+        current.append(value)
+    payload[storage_key] = current
+    save_avatar_items(payload)
+    return current
+
+
+def _payload_has_any_key(payload: Any, *keys: str) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return any(key in payload for key in keys)
+
+
+def _force_verified_player(player: Any) -> dict[str, Any]:
+    player_dict = dict(player) if isinstance(player, dict) else {}
+    player_dict["Email"] = DEFAULT_VERIFIED_EMAIL
+    player_dict["Verified"] = True
+    return player_dict
+
+
+def _merge_player_records(existing: Any, incoming: Any, payload: Any) -> dict[str, Any]:
+    existing_dict = dict(existing) if isinstance(existing, dict) else {}
+    incoming_dict = dict(incoming) if isinstance(incoming, dict) else {}
+    payload_dict = payload if isinstance(payload, dict) else {}
+
+    merged: dict[str, Any] = dict(existing_dict)
+
+    for key in ("Platform", "PlatformId", "Id"):
+        if key in incoming_dict:
+            merged[key] = incoming_dict[key]
+
+    name_present = _payload_has_any_key(payload_dict, "DisplayName", "displayName", "Name", "name")
+    if name_present or not (existing_dict.get("DisplayName") or existing_dict.get("Name")):
+        display_name = str(
+            incoming_dict.get("DisplayName")
+            or incoming_dict.get("Name")
+            or existing_dict.get("DisplayName")
+            or existing_dict.get("Name")
+            or DEFAULT_PLAYER_NAME
+        ).strip() or DEFAULT_PLAYER_NAME
+        merged["Name"] = display_name
+        merged["DisplayName"] = display_name
+    else:
+        display_name = str(existing_dict.get("DisplayName") or existing_dict.get("Name") or DEFAULT_PLAYER_NAME).strip() or DEFAULT_PLAYER_NAME
+        merged["Name"] = display_name
+        merged["DisplayName"] = display_name
+
+    username_present = _payload_has_any_key(payload_dict, "Username", "username")
+    if username_present or not existing_dict.get("Username"):
+        merged["Username"] = str(incoming_dict.get("Username") or merged.get("DisplayName") or DEFAULT_PLAYER_NAME).strip() or merged.get("DisplayName") or DEFAULT_PLAYER_NAME
+    else:
+        merged["Username"] = str(existing_dict.get("Username") or merged.get("DisplayName") or DEFAULT_PLAYER_NAME).strip() or merged.get("DisplayName") or DEFAULT_PLAYER_NAME
+
+    for field, keys in (
+        ("XP", ("XP", "xp")),
+        ("Level", ("Level", "level")),
+        ("Reputation", ("Reputation", "reputation")),
+    ):
+        if _payload_has_any_key(payload_dict, *keys) or field not in existing_dict:
+            merged[field] = incoming_dict.get(field, existing_dict.get(field))
+        else:
+            merged[field] = existing_dict.get(field)
+
+    merged["Email"] = DEFAULT_VERIFIED_EMAIL
+    merged["Verified"] = True
+
+    return _sanitize_player_for_response(_force_verified_player(merged))
+
+
+def _decode_possible_base64_image(text_value: str) -> tuple[bytes, str]:
+    raw_text = (text_value or "").strip()
+    if not raw_text:
+        return b"", ""
+
+    content_type = ""
+    if raw_text.startswith("data:") and ";base64," in raw_text:
+        header, encoded = raw_text.split(",", 1)
+        content_type = header[5:].split(";", 1)[0].strip().lower()
+        raw_text = encoded.strip()
+
+    try:
+        padding = (-len(raw_text)) % 4
+        decoded = base64.b64decode(raw_text + ("=" * padding), validate=False)
+    except Exception:
+        return b"", ""
+
+    if decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+        return decoded, "image/png"
+    if decoded.startswith(b"\xff\xd8\xff"):
+        return decoded, "image/jpeg"
+    return b"", ""
+
+
+def _supported_image_content_type(image_bytes: bytes, provided_content_type: str = "", filename: str = "") -> str:
+    content_type = _guess_image_content_type(image_bytes, provided_content_type, filename)
+    return content_type if content_type in {"image/png", "image/jpeg"} else ""
+
+
+def _legacy_image_bin_path_for_player(player_id: int) -> Path:
+    return IMAGES_DIR / f"{player_id}.bin"
+
+
+def _canonical_image_extension(content_type: str) -> str:
+    return ".png" if content_type == "image/png" else ".jpg" if content_type == "image/jpeg" else ".bin"
+
+
+def _image_candidate_paths_for_player(player_id: int) -> list[Path]:
+    return [
+        IMAGES_DIR / f"{player_id}.png",
+        IMAGES_DIR / f"{player_id}.jpg",
+        IMAGES_DIR / f"{player_id}.jpeg",
+        _legacy_image_bin_path_for_player(player_id),
+    ]
+
+
+def _resolve_existing_image_path_for_player(player_id: int) -> Path:
+    for candidate in _image_candidate_paths_for_player(player_id):
+        if candidate.exists():
+            return candidate
+    return _legacy_image_bin_path_for_player(player_id)
+
+
+def _final_image_path_for_player(player_id: int, content_type: str = "") -> Path:
+    return IMAGES_DIR / f"{player_id}{_canonical_image_extension(content_type)}"
+
+
+def _cleanup_old_image_variants(player_id: int, keep_path: Path | None = None) -> None:
+    for candidate in _image_candidate_paths_for_player(player_id):
+        if keep_path is not None and candidate == keep_path:
+            continue
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except Exception:
+            pass
+
+
+def _extract_image_upload_from_request() -> tuple[bytes, str, str]:
+    for field_name in ("image", "file", "avatar", "profileImage", "avatarImage"):
+        if field_name in request.files:
+            upload = request.files[field_name]
+            return upload.read(), upload.mimetype or "application/octet-stream", upload.filename or ""
+
+    payload = _extract_request_payload()
+    for field_name in ("image", "file", "avatar", "profileImage", "avatarImage"):
+        value = payload.get(field_name)
+        if isinstance(value, str) and value.strip():
+            decoded, decoded_type = _decode_possible_base64_image(value)
+            if decoded:
+                return decoded, decoded_type or "application/octet-stream", field_name
+
+    return request.get_data(cache=True), request.content_type or "application/octet-stream", ""
 
 
 
@@ -421,17 +766,19 @@ def _stable_player_id(platform: int, platform_id: int) -> int:
 
 def make_player(platform: int, platform_id: int | str, name: str | None = None) -> dict[str, Any]:
     platform_id_int = int(platform_id)
+    display_name = (name or DEFAULT_PLAYER_NAME).strip() or DEFAULT_PLAYER_NAME
     return {
         "Id": _stable_player_id(platform, platform_id_int),
         "Platform": int(platform),
         "PlatformId": platform_id_int,
-        "Name": name or DEFAULT_PLAYER_NAME,
+        "Name": display_name,
+        "DisplayName": display_name,
         "XP": max(0, DEFAULT_XP),
         "Level": max(1, DEFAULT_LEVEL),
         "Reputation": DEFAULT_REPUTATION,
-        "Email": "",
-        "Username": "",
-        "Verified": False,
+        "Email": DEFAULT_VERIFIED_EMAIL,
+        "Username": display_name,
+        "Verified": True,
     }
 
 
@@ -440,22 +787,37 @@ def normalize_player_payload(payload: Any, fallback_platform: int = DEFAULT_PLAT
     if not isinstance(payload, dict):
         return make_player(fallback_platform, fallback_platform_id)
 
-    platform = parse_platform(payload.get("Platform", fallback_platform))
-    platform_id = payload.get("PlatformId", fallback_platform_id)
+    platform = parse_platform(payload.get("Platform", payload.get("platform", fallback_platform)))
+    platform_id = payload.get("PlatformId", payload.get("platformId", fallback_platform_id))
     if isinstance(platform_id, str) and platform_id.strip().isdigit():
         platform_id = int(platform_id.strip())
     elif not isinstance(platform_id, int):
         platform_id = fallback_platform_id
 
-    player = make_player(platform, platform_id, str(payload.get("Name") or DEFAULT_PLAYER_NAME))
+    display_name = str(
+        payload.get("DisplayName")
+        or payload.get("displayName")
+        or payload.get("Name")
+        or payload.get("name")
+        or DEFAULT_PLAYER_NAME
+    ).strip() or DEFAULT_PLAYER_NAME
+
+    player = make_player(platform, platform_id, display_name)
 
     for key in ("Id", "XP", "Level", "Reputation"):
         if key in payload:
             player[key] = _safe_int(payload.get(key), player[key])
 
-    player["Email"] = str(payload.get("Email") or "")
-    player["Username"] = str(payload.get("Username") or "")
-    player["Verified"] = parse_bool(payload.get("Verified"), False)
+    player["Email"] = DEFAULT_VERIFIED_EMAIL
+    player["Username"] = str(
+        payload.get("Username")
+        or payload.get("username")
+        or player.get("Username")
+        or display_name
+    ).strip() or display_name
+    player["Name"] = display_name
+    player["DisplayName"] = display_name
+    player["Verified"] = True
 
     if player["Level"] < 1:
         player["Level"] = 1
@@ -463,6 +825,10 @@ def normalize_player_payload(payload: Any, fallback_platform: int = DEFAULT_PLAT
         player["XP"] = 0
     if not player["Name"]:
         player["Name"] = DEFAULT_PLAYER_NAME
+    if not player["DisplayName"]:
+        player["DisplayName"] = player["Name"]
+    if not player["Username"]:
+        player["Username"] = player["DisplayName"]
     if player["Id"] <= 0:
         player["Id"] = _stable_player_id(player["Platform"], player["PlatformId"])
     return player
@@ -475,9 +841,17 @@ def player_key(platform: int, platform_id: int) -> str:
 
 
 def get_player_by_id(player_id: int) -> dict[str, Any] | None:
-    for player in load_players().values():
+    players = load_players()
+    updated = False
+    for key, player in players.items():
         if _safe_int(player.get("Id"), -1) == int(player_id):
-            return player
+            canonical = _sanitize_player_for_response(_force_verified_player(player))
+            if canonical != player:
+                players[key] = canonical
+                updated = True
+            if updated:
+                save_players(players)
+            return canonical
     return None
 
 
@@ -486,10 +860,14 @@ def get_or_create_player(platform: int, platform_id: int) -> dict[str, Any] | No
     players = load_players()
     key = player_key(platform, platform_id)
     if key in players:
-        return players[key]
+        canonical = _sanitize_player_for_response(_force_verified_player(players[key]))
+        if canonical != players[key]:
+            players[key] = canonical
+            save_players(players)
+        return canonical
     if not AUTO_CREATE_ON_GET:
         return None
-    player = make_player(platform, platform_id)
+    player = _sanitize_player_for_response(make_player(platform, platform_id))
     players[key] = player
     save_players(players)
     return player
@@ -673,6 +1051,26 @@ def _image_meta_path_for_player(player_id: int) -> Path:
 
 
 
+def _guess_image_content_type(image_bytes: bytes, provided_content_type: str = "", filename: str = "") -> str:
+    content_type = (provided_content_type or "").split(";", 1)[0].strip().lower()
+    lowered_name = (filename or "").strip().lower()
+
+    if content_type in {"image/png", "image/jpeg", "image/jpg"}:
+        return "image/jpeg" if content_type == "image/jpg" else content_type
+
+    if lowered_name.endswith(".png"):
+        return "image/png"
+    if lowered_name.endswith(".jpg") or lowered_name.endswith(".jpeg"):
+        return "image/jpeg"
+
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+
+    return "application/octet-stream"
+
+
 def _load_player_image(player_id: int) -> tuple[bytes, str]:
     image_path = _image_path_for_player(player_id)
     meta_path = _image_meta_path_for_player(player_id)
@@ -680,33 +1078,56 @@ def _load_player_image(player_id: int) -> tuple[bytes, str]:
         try:
             payload = image_path.read_bytes()
             meta = load_json(meta_path, {})
-            content_type = str(meta.get("content_type") or "image/png") if isinstance(meta, dict) else "image/png"
-            return payload, content_type
+            stored_type = str(meta.get("content_type") or "") if isinstance(meta, dict) else ""
+            content_type = _supported_image_content_type(payload, stored_type, str(meta.get("filename") or image_path.name) if isinstance(meta, dict) else image_path.name)
+            if content_type:
+                return payload, content_type
         except Exception:
             pass
     return _TRANSPARENT_PNG, "image/png"
 
 
 
-def _save_player_image(player_id: int, image_bytes: bytes, content_type: str) -> None:
+def _save_player_image(player_id: int, image_bytes: bytes, content_type: str, filename: str = "") -> None:
     ensure_data_dir()
-    _image_path_for_player(player_id).write_bytes(image_bytes)
-    save_json(_image_meta_path_for_player(player_id), {"content_type": content_type or "application/octet-stream"})
+    normalized_content_type = _supported_image_content_type(image_bytes, content_type, filename)
+    if not normalized_content_type:
+        raise ValueError("unsupported image type")
+    target_path = _final_image_path_for_player(player_id, normalized_content_type)
+    _cleanup_old_image_variants(player_id, keep_path=target_path)
+    target_path.write_bytes(image_bytes)
+    save_json(
+        _image_meta_path_for_player(player_id),
+        {
+            "content_type": normalized_content_type,
+            "filename": filename or target_path.name,
+        },
+    )
 
 
 
 def _sanitize_player_for_response(player: dict[str, Any]) -> dict[str, Any]:
+    display_name = str(
+        player.get("DisplayName")
+        or player.get("displayName")
+        or player.get("Name")
+        or DEFAULT_PLAYER_NAME
+    ).strip() or DEFAULT_PLAYER_NAME
+    username = str(player.get("Username") or player.get("username") or display_name).strip() or display_name
+
+    email = DEFAULT_VERIFIED_EMAIL
     sanitized = {
         "Id": _safe_int(player.get("Id"), 0),
         "Platform": _safe_int(player.get("Platform"), DEFAULT_PLATFORM),
         "PlatformId": _safe_int(player.get("PlatformId"), 0),
-        "Name": str(player.get("Name") or DEFAULT_PLAYER_NAME),
+        "Name": display_name,
+        "DisplayName": display_name,
         "XP": max(0, _safe_int(player.get("XP"), 0)),
         "Level": max(1, _safe_int(player.get("Level"), 1)),
         "Reputation": _safe_int(player.get("Reputation"), DEFAULT_REPUTATION),
-        "Email": str(player.get("Email") or ""),
-        "Username": str(player.get("Username") or ""),
-        "Verified": parse_bool(player.get("Verified"), False),
+        "Email": email,
+        "Username": username,
+        "Verified": True,
     }
     if sanitized["Id"] <= 0:
         sanitized["Id"] = _stable_player_id(sanitized["Platform"], sanitized["PlatformId"])
@@ -787,12 +1208,12 @@ def players_v1_create() -> Any:
 
     existing = players.get(key)
     if existing is not None:
-        merged = _sanitize_player_for_response({**existing, **player})
+        merged = _merge_player_records(existing, player, payload)
         players[key] = merged
         save_players(players)
         return jsonify(merged)
 
-    players[key] = _sanitize_player_for_response(player)
+    players[key] = _merge_player_records({}, player, payload)
     save_players(players)
     return jsonify(players[key]), 201
 
@@ -811,7 +1232,7 @@ def players_v1_update(player_id: int) -> Any:
     fallback_platform = _safe_int(current.get("Platform"), DEFAULT_PLATFORM)
     fallback_platform_id = _safe_int(current.get("PlatformId"), 0)
     incoming = normalize_player_payload(payload, fallback_platform, fallback_platform_id)
-    merged = _sanitize_player_for_response({**current, **incoming, "Id": player_id})
+    merged = _merge_player_records(current, {**incoming, "Id": player_id}, payload)
 
     old_key = player_key(fallback_platform, fallback_platform_id)
     new_key = player_key(merged["Platform"], merged["PlatformId"])
@@ -832,15 +1253,12 @@ def players_v1_verify(player_id: int) -> Any:
         return jsonify({"Message": "Player not found."}), 404
 
     payload = _extract_request_payload()
-    submitted_email = str(payload.get("email") or payload.get("Email") or "").strip()
-    if not submitted_email:
-        return jsonify({"Message": "Email is required."}), 400
+    submitted_email = str(payload.get("email") or payload.get("Email") or DEFAULT_VERIFIED_EMAIL).strip() or DEFAULT_VERIFIED_EMAIL
 
-    current["Email"] = submitted_email
-    if AUTO_VERIFY_EMAIL:
-        current["Verified"] = True
+    current["Email"] = DEFAULT_VERIFIED_EMAIL
+    current["Verified"] = True
 
-    current = _sanitize_player_for_response(current)
+    current = _sanitize_player_for_response(_force_verified_player(current))
     players[player_key(current["Platform"], current["PlatformId"])] = current
     save_players(players)
 
@@ -850,13 +1268,12 @@ def players_v1_verify(player_id: int) -> Any:
             "time_utc": datetime.now(timezone.utc).isoformat(),
             "player_id": current["Id"],
             "email_hash": _hash_for_log(submitted_email),
-            "auto_verified": AUTO_VERIFY_EMAIL,
+            "auto_verified": True,
         }
     )
     save_verification_requests(verification_rows)
 
-    message = "Verification queued." if not AUTO_VERIFY_EMAIL else "Verification complete."
-    return jsonify({"Message": message})
+    return jsonify({"Message": "Verification complete.", "Verified": True})
 
 
 
@@ -879,14 +1296,14 @@ def players_v1(subpath: str = "") -> Any:
     if request.method == "POST":
         player = normalize_player_payload(payload, platform, platform_id)
         key = player_key(int(player["Platform"]), int(player["PlatformId"]))
-        merged = _sanitize_player_for_response({**(players.get(key) or {}), **player})
+        merged = _merge_player_records(players.get(key) or {}, player, payload)
         players[key] = merged
         save_players(players)
         return jsonify(merged), 201
 
     current = existing if existing is not None else make_player(platform, platform_id)
     incoming = normalize_player_payload(payload, _safe_int(current.get("Platform"), platform), _safe_int(current.get("PlatformId"), platform_id))
-    merged = _sanitize_player_for_response({**current, **incoming})
+    merged = _merge_player_records(current, incoming, payload)
     old_key = player_key(_safe_int(current.get("Platform"), platform), _safe_int(current.get("PlatformId"), platform_id))
     new_key = player_key(merged["Platform"], merged["PlatformId"])
     if old_key in players and old_key != new_key:
@@ -899,33 +1316,98 @@ def players_v1(subpath: str = "") -> Any:
 
 @app.route("/api/images/v1/profile/<int:player_id>", methods=["GET", "POST", "PUT"])
 def player_profile_image(player_id: int) -> Any:
-    player = get_player_by_id(player_id)
-    if player is None:
-        return jsonify({"error": "player not found"}), 404
-
     if request.method == "GET":
         image_bytes, content_type = _load_player_image(player_id)
-        return Response(image_bytes, mimetype=content_type)
+        return Response(image_bytes, mimetype=content_type, headers={"Content-Length": str(len(image_bytes))})
 
-    image_bytes = b""
-    content_type = "application/octet-stream"
-
-    if "image" in request.files:
-        upload = request.files["image"]
-        image_bytes = upload.read()
-        content_type = upload.mimetype or content_type
-    else:
-        image_bytes = request.get_data(cache=True)
-        content_type = request.content_type or content_type
+    image_bytes, content_type, filename = _extract_image_upload_from_request()
 
     if not image_bytes:
         return jsonify({"error": "image payload missing"}), 400
     if len(image_bytes) > MAX_REQUEST_BODY_BYTES:
         return jsonify({"error": "payload too large"}), 413
 
-    _save_player_image(player_id, image_bytes, content_type)
-    return jsonify({"ok": True, "playerId": player_id, "bytes": len(image_bytes)})
+    normalized_content_type = _supported_image_content_type(image_bytes, content_type, filename)
+    if not normalized_content_type:
+        return jsonify({"error": "unsupported image type", "allowed": ["image/png", "image/jpeg"]}), 415
 
+    _save_player_image(player_id, image_bytes, normalized_content_type, filename)
+    return jsonify({"ok": True, "playerId": player_id, "bytes": len(image_bytes), "contentType": normalized_content_type, "storedAs": _final_image_path_for_player(player_id, normalized_content_type).name})
+
+
+
+@app.route("/api/settings/v1/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v1", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def settings_v1(player_id: int = 0) -> Any:
+    payload = _extract_request_payload()
+    if player_id <= 0:
+        player_id = _safe_int(
+            payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))),
+            0,
+        )
+
+    if request.method == "GET":
+        return Response(json.dumps(get_player_settings_list(player_id)), mimetype="application/json")
+
+    mutations = _normalize_settings_mutation_entries(payload)
+    for mutation in mutations:
+        key = str(mutation.get("Key") or "").strip()
+        if not key:
+            continue
+        if mutation.get("Remove"):
+            remove_player_setting(player_id, key)
+        else:
+            set_player_setting(player_id, key, mutation.get("Value", ""))
+
+    return jsonify({"ok": True, "playerId": player_id, "count": len(get_player_settings_list(player_id))})
+
+
+@app.route("/api/avatar/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH"])
+def avatar_v1(player_id: int) -> Any:
+    if request.method == "GET":
+        return jsonify(get_or_create_avatar(player_id))
+
+    payload = _extract_request_payload()
+    return jsonify(update_avatar(player_id, payload))
+
+
+@app.route("/api/avatar/v1/set", methods=["POST", "PUT", "PATCH"])
+def avatar_v1_set() -> Any:
+    payload = _extract_request_payload()
+    player_id = _safe_int(
+        payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))),
+        0,
+    )
+    return jsonify(update_avatar(player_id, payload))
+
+
+@app.route("/api/avatar/v1/items/create", methods=["POST"])
+def avatar_items_create() -> Any:
+    payload = _extract_request_payload()
+    player_id = _safe_int(
+        payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))),
+        0,
+    )
+    avatar_item_desc = str(
+        payload.get("AvatarItemDesc")
+        or payload.get("avatarItemDesc")
+        or payload.get("Item")
+        or payload.get("item")
+        or ""
+    ).strip()
+    if not avatar_item_desc:
+        return jsonify({"error": "avatar item missing"}), 400
+
+    add_unlocked_avatar_item(player_id, avatar_item_desc)
+    return jsonify({"ok": True, "playerId": player_id, "count": len(get_unlocked_avatar_items(player_id))})
+
+
+@app.route("/api/avatar/v1/items/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/items/unlocked/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/unlocked/<int:player_id>", methods=["GET"])
+def avatar_items_get(player_id: int) -> Any:
+    return Response(json.dumps(get_unlocked_avatar_items(player_id)), mimetype="application/json")
 
 
 @app.route("/api/objectives/v1/", methods=["GET"])
