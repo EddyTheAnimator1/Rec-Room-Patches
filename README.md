@@ -63,7 +63,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | 6 October 2016 | `1591673639619502502` | ✅ |
 | 7 October 2016 | `2501384732285060244` | ✅ |
 | 18 October 2016 | `5317305413924462757` | ✅ |
-| 26 October 2016 | `1604792277333790762` | ❌ |
+| 26 October 2016 | `1604792277333790762` | ✅ |
 | 29 October 2016 | `5383238034238139872` | ❌ |
 | 4 November 2016 | `976486110269581733` | ❌ |
 | 8 November 2016 | `3009411680931499705` | ❌ |
