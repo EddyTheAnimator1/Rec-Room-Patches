@@ -67,8 +67,8 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | 29 October 2016 | `5383238034238139872` | ✅ |
 | 4 November 2016 | `976486110269581733` | ✅ |
 | 8 November 2016 | `3009411680931499705` | ✅ |
-| 9 November 2016 | `860756852849299734` | ❌ |
-| 16 November 2016 | `424546141649632564` | ❌ |
+| 9 November 2016 | `860756852849299734` | ✅ |
+| 16 November 2016 | `424546141649632564` | ✅ |
 | 23 November 2016 | `2999110564380282122` | ❌ |
 | 24 November 2016 | `8464629802564135940` | ❌ |
 | 29 November 2016 | `1964111244192991547` | ❌ |
