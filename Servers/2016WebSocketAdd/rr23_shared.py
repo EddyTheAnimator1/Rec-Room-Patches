@@ -287,7 +287,7 @@ def create_or_update_player(
 
     existing = get_player_by_platform(platform, platform_id)
     if existing is not None:
-        player_id = existing["Id"] if player_id <= 0 else player_id
+        player_id = safe_int(existing.get("Id"), player_id)
         display_name = display_name or existing["DisplayName"]
         username = username or existing["Username"]
         xp = existing["XP"] if xp is None else xp
@@ -298,39 +298,67 @@ def create_or_update_player(
         level = DEFAULT_LEVEL if level is None else level
         reputation = DEFAULT_REPUTATION if reputation is None else reputation
 
+    normalized_xp = max(0, safe_int(xp, 0))
+    normalized_level = max(1, safe_int(level, 1))
+    normalized_reputation = safe_int(reputation, DEFAULT_REPUTATION)
+
     with closing(connect()) as conn:
-        conn.execute(
-            """
-            INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            ON CONFLICT(id) DO UPDATE SET
-                platform=excluded.platform,
-                platform_id=excluded.platform_id,
-                name=excluded.name,
-                display_name=excluded.display_name,
-                username=excluded.username,
-                xp=excluded.xp,
-                level=excluded.level,
-                reputation=excluded.reputation,
-                email=excluded.email,
-                verified=1
-            """,
-            (
-                player_id,
-                platform,
-                platform_id,
-                display_name,
-                display_name,
-                username,
-                max(0, safe_int(xp, 0)),
-                max(1, safe_int(level, 1)),
-                safe_int(reputation, DEFAULT_REPUTATION),
-                DEFAULT_VERIFIED_EMAIL,
-            ),
-        )
+        try:
+            conn.execute(
+                """
+                INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    player_id,
+                    platform,
+                    platform_id,
+                    display_name,
+                    display_name,
+                    username,
+                    normalized_xp,
+                    normalized_level,
+                    normalized_reputation,
+                    DEFAULT_VERIFIED_EMAIL,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            conn.execute(
+                """
+                UPDATE players
+                SET
+                    name = ?,
+                    display_name = ?,
+                    username = ?,
+                    xp = ?,
+                    level = ?,
+                    reputation = ?,
+                    email = ?,
+                    verified = 1
+                WHERE platform = ? AND platform_id = ?
+                """,
+                (
+                    display_name,
+                    display_name,
+                    username,
+                    normalized_xp,
+                    normalized_level,
+                    normalized_reputation,
+                    DEFAULT_VERIFIED_EMAIL,
+                    platform,
+                    platform_id,
+                ),
+            )
+
+        row = conn.execute(
+            "SELECT id FROM players WHERE platform = ? AND platform_id = ?",
+            (platform, platform_id),
+        ).fetchone()
+        actual_player_id = safe_int(row["id"] if row is not None else player_id, player_id)
+
         conn.execute(
             "INSERT OR IGNORE INTO avatars(player_id, outfit_selections, skin_color, hair_color) VALUES(?, '', '', '')",
-            (player_id,),
+            (actual_player_id,),
         )
         conn.execute(
             """
@@ -338,11 +366,10 @@ def create_or_update_player(
                 player_id, game_session_id, app_version, last_update_time, activity, private, available_space, game_in_progress
             ) VALUES (?, '', '', ?, 'DormRoom', 0, 0, 0)
             """,
-            (player_id, utcnow_iso()),
+            (actual_player_id, utcnow_iso()),
         )
         conn.commit()
-    return get_player_by_id(player_id)  # type: ignore[return-value]
-
+    return get_player_by_id(actual_player_id)  # type: ignore[return-value]
 
 def list_players_by_ids(player_ids: list[int]) -> list[dict[str, Any]]:
     unique_ids = [pid for pid in dict.fromkeys(pid for pid in player_ids if pid > 0)]
