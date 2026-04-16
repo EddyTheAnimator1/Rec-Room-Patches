@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 web: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 100 main:app
+=======
+web: gunicorn main:app
+>>>>>>> parent of fae4b24 (Server update 23 November 2016)

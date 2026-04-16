@@ -16,13 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
-from flask_sock import Sock
 
 app = Flask(__name__)
-app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": max(5, int(os.environ.get("WEBSOCKET_PING_INTERVAL", "25")))}
-sock = Sock(app)
 
-DATA_DIR = Path(os.environ.get("DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ".").resolve()
+DATA_DIR = Path(os.environ.get("DATA_DIR", ".")).resolve()
 PLAYERS_PATH = DATA_DIR / "players.json"
 REQUESTS_PATH = DATA_DIR / "request_log.json"
 OBJECTIVES_CONFIG_V1_PATH = DATA_DIR / "objectives_config_v1.json"
@@ -32,12 +29,15 @@ VERIFY_LOG_PATH = DATA_DIR / "verification_requests.json"
 SETTINGS_PATH = DATA_DIR / "player_settings.json"
 AVATARS_PATH = DATA_DIR / "avatars.json"
 AVATAR_ITEMS_PATH = DATA_DIR / "avatar_items.json"
+<<<<<<< HEAD
 PRESENCE_PATH = DATA_DIR / "presence.json"
 RELATIONSHIPS_PATH = DATA_DIR / "relationships.json"
 MESSAGES_PATH = DATA_DIR / "messages.json"
 GAME_SESSIONS_PATH = DATA_DIR / "game_sessions.json"
 GIFT_PACKAGES_PATH = DATA_DIR / "gift_packages.json"
 WEBSOCKET_LOG_PATH = DATA_DIR / "websocket_log.json"
+=======
+>>>>>>> parent of fae4b24 (Server update 23 November 2016)
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -146,8 +146,6 @@ _TRANSPARENT_PNG = base64.b64decode(
 
 _rate_limit_lock = threading.Lock()
 _rate_limit_buckets: dict[str, deque[float]] = defaultdict(deque)
-_ws_clients_lock = threading.Lock()
-_ws_clients_by_player: dict[int, set[Any]] = defaultdict(set)
 
 
 def ensure_data_dir() -> None:
@@ -381,59 +379,39 @@ def update_avatar(player_id: int, payload: Any) -> dict[str, str]:
     return current
 
 
-def load_avatar_items() -> dict[str, list[dict[str, Any]]]:
+def load_avatar_items() -> dict[str, list[str]]:
     payload = load_json(AVATAR_ITEMS_PATH, {})
     return payload if isinstance(payload, dict) else {}
 
 
-def save_avatar_items(items_payload: dict[str, list[dict[str, Any]]]) -> None:
+def save_avatar_items(items_payload: dict[str, list[str]]) -> None:
     save_json(AVATAR_ITEMS_PATH, items_payload)
 
 
-def _sanitize_avatar_items(entries: Any) -> list[dict[str, Any]]:
-    if not isinstance(entries, list):
+def get_unlocked_avatar_items(player_id: int) -> list[str]:
+    payload = load_avatar_items()
+    storage_key = _avatar_storage_key(player_id)
+    rows = payload.get(storage_key, [])
+    if not isinstance(rows, list):
         return []
-
-    sanitized: list[dict[str, Any]] = []
+    sanitized: list[str] = []
     seen: set[str] = set()
-    for item in entries:
-        if isinstance(item, str):
-            desc = item.strip()
-            unlocked_level = 1
-        elif isinstance(item, dict):
-            desc = str(item.get("AvatarItemDesc") or item.get("avatarItemDesc") or item.get("Item") or item.get("item") or "").strip()
-            unlocked_level = max(1, _safe_int(item.get("UnlockedLevel", item.get("unlockedLevel", 1)), 1))
-        else:
+    for item in rows:
+        text = str(item or "").strip()
+        if not text or text in seen:
             continue
-
-        if not desc or desc in seen:
-            continue
-
-        seen.add(desc)
-        sanitized.append({"AvatarItemDesc": desc, "UnlockedLevel": unlocked_level})
-
+        seen.add(text)
+        sanitized.append(text)
     return sanitized
 
 
-def get_unlocked_avatar_items(player_id: int) -> list[dict[str, Any]]:
-    payload = load_avatar_items()
-    storage_key = _avatar_storage_key(player_id)
-    return _sanitize_avatar_items(payload.get(storage_key, []))
-
-
-def add_unlocked_avatar_item(player_id: int, avatar_item_desc: str, unlocked_level: int = 1) -> list[dict[str, Any]]:
+def add_unlocked_avatar_item(player_id: int, avatar_item_desc: str) -> list[str]:
     payload = load_avatar_items()
     storage_key = _avatar_storage_key(player_id)
     current = get_unlocked_avatar_items(player_id)
     value = str(avatar_item_desc or "").strip()
-    level = max(1, _safe_int(unlocked_level, 1))
-    if value:
-        for entry in current:
-            if entry["AvatarItemDesc"] == value:
-                entry["UnlockedLevel"] = max(level, _safe_int(entry.get("UnlockedLevel"), 1))
-                break
-        else:
-            current.append({"AvatarItemDesc": value, "UnlockedLevel": level})
+    if value and value not in current:
+        current.append(value)
     payload[storage_key] = current
     save_avatar_items(payload)
     return current
@@ -811,6 +789,7 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+<<<<<<< HEAD
 def _safe_bool(value: Any, default: bool = False) -> bool:
     return parse_bool(value, default)
 
@@ -1230,6 +1209,8 @@ def _notify_player(player_id: int, notification_id: int, message: Any) -> None:
         _ws_unregister_player(player_id, ws)
 
 
+=======
+>>>>>>> parent of fae4b24 (Server update 23 November 2016)
 
 def _stable_player_id(platform: int, platform_id: int) -> int:
     digest = hashlib.sha256(f"{platform}:{platform_id}".encode("utf-8")).digest()
@@ -1905,12 +1886,11 @@ def avatar_items_create() -> Any:
         or payload.get("item")
         or ""
     ).strip()
-    unlocked_level = max(1, _safe_int(payload.get("UnlockedLevel", payload.get("unlockedLevel", 1)), 1))
     if not avatar_item_desc:
         return jsonify({"error": "avatar item missing"}), 400
 
-    items = add_unlocked_avatar_item(player_id, avatar_item_desc, unlocked_level)
-    return jsonify({"ok": True, "playerId": player_id, "count": len(items), "item": {"AvatarItemDesc": avatar_item_desc, "UnlockedLevel": unlocked_level}})
+    add_unlocked_avatar_item(player_id, avatar_item_desc)
+    return jsonify({"ok": True, "playerId": player_id, "count": len(get_unlocked_avatar_items(player_id))})
 
 
 @app.route("/api/avatar/v1/items/<int:player_id>", methods=["GET"])
@@ -1952,6 +1932,7 @@ def motd_config_v1() -> Any:
 
 
 
+<<<<<<< HEAD
 @app.route("/api/players/v1/list", methods=["POST"])
 def players_v1_list() -> Any:
     payload = request.get_json(silent=True)
@@ -2152,6 +2133,8 @@ def notification_socket(ws: Any) -> None:
             log_websocket_event("disconnected", player_id=player_id)
 
 
+=======
+>>>>>>> parent of fae4b24 (Server update 23 November 2016)
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
     return jsonify(
