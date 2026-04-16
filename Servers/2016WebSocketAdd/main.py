@@ -204,6 +204,15 @@ def auth_required() -> bool:
     return REQUIRE_HTTP_AUTH
 
 
+def player_payload_defaults(payload: dict[str, Any], default_platform: int, default_platform_id: int, forced_player_id: int | None = None) -> dict[str, Any]:
+    normalized = dict(payload or {})
+    normalized.setdefault("Platform", default_platform)
+    normalized.setdefault("PlatformId", default_platform_id)
+    if forced_player_id is not None and forced_player_id > 0:
+        normalized.setdefault("Id", forced_player_id)
+    return normalized
+
+
 @app.before_request
 def before_request() -> Any:
     shared.init_db()
@@ -253,10 +262,12 @@ def debug_websockets() -> Any:
 @app.route("/api/players/v1/create", methods=["POST"])
 def players_create() -> Any:
     payload = request_payload()
+    platform = shared.parse_platform(payload.get("Platform", payload.get("platform", shared.DEFAULT_PLATFORM)))
+    platform_id = shared.safe_int(payload.get("PlatformId", payload.get("platformId", payload.get("id", 0))), 0)
     player = shared.create_or_update_player(
-        platform=shared.parse_platform(payload.get("Platform", payload.get("platform", shared.DEFAULT_PLATFORM))),
-        platform_id=shared.safe_int(payload.get("PlatformId", payload.get("platformId", payload.get("id", 0))), 0),
-        payload=payload,
+        platform=platform,
+        platform_id=platform_id,
+        payload=player_payload_defaults(payload, platform, platform_id),
     )
     return jsonify(player), 201
 
@@ -267,10 +278,12 @@ def players_update(player_id: int) -> Any:
     current = shared.get_player_by_id(player_id)
     fallback_platform = shared.safe_int((current or {}).get("Platform"), shared.DEFAULT_PLATFORM)
     fallback_platform_id = shared.safe_int((current or {}).get("PlatformId"), player_id)
+    platform = shared.parse_platform(payload.get("Platform", payload.get("platform", fallback_platform)))
+    platform_id = shared.safe_int(payload.get("PlatformId", payload.get("platformId", fallback_platform_id)), fallback_platform_id)
     player = shared.create_or_update_player(
-        platform=shared.parse_platform(payload.get("Platform", payload.get("platform", fallback_platform))),
-        platform_id=shared.safe_int(payload.get("PlatformId", payload.get("platformId", fallback_platform_id)), fallback_platform_id),
-        payload={**payload, "Id": player_id},
+        platform=platform,
+        platform_id=platform_id,
+        payload=player_payload_defaults(payload, platform, platform_id, forced_player_id=player_id),
     )
     return jsonify(player)
 
@@ -307,12 +320,12 @@ def players_v1(subpath: str = "") -> Any:
 
     if request.method == "GET":
         if player is None and os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}:
-            player = shared.create_or_update_player(platform, platform_id, payload)
+            player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
         if player is None:
             return jsonify({"error": "player not found"}), 404
         return jsonify(player)
 
-    player = shared.create_or_update_player(platform, platform_id, payload)
+    player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
     status_code = 201 if request.method == "POST" else 200
     return jsonify(player), status_code
 
@@ -484,9 +497,15 @@ def motd() -> Any:
     return jsonify({"ok": True, "motd": shared.set_motd(value)})
 
 
-@app.route("/api/presence/v1/list", methods=["POST"])
+@app.route("/api/presence/v1/list", methods=["POST", "GET"])
 def presence_list() -> Any:
-    return Response(json.dumps(shared.list_presence(request_id_list())), mimetype="application/json")
+    ids = request_id_list()
+    if not ids:
+        payload = request_payload()
+        single_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+        if single_id > 0:
+            ids = [single_id]
+    return Response(json.dumps(shared.list_presence(ids)), mimetype="application/json")
 
 
 @app.route("/api/presence/v1/<int:player_id>", methods=["GET", "POST"])
@@ -512,8 +531,12 @@ def game_session(session_id: str) -> Any:
 
 
 @app.route("/api/messages/v1/get/<int:player_id>", methods=["GET"])
-def messages_get(player_id: int) -> Any:
-    return Response(json.dumps(shared.get_messages_for_player(player_id)), mimetype="application/json")
+@app.route("/api/messages/v1/get", methods=["GET", "POST"])
+def messages_get(player_id: int | None = None) -> Any:
+    if player_id is None:
+        payload = request_payload()
+        player_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+    return Response(json.dumps(shared.get_messages_for_player(shared.safe_int(player_id, 0))), mimetype="application/json")
 
 
 @app.route("/api/messages/v1/send", methods=["POST"])
@@ -529,17 +552,22 @@ def messages_send() -> Any:
 
 
 @app.route("/api/messages/v1/delete", methods=["POST"])
-def messages_delete() -> Any:
+@app.route("/api/messages/v1/delete/<int:message_id>", methods=["POST", "DELETE"])
+def messages_delete(message_id: int | None = None) -> Any:
     payload = request_payload()
-    message_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
-    if message_id <= 0 or not shared.delete_message(message_id):
+    resolved_message_id = message_id if message_id is not None else shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
+    if resolved_message_id <= 0 or not shared.delete_message(resolved_message_id):
         return jsonify({"error": "message not found"}), 404
-    return jsonify({"ok": True, "Id": message_id})
+    return jsonify({"ok": True, "Id": resolved_message_id})
 
 
 @app.route("/api/relationships/v1/get/<int:player_id>", methods=["GET"])
-def relationships_get(player_id: int) -> Any:
-    return Response(json.dumps(shared.get_relationships(player_id)), mimetype="application/json")
+@app.route("/api/relationships/v1/get", methods=["GET", "POST"])
+def relationships_get(player_id: int | None = None) -> Any:
+    if player_id is None:
+        payload = request_payload()
+        player_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+    return Response(json.dumps(shared.get_relationships(shared.safe_int(player_id, 0))), mimetype="application/json")
 
 
 @app.route("/api/relationships/v1/<action>", methods=["GET"])

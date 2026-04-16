@@ -258,15 +258,36 @@ def create_or_update_player(
     xp: int | None = None,
     level: int | None = None,
     reputation: int | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     init_db()
-    display_name = (display_name or DEFAULT_PLAYER_NAME).strip() or DEFAULT_PLAYER_NAME
-    username = (username or display_name).strip() or display_name
-    player_id = player_id or stable_player_id(platform, platform_id)
+    payload = payload if isinstance(payload, dict) else {}
+
+    incoming_display_name = str(
+        payload.get("DisplayName")
+        or payload.get("displayName")
+        or payload.get("Name")
+        or payload.get("name")
+        or display_name
+        or DEFAULT_PLAYER_NAME
+    ).strip() or DEFAULT_PLAYER_NAME
+    incoming_username = str(
+        payload.get("Username")
+        or payload.get("username")
+        or username
+        or incoming_display_name
+    ).strip() or incoming_display_name
+
+    display_name = incoming_display_name
+    username = incoming_username
+    player_id = safe_int(payload.get("Id", payload.get("id", player_id)), player_id or stable_player_id(platform, platform_id))
+    xp = safe_int(payload.get("XP", payload.get("xp", xp)), DEFAULT_XP if xp is None else xp)
+    level = safe_int(payload.get("Level", payload.get("level", level)), DEFAULT_LEVEL if level is None else level)
+    reputation = safe_int(payload.get("Reputation", payload.get("reputation", reputation)), DEFAULT_REPUTATION if reputation is None else reputation)
 
     existing = get_player_by_platform(platform, platform_id)
     if existing is not None:
-        player_id = existing["Id"]
+        player_id = existing["Id"] if player_id <= 0 else player_id
         display_name = display_name or existing["DisplayName"]
         username = username or existing["Username"]
         xp = existing["XP"] if xp is None else xp
