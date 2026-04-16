@@ -73,6 +73,100 @@ DEFAULT_OBJECTIVES_CONFIG_V1 = [
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 
+CLIENT_LOCAL_PLAYER_IDS: dict[str, int] = {}
+LAST_LOCAL_PLAYER_ID: int = 0
+
+
+def client_identity_key() -> str:
+    forwarded_for = request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+    remote = forwarded_for or (request.remote_addr or "")
+    user_agent = request.headers.get("User-Agent", "")
+    return f"{remote}|{user_agent}"
+
+
+def remember_local_player_id(player_id: int) -> None:
+    global LAST_LOCAL_PLAYER_ID
+    player_id = shared.safe_int(player_id, 0)
+    if player_id <= 0:
+        return
+    LAST_LOCAL_PLAYER_ID = player_id
+    CLIENT_LOCAL_PLAYER_IDS[client_identity_key()] = player_id
+
+
+def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int = 0) -> int:
+    payload = payload if isinstance(payload, dict) else {}
+    for key in ("PlayerId", "playerId", "Id", "id", "ProfileId", "profileId"):
+        value = shared.safe_int(payload.get(key), 0)
+        if value > 0:
+            return value
+    if "X-RecRoom-PlayerId" in request.headers:
+        header_value = shared.safe_int(request.headers.get("X-RecRoom-PlayerId"), 0)
+        if header_value > 0:
+            return header_value
+    mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
+    if mapped > 0:
+        return mapped
+    if LAST_LOCAL_PLAYER_ID > 0:
+        return LAST_LOCAL_PLAYER_ID
+    return shared.safe_int(default, 0)
+
+
+def profile_response_2016(player: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "Id": shared.safe_int(player.get("Id"), 0),
+        "Username": str(player.get("Username") or player.get("DisplayName") or shared.DEFAULT_PLAYER_NAME),
+        "DisplayName": str(player.get("DisplayName") or player.get("Username") or shared.DEFAULT_PLAYER_NAME),
+        "XP": max(0, shared.safe_int(player.get("XP"), 0)),
+        "XpRequiredToLevelUp": max(0, shared.safe_int(player.get("XpRequiredToLevelUp"), 0)),
+        "Level": max(1, shared.safe_int(player.get("Level"), 1)),
+        "Reputation": shared.safe_int(player.get("Reputation"), 0),
+        "Verified": bool(player.get("Verified", True)),
+    }
+
+
+def config_table_entries() -> list[dict[str, str]]:
+    return [
+        {"Key": "PlayerCanSave", "Value": "true"},
+        {"Key": "MatchmakingEnabled", "Value": "true"},
+        {"Key": "DormRoomEnabled", "Value": "true"},
+        {"Key": "NotificationsEnabled", "Value": "true"},
+    ]
+
+
+def config_v2_payload() -> dict[str, Any]:
+    return {
+        "MessageOfTheDay": shared.get_motd(),
+        "MatchmakingParams": {
+            "PreferFullRoomsFrequency": 0.35,
+            "PreferEmptyRoomsFrequency": 0.15,
+        },
+        "DailyObjectives": [
+            [
+                {
+                    "type": shared.safe_int(item.get("type"), 0),
+                    "score": shared.safe_int(item.get("score"), 0),
+                }
+                for item in objective_group
+            ]
+            for objective_group in DEFAULT_OBJECTIVES_CONFIG_V1
+        ],
+        "ConfigTable": config_table_entries(),
+    }
+
+
+def get_or_create_player_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    platform = shared.parse_platform(payload.get("Platform", payload.get("platform", payload.get("p", shared.DEFAULT_PLATFORM))))
+    platform_id = shared.safe_int(payload.get("PlatformId", payload.get("platformId", payload.get("id", payload.get("Id", 0)))), 0)
+    if platform_id <= 0:
+        platform_id = 1
+    player = shared.create_or_update_player(
+        platform=platform,
+        platform_id=platform_id,
+        payload=player_payload_defaults(payload, platform, platform_id),
+    )
+    remember_local_player_id(shared.safe_int(player.get("Id"), 0))
+    return player
+
 
 def ensure_dirs() -> None:
     shared.ensure_data_dir()
@@ -293,6 +387,73 @@ def debug_websockets() -> Any:
     return jsonify(shared.list_ws_sessions())
 
 
+@app.route("/api/players/v1/getorcreate", methods=["POST"])
+def players_get_or_create_v1() -> Any:
+    player = get_or_create_player_from_payload(request_payload())
+    return jsonify(profile_response_2016(player))
+
+
+@app.route("/api/players/v2", methods=["GET", "POST", "PUT", "PATCH"])
+@app.route("/api/players/v2/", methods=["GET", "POST", "PUT", "PATCH"])
+def players_v2_root() -> Any:
+    payload = request_payload()
+    platform = shared.parse_platform(payload.get("p", payload.get("platform", payload.get("Platform", shared.DEFAULT_PLATFORM))))
+    platform_id = shared.safe_int(payload.get("id", payload.get("platformId", payload.get("PlatformId", 0))), 0)
+    player = shared.get_player_by_platform(platform, platform_id) if platform_id > 0 else None
+    if player is None and request.method != "GET":
+        player = get_or_create_player_from_payload(payload)
+    elif player is None:
+        return jsonify({"error": "player not found"}), 404
+    remember_local_player_id(shared.safe_int(player.get("Id"), 0))
+    return jsonify(profile_response_2016(player))
+
+
+@app.route("/api/players/v2/updateReputation", methods=["POST"])
+@app.route("/api/players/v2/updateReputation/", methods=["POST"])
+def players_v2_update_reputation() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    player = shared.get_player_by_id(player_id)
+    if player is None:
+        player = get_or_create_player_from_payload({"Id": player_id or 1, **payload})
+        player_id = shared.safe_int(player.get("Id"), 0)
+    reputation_delta = shared.safe_int(payload.get("reputationDelta", payload.get("ReputationDelta", 0)), 0)
+    current_reputation = shared.safe_int(player.get("Reputation"), 0)
+    updated = shared.set_reputation(player_id, current_reputation - reputation_delta)
+    remember_local_player_id(player_id)
+    return jsonify(profile_response_2016(updated))
+
+
+@app.route("/api/players/v2/verify", methods=["POST"])
+@app.route("/api/players/v2/verify/", methods=["POST"])
+def players_v2_verify() -> Any:
+    payload = request_payload()
+    email = str(payload.get("Email", payload.get("email", shared.DEFAULT_VERIFIED_EMAIL)) or shared.DEFAULT_VERIFIED_EMAIL)
+    return jsonify({"Message": f"Verification email queued for {email}."})
+
+
+@app.route("/api/players/v2/objective", methods=["POST"])
+@app.route("/api/players/v2/objective/", methods=["POST"])
+def players_v2_objective() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    remember_local_player_id(player_id)
+    return jsonify(
+        shared.apply_objective_completion(
+            player_id,
+            shared.safe_int(payload.get("objectiveType", payload.get("ObjectiveType", 0)), 0),
+            shared.safe_int(payload.get("additionalXp", payload.get("AdditionalXp", 0)), 0),
+            shared.parse_bool(payload.get("inParty", payload.get("InParty", False)), False),
+        )
+    )
+
+
+@app.route("/api/config/v2", methods=["GET"])
+@app.route("/api/config/v2/", methods=["GET"])
+def config_v2() -> Any:
+    return Response(json.dumps(config_v2_payload()), mimetype="application/json")
+
+
 @app.route("/api/players/v1/create", methods=["POST"])
 def players_create() -> Any:
     payload = request_payload()
@@ -388,6 +549,37 @@ def players_objective(player_id: int) -> Any:
     )
 
 
+@app.route("/api/settings/v2", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def settings_v2(subpath: str = "") -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    if request.method == "GET":
+        return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
+    entries = payload.get("settings") or payload.get("Settings") or payload
+    if isinstance(entries, list):
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("Key") or item.get("key") or "").strip()
+            if not key:
+                continue
+            if request.method == "DELETE" or shared.parse_bool(item.get("Remove", item.get("remove", False)), False):
+                shared.delete_setting(player_id, key)
+            else:
+                shared.upsert_setting(player_id, key, str(item.get("Value", item.get("value", ""))))
+    else:
+        key = str(payload.get("Key") or payload.get("key") or subpath.rsplit("/", 1)[-1] or "").strip()
+        if key:
+            if request.method == "DELETE" or shared.parse_bool(payload.get("Remove", payload.get("remove", False)), False):
+                shared.delete_setting(player_id, key)
+            else:
+                shared.upsert_setting(player_id, key, str(payload.get("Value", payload.get("value", payload.get("SettingValue", "")))))
+    remember_local_player_id(player_id)
+    return jsonify({"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))})
+
+
 @app.route("/api/settings/v1", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 @app.route("/api/settings/v1/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 @app.route("/api/settings/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
@@ -417,6 +609,60 @@ def settings_v1(player_id: int = 0) -> Any:
             else:
                 shared.upsert_setting(player_id, key, str(payload.get("Value", payload.get("value", ""))))
     return jsonify({"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))})
+
+
+@app.route("/api/avatar/v2", methods=["GET"])
+@app.route("/api/avatar/v2/", methods=["GET"])
+def avatar_v2_get() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return jsonify(shared.get_avatar(player_id))
+
+
+@app.route("/api/avatar/v2/set", methods=["POST", "PUT", "PATCH"])
+@app.route("/api/avatar/v2/set/", methods=["POST", "PUT", "PATCH"])
+def avatar_v2_set() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    remember_local_player_id(player_id)
+    return jsonify(shared.set_avatar(player_id, payload))
+
+
+@app.route("/api/avatar/v2/gifts", methods=["GET"])
+@app.route("/api/avatar/v2/gifts/", methods=["GET"])
+def avatar_v2_gifts() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_gift_packages(player_id)), mimetype="application/json")
+
+
+@app.route("/api/avatar/v2/gifts/create", methods=["POST"])
+@app.route("/api/avatar/v2/gifts/create/", methods=["POST"])
+def avatar_v2_gifts_create() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    remember_local_player_id(player_id)
+    return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0)))
+
+
+@app.route("/api/avatar/v2/gifts/consume", methods=["POST"])
+@app.route("/api/avatar/v2/gifts/consume/", methods=["POST"])
+def avatar_v2_gifts_consume() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    gift_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
+    remember_local_player_id(player_id)
+    if not shared.consume_gift_package(player_id, gift_id):
+        return jsonify({"error": "gift not found"}), 404
+    return jsonify({"ok": True, "Id": gift_id})
+
+
+@app.route("/api/avatar/v2/items", methods=["GET"])
+@app.route("/api/avatar/v2/items/", methods=["GET"])
+def avatar_v2_items() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
 
 @app.route("/api/avatar/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH"])
@@ -476,6 +722,24 @@ def gifts_consume() -> Any:
     if not shared.consume_gift_package(player_id, gift_id):
         return jsonify({"error": "gift not found"}), 404
     return jsonify({"ok": True, "Id": gift_id})
+
+
+@app.route("/api/images/v2/profile", methods=["POST", "PUT"])
+@app.route("/api/images/v2/profile/", methods=["POST", "PUT"])
+def profile_image_v2() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    image_bytes, content_type, filename = parse_upload()
+    if not image_bytes:
+        return jsonify({"error": "image payload missing"}), 400
+    if len(image_bytes) > MAX_REQUEST_BODY_BYTES:
+        return jsonify({"error": "payload too large"}), 413
+    try:
+        meta = save_image(player_id, image_bytes, content_type, filename)
+    except ValueError:
+        return jsonify({"error": "unsupported image type", "allowed": ["image/png", "image/jpeg"]}), 415
+    remember_local_player_id(player_id)
+    return jsonify({"ok": True, "playerId": player_id, **meta})
 
 
 @app.route("/api/images/v1/profile/<int:player_id>", methods=["GET", "POST", "PUT"])
@@ -538,6 +802,16 @@ def motd() -> Any:
     return jsonify({"ok": True, "motd": shared.set_motd(value)})
 
 
+@app.route("/api/presence/v2", methods=["POST", "PUT", "PATCH"])
+@app.route("/api/presence/v2/", methods=["POST", "PUT", "PATCH"])
+def presence_v2() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    payload = {**payload, "PlayerId": player_id}
+    remember_local_player_id(player_id)
+    return jsonify(shared.set_presence(player_id, payload))
+
+
 @app.route("/api/presence/v1/list", methods=["POST", "GET"])
 def presence_list() -> Any:
     ids = request_id_list()
@@ -571,6 +845,35 @@ def game_session(session_id: str) -> Any:
     if session is None:
         return Response("{}", mimetype="application/json", status=404)
     return Response(json.dumps(session), mimetype="application/json")
+
+
+@app.route("/api/messages/v2/get", methods=["GET", "POST"])
+@app.route("/api/messages/v2/get/", methods=["GET", "POST"])
+def messages_v2_get() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_messages_for_player(player_id)), mimetype="application/json")
+
+
+@app.route("/api/messages/v2/send", methods=["POST"])
+@app.route("/api/messages/v2/send/", methods=["POST"])
+def messages_v2_send() -> Any:
+    payload = request_payload()
+    from_player_id = resolve_local_player_id(payload)
+    to_player_id = shared.safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0)
+    remember_local_player_id(from_player_id)
+    message = shared.create_message(from_player_id, to_player_id, shared.safe_int(payload.get("Type", payload.get("type", 0)), 0), str(payload.get("Data", payload.get("data", "")) or ""))
+    return Response(json.dumps({k: v for k, v in message.items() if k != "ToPlayerId"}), mimetype="application/json")
+
+
+@app.route("/api/messages/v2/delete", methods=["POST", "DELETE"])
+@app.route("/api/messages/v2/delete/", methods=["POST", "DELETE"])
+def messages_v2_delete() -> Any:
+    payload = request_payload()
+    resolved_message_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
+    if resolved_message_id <= 0 or not shared.delete_message(resolved_message_id):
+        return jsonify({"error": "message not found"}), 404
+    return jsonify({"ok": True, "Id": resolved_message_id})
 
 
 @app.route("/api/messages/v1/get/<int:player_id>", methods=["GET"])
@@ -607,6 +910,24 @@ def messages_delete(message_id: int | None = None) -> Any:
     return jsonify({"ok": True, "Id": resolved_message_id})
 
 
+@app.route("/api/relationships/v2/get", methods=["GET", "POST"])
+@app.route("/api/relationships/v2/get/", methods=["GET", "POST"])
+def relationships_v2_get() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_relationships(player_id)), mimetype="application/json")
+
+
+@app.route("/api/relationships/v2/<action>", methods=["GET"])
+@app.route("/api/relationships/v2/<action>/", methods=["GET"])
+def relationships_v2_action(action: str) -> Any:
+    payload = request_payload()
+    local_player_id = resolve_local_player_id(payload)
+    other_player_id = shared.safe_int(request.args.get("id", payload.get("id", payload.get("TargetPlayerId", payload.get("targetPlayerId", 0)))), 0)
+    remember_local_player_id(local_player_id)
+    return Response(json.dumps(shared.apply_relationship_action(action, local_player_id, other_player_id)), mimetype="application/json")
+
+
 @app.route("/api/relationships/v1/get/<int:player_id>", methods=["GET"])
 @app.route("/api/relationships/v1/get", methods=["GET", "POST"])
 def relationships_get(player_id: int | None = None) -> Any:
@@ -622,6 +943,18 @@ def relationships_action(action: str) -> Any:
     id1 = shared.safe_int(request.args.get("id1", 0), 0)
     id2 = shared.safe_int(request.args.get("id2", 0), 0)
     return Response(json.dumps(shared.apply_relationship_action(action, id1, id2)), mimetype="application/json")
+
+
+@app.route("/api/analytics/v1/session/event", methods=["POST"])
+@app.route("/api/analytics/v1/session/event/", methods=["POST"])
+def analytics_session_event() -> Any:
+    return jsonify({"ok": True})
+
+
+@app.route("/api/notification/v2", methods=["GET", "POST"])
+@app.route("/api/notification/v2/", methods=["GET", "POST"])
+def notifications_http_placeholder_v2() -> Any:
+    return jsonify({"ok": True, "transport": "websocket", "path": "/api/notification/v2"})
 
 
 @app.route("/api/notification/v1", methods=["GET", "POST"])

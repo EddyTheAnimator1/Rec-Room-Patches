@@ -53,7 +53,8 @@ async def notification_handler(websocket: Any) -> None:
     headers = getattr(getattr(websocket, "request", None), "headers", Headers())
     log_request("WS", path or "/api/notification/v1", {}, 101, "connect-attempt")
 
-    if path != "/api/notification/v1":
+    normalized_path = path.split("?", 1)[0]
+    if normalized_path not in {"/api/notification/v1", "/api/notification/v2"}:
         await websocket.close(code=1008, reason="wrong path")
         return
 
@@ -73,13 +74,17 @@ async def notification_handler(websocket: Any) -> None:
         if not isinstance(parsed, dict):
             await websocket.close(code=1003, reason="invalid handshake")
             return
-        player_id = safe_int(parsed.get("Id", 0), 0)
+        player_id = safe_int(parsed.get("PlayerId", parsed.get("Id", 0)), 0)
         if player_id <= 0:
             await websocket.close(code=1008, reason="missing player id")
             return
 
         touch_ws_session(player_id, session_id)
-        await websocket.send("OK")
+        if normalized_path == "/api/notification/v2":
+            session_numeric_id = (uuid.uuid4().int % 2147483647) or 1
+            await websocket.send(json.dumps({"SessionId": session_numeric_id}, separators=(",", ":")))
+        else:
+            await websocket.send("OK")
         pump_task = asyncio.create_task(event_pump(websocket, player_id, session_id))
 
         while True:
