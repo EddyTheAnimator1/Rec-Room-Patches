@@ -11,6 +11,7 @@ import time
 from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import date, datetime, timezone
+from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ RELATIONSHIPS_PATH = DATA_DIR / "relationships.json"
 MESSAGES_PATH = DATA_DIR / "messages.json"
 GAME_SESSIONS_PATH = DATA_DIR / "game_sessions.json"
 GIFT_PACKAGES_PATH = DATA_DIR / "gift_packages.json"
+WEBSOCKET_LOG_PATH = DATA_DIR / "websocket_log.json"
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -52,6 +54,7 @@ AUTO_VERIFY_EMAIL = os.environ.get("AUTO_VERIFY_EMAIL", "true").strip().lower() 
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "recroom@gmail.com")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "recnet87")
+REQUIRE_WS_AUTH = os.environ.get("REQUIRE_WS_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
 LOG_SALT = os.environ.get("LOG_SALT", "rec-room-local-salt")
 MAX_REQUEST_BODY_BYTES = max(1024, int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(4 * 1024 * 1024))))
 GENERAL_RATE_LIMIT = max(10, int(os.environ.get("GENERAL_RATE_LIMIT", "180")))
@@ -189,6 +192,28 @@ def load_requests() -> list[dict[str, Any]]:
 
 def save_requests(rows: list[dict[str, Any]]) -> None:
     save_json(REQUESTS_PATH, rows[-REQUEST_LOG_RETENTION:])
+
+
+def load_websocket_logs() -> list[dict[str, Any]]:
+    payload = load_json(WEBSOCKET_LOG_PATH, [])
+    return payload if isinstance(payload, list) else []
+
+
+def save_websocket_logs(rows: list[dict[str, Any]]) -> None:
+    save_json(WEBSOCKET_LOG_PATH, rows[-REQUEST_LOG_RETENTION:])
+
+
+def log_websocket_event(event: str, player_id: int = 0, detail: Any = None) -> None:
+    rows = load_websocket_logs()
+    rows.append(
+        {
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "event": str(event),
+            "player_id": int(player_id or 0),
+            "detail": _redact_value(detail) if detail is not None else None,
+        }
+    )
+    save_websocket_logs(rows)
 
 
 
@@ -794,6 +819,26 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _http_last_modified_for_path(path: Path) -> str:
+    try:
+        return formatdate(path.stat().st_mtime, usegmt=True)
+    except Exception:
+        return formatdate(time.time(), usegmt=True)
+
+
+def _if_modified_since_matches(path: Path, header_value: str | None) -> bool:
+    if not header_value:
+        return False
+    try:
+        request_dt = parsedate_to_datetime(header_value)
+        if request_dt.tzinfo is None:
+            request_dt = request_dt.replace(tzinfo=timezone.utc)
+        file_mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0)
+        return file_mtime <= request_dt.astimezone(timezone.utc).replace(microsecond=0)
+    except Exception:
+        return False
+
+
 def _load_presence() -> dict[str, dict[str, Any]]:
     payload = load_json(PRESENCE_PATH, {})
     return payload if isinstance(payload, dict) else {}
@@ -1149,6 +1194,8 @@ def apply_objective_completion(player_id: int, objective_type: int, additional_x
 
 
 def _ws_authorized() -> bool:
+    if not REQUIRE_WS_AUTH:
+        return True
     return _is_authenticated()
 
 
@@ -1283,6 +1330,13 @@ def get_player_by_id(player_id: int) -> dict[str, Any] | None:
 
 
 
+def ensure_player_related_state(player_id: int) -> None:
+    try:
+        get_or_create_avatar(player_id)
+    except Exception:
+        pass
+
+
 def get_or_create_player(platform: int, platform_id: int) -> dict[str, Any] | None:
     players = load_players()
     key = player_key(platform, platform_id)
@@ -1291,12 +1345,14 @@ def get_or_create_player(platform: int, platform_id: int) -> dict[str, Any] | No
         if canonical != players[key]:
             players[key] = canonical
             save_players(players)
+        ensure_player_related_state(_safe_int(canonical.get("Id"), 0))
         return canonical
     if not AUTO_CREATE_ON_GET:
         return None
     player = _sanitize_player_for_response(make_player(platform, platform_id))
     players[key] = player
     save_players(players)
+    ensure_player_related_state(_safe_int(player.get("Id"), 0))
     return player
 
 
@@ -1498,8 +1554,8 @@ def _guess_image_content_type(image_bytes: bytes, provided_content_type: str = "
     return "application/octet-stream"
 
 
-def _load_player_image(player_id: int) -> tuple[bytes, str]:
-    image_path = _image_path_for_player(player_id)
+def _load_player_image(player_id: int) -> tuple[bytes, str, Path | None]:
+    image_path = _resolve_existing_image_path_for_player(player_id)
     meta_path = _image_meta_path_for_player(player_id)
     if image_path.exists():
         try:
@@ -1508,10 +1564,10 @@ def _load_player_image(player_id: int) -> tuple[bytes, str]:
             stored_type = str(meta.get("content_type") or "") if isinstance(meta, dict) else ""
             content_type = _supported_image_content_type(payload, stored_type, str(meta.get("filename") or image_path.name) if isinstance(meta, dict) else image_path.name)
             if content_type:
-                return payload, content_type
+                return payload, content_type, image_path
         except Exception:
             pass
-    return _TRANSPARENT_PNG, "image/png"
+    return _TRANSPARENT_PNG, "image/png", None
 
 
 
@@ -1543,6 +1599,7 @@ def _sanitize_player_for_response(player: dict[str, Any]) -> dict[str, Any]:
     username = str(player.get("Username") or player.get("username") or display_name).strip() or display_name
 
     email = DEFAULT_VERIFIED_EMAIL
+    level = max(1, _safe_int(player.get("Level"), 1))
     sanitized = {
         "Id": _safe_int(player.get("Id"), 0),
         "Platform": _safe_int(player.get("Platform"), DEFAULT_PLATFORM),
@@ -1550,7 +1607,8 @@ def _sanitize_player_for_response(player: dict[str, Any]) -> dict[str, Any]:
         "Name": display_name,
         "DisplayName": display_name,
         "XP": max(0, _safe_int(player.get("XP"), 0)),
-        "Level": max(1, _safe_int(player.get("Level"), 1)),
+        "Level": level,
+        "XpRequiredToLevelUp": xp_required_for_level(level),
         "Reputation": _safe_int(player.get("Reputation"), DEFAULT_REPUTATION),
         "Email": email,
         "Username": username,
@@ -1612,6 +1670,16 @@ def debug_players() -> Any:
 
 
 
+@app.get("/__debug/websockets")
+def debug_websockets() -> Any:
+    if not ENABLE_DEBUG_ENDPOINTS:
+        return _debug_enabled_response()
+    with _ws_clients_lock:
+        connected = {str(player_id): len(clients) for player_id, clients in _ws_clients_by_player.items()}
+    return jsonify({"connected": connected, "events": load_websocket_logs()})
+
+
+
 @app.get("/")
 def root() -> Any:
     return jsonify(
@@ -1638,10 +1706,12 @@ def players_v1_create() -> Any:
         merged = _merge_player_records(existing, player, payload)
         players[key] = merged
         save_players(players)
+        ensure_player_related_state(_safe_int(merged.get("Id"), 0))
         return jsonify(merged)
 
     players[key] = _merge_player_records({}, player, payload)
     save_players(players)
+    ensure_player_related_state(_safe_int(players[key].get("Id"), 0))
     return jsonify(players[key]), 201
 
 
@@ -1668,6 +1738,7 @@ def players_v1_update(player_id: int) -> Any:
         del players[old_key]
     players[new_key] = merged
     save_players(players)
+    ensure_player_related_state(_safe_int(merged.get("Id"), 0))
     return jsonify(merged)
 
 
@@ -1714,11 +1785,15 @@ def players_v1(subpath: str = "") -> Any:
 
     if request.method == "GET":
         if existing is not None:
-            return jsonify(_sanitize_player_for_response(existing))
+            existing = _sanitize_player_for_response(existing)
+            ensure_player_related_state(_safe_int(existing.get("Id"), 0))
+            return jsonify(existing)
         player = get_or_create_player(platform, platform_id)
         if player is None:
             return jsonify({"error": "player not found"}), 404
-        return jsonify(_sanitize_player_for_response(player))
+        player = _sanitize_player_for_response(player)
+        ensure_player_related_state(_safe_int(player.get("Id"), 0))
+        return jsonify(player)
 
     if request.method == "POST":
         player = normalize_player_payload(payload, platform, platform_id)
@@ -1726,6 +1801,7 @@ def players_v1(subpath: str = "") -> Any:
         merged = _merge_player_records(players.get(key) or {}, player, payload)
         players[key] = merged
         save_players(players)
+        ensure_player_related_state(_safe_int(merged.get("Id"), 0))
         return jsonify(merged), 201
 
     current = existing if existing is not None else make_player(platform, platform_id)
@@ -1737,6 +1813,7 @@ def players_v1(subpath: str = "") -> Any:
         del players[old_key]
     players[new_key] = merged
     save_players(players)
+    ensure_player_related_state(_safe_int(merged.get("Id"), 0))
     return jsonify(merged)
 
 
@@ -1744,8 +1821,13 @@ def players_v1(subpath: str = "") -> Any:
 @app.route("/api/images/v1/profile/<int:player_id>", methods=["GET", "POST", "PUT"])
 def player_profile_image(player_id: int) -> Any:
     if request.method == "GET":
-        image_bytes, content_type = _load_player_image(player_id)
-        return Response(image_bytes, mimetype=content_type, headers={"Content-Length": str(len(image_bytes))})
+        image_bytes, content_type, image_path = _load_player_image(player_id)
+        if image_path is not None and _if_modified_since_matches(image_path, request.headers.get("If-Modified-Since")):
+            return Response(status=304)
+        headers = {"Content-Length": str(len(image_bytes))}
+        if image_path is not None:
+            headers["Last-Modified"] = _http_last_modified_for_path(image_path)
+        return Response(image_bytes, mimetype=content_type, headers=headers)
 
     image_bytes, content_type, filename = _extract_image_upload_from_request()
 
@@ -2023,7 +2105,9 @@ def avatar_gifts_consume() -> Any:
 
 @sock.route("/api/notification/v1")
 def notification_socket(ws: Any) -> None:
+    log_websocket_event("connect_attempt")
     if not _ws_authorized():
+        log_websocket_event("unauthorized")
         try:
             ws.close(message="unauthorized")
         except Exception:
@@ -2033,29 +2117,39 @@ def notification_socket(ws: Any) -> None:
     player_id = 0
     try:
         handshake = ws.receive()
+        log_websocket_event("handshake_received", detail=handshake)
         if handshake is None:
             return
         parsed = json.loads(handshake)
         if not isinstance(parsed, dict):
+            log_websocket_event("handshake_invalid", detail=handshake)
             ws.close(message="invalid handshake")
             return
         player_id = _safe_int(parsed.get("Id", 0), 0)
         if player_id <= 0:
+            log_websocket_event("handshake_missing_player", detail=parsed)
             ws.close(message="missing player id")
             return
 
+        ensure_player_related_state(player_id)
         _ws_register_player(player_id, ws)
+        log_websocket_event("registered", player_id=player_id)
         ws.send("OK")
+        log_websocket_event("handshake_ok", player_id=player_id)
 
         while True:
             message = ws.receive()
             if message is None:
                 break
-    except Exception:
-        pass
+            if isinstance(message, str) and message.strip().lower() == "ping":
+                ws.send("pong")
+                log_websocket_event("ping", player_id=player_id)
+    except Exception as exc:
+        log_websocket_event("socket_exception", player_id=player_id, detail=str(exc))
     finally:
         if player_id > 0:
             _ws_unregister_player(player_id, ws)
+            log_websocket_event("disconnected", player_id=player_id)
 
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
