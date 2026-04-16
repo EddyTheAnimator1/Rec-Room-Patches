@@ -11,7 +11,6 @@ import time
 from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import date, datetime, timezone
-from email.utils import formatdate, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,15 +28,6 @@ VERIFY_LOG_PATH = DATA_DIR / "verification_requests.json"
 SETTINGS_PATH = DATA_DIR / "player_settings.json"
 AVATARS_PATH = DATA_DIR / "avatars.json"
 AVATAR_ITEMS_PATH = DATA_DIR / "avatar_items.json"
-<<<<<<< HEAD
-PRESENCE_PATH = DATA_DIR / "presence.json"
-RELATIONSHIPS_PATH = DATA_DIR / "relationships.json"
-MESSAGES_PATH = DATA_DIR / "messages.json"
-GAME_SESSIONS_PATH = DATA_DIR / "game_sessions.json"
-GIFT_PACKAGES_PATH = DATA_DIR / "gift_packages.json"
-WEBSOCKET_LOG_PATH = DATA_DIR / "websocket_log.json"
-=======
->>>>>>> parent of fae4b24 (Server update 23 November 2016)
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 AUTO_CREATE_ON_GET = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -54,7 +44,6 @@ AUTO_VERIFY_EMAIL = os.environ.get("AUTO_VERIFY_EMAIL", "true").strip().lower() 
 REQUIRE_AUTH = os.environ.get("REQUIRE_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "recroom@gmail.com")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "recnet87")
-REQUIRE_WS_AUTH = os.environ.get("REQUIRE_WS_AUTH", "false").strip().lower() in {"1", "true", "yes", "y"}
 LOG_SALT = os.environ.get("LOG_SALT", "rec-room-local-salt")
 MAX_REQUEST_BODY_BYTES = max(1024, int(os.environ.get("MAX_REQUEST_BODY_BYTES", str(4 * 1024 * 1024))))
 GENERAL_RATE_LIMIT = max(10, int(os.environ.get("GENERAL_RATE_LIMIT", "180")))
@@ -190,28 +179,6 @@ def load_requests() -> list[dict[str, Any]]:
 
 def save_requests(rows: list[dict[str, Any]]) -> None:
     save_json(REQUESTS_PATH, rows[-REQUEST_LOG_RETENTION:])
-
-
-def load_websocket_logs() -> list[dict[str, Any]]:
-    payload = load_json(WEBSOCKET_LOG_PATH, [])
-    return payload if isinstance(payload, list) else []
-
-
-def save_websocket_logs(rows: list[dict[str, Any]]) -> None:
-    save_json(WEBSOCKET_LOG_PATH, rows[-REQUEST_LOG_RETENTION:])
-
-
-def log_websocket_event(event: str, player_id: int = 0, detail: Any = None) -> None:
-    rows = load_websocket_logs()
-    rows.append(
-        {
-            "time_utc": datetime.now(timezone.utc).isoformat(),
-            "event": str(event),
-            "player_id": int(player_id or 0),
-            "detail": _redact_value(detail) if detail is not None else None,
-        }
-    )
-    save_websocket_logs(rows)
 
 
 
@@ -789,428 +756,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-<<<<<<< HEAD
-def _safe_bool(value: Any, default: bool = False) -> bool:
-    return parse_bool(value, default)
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _http_last_modified_for_path(path: Path) -> str:
-    try:
-        return formatdate(path.stat().st_mtime, usegmt=True)
-    except Exception:
-        return formatdate(time.time(), usegmt=True)
-
-
-def _if_modified_since_matches(path: Path, header_value: str | None) -> bool:
-    if not header_value:
-        return False
-    try:
-        request_dt = parsedate_to_datetime(header_value)
-        if request_dt.tzinfo is None:
-            request_dt = request_dt.replace(tzinfo=timezone.utc)
-        file_mtime = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0)
-        return file_mtime <= request_dt.astimezone(timezone.utc).replace(microsecond=0)
-    except Exception:
-        return False
-
-
-def _load_presence() -> dict[str, dict[str, Any]]:
-    payload = load_json(PRESENCE_PATH, {})
-    return payload if isinstance(payload, dict) else {}
-
-
-def _save_presence(payload: dict[str, dict[str, Any]]) -> None:
-    save_json(PRESENCE_PATH, payload)
-
-
-def _default_presence(player_id: int) -> dict[str, Any]:
-    return {
-        "PlayerId": int(player_id),
-        "GameSessionId": "",
-        "AppVersion": "",
-        "LastUpdateTime": _utcnow_iso(),
-        "Activity": "DormRoom",
-        "Private": False,
-        "AvailableSpace": 0,
-        "GameInProgress": False,
-    }
-
-
-def _sanitize_presence(payload: Any, player_id: int) -> dict[str, Any]:
-    data = payload if isinstance(payload, dict) else {}
-    return {
-        "PlayerId": int(player_id),
-        "GameSessionId": str(data.get("GameSessionId") or data.get("gameSessionId") or ""),
-        "AppVersion": str(data.get("AppVersion") or data.get("appVersion") or ""),
-        "LastUpdateTime": str(data.get("LastUpdateTime") or data.get("lastUpdateTime") or _utcnow_iso()),
-        "Activity": str(data.get("Activity") or data.get("activity") or "DormRoom"),
-        "Private": _safe_bool(data.get("Private", data.get("private", False))),
-        "AvailableSpace": max(0, _safe_int(data.get("AvailableSpace", data.get("availableSpace", 0)), 0)),
-        "GameInProgress": _safe_bool(data.get("GameInProgress", data.get("gameInProgress", False))),
-    }
-
-
-def get_player_presence(player_id: int) -> dict[str, Any] | None:
-    payload = _load_presence()
-    if str(player_id) not in payload:
-        return None
-    return _sanitize_presence(payload.get(str(player_id)), player_id)
-
-
-def set_player_presence(player_id: int, presence: Any) -> dict[str, Any]:
-    payload = _load_presence()
-    value = _sanitize_presence(presence, player_id)
-    payload[str(player_id)] = value
-    _save_presence(payload)
-    return value
-
-
-def _load_relationships() -> dict[str, list[dict[str, Any]]]:
-    payload = load_json(RELATIONSHIPS_PATH, {})
-    return payload if isinstance(payload, dict) else {}
-
-
-def _save_relationships(payload: dict[str, list[dict[str, Any]]]) -> None:
-    save_json(RELATIONSHIPS_PATH, payload)
-
-
-def _sanitize_relationship_list(entries: Any) -> list[dict[str, Any]]:
-    if not isinstance(entries, list):
-        return []
-    sanitized: list[dict[str, Any]] = []
-    seen: set[int] = set()
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        player_id = _safe_int(item.get("PlayerID", item.get("playerId", item.get("Id", 0))), 0)
-        rel_type = _safe_int(item.get("RelationshipType", item.get("relationshipType", 0)), 0)
-        if player_id <= 0 or player_id in seen:
-            continue
-        seen.add(player_id)
-        sanitized.append({"PlayerID": player_id, "RelationshipType": rel_type})
-    return sanitized
-
-
-def get_player_relationships(player_id: int) -> list[dict[str, Any]]:
-    payload = _load_relationships()
-    return _sanitize_relationship_list(payload.get(str(player_id), []))
-
-
-def _set_player_relationship(player_id: int, other_player_id: int, relationship_type: int) -> list[dict[str, Any]]:
-    payload = _load_relationships()
-    current = get_player_relationships(player_id)
-    updated = False
-    for entry in current:
-        if _safe_int(entry.get("PlayerID"), 0) == other_player_id:
-            entry["RelationshipType"] = relationship_type
-            updated = True
-            break
-    if not updated:
-        current.append({"PlayerID": other_player_id, "RelationshipType": relationship_type})
-    payload[str(player_id)] = _sanitize_relationship_list(current)
-    _save_relationships(payload)
-    return payload[str(player_id)]
-
-
-def _push_relationship_update(player_id: int, other_player_id: int) -> None:
-    relation = next((entry for entry in get_player_relationships(player_id) if _safe_int(entry.get("PlayerID"), 0) == other_player_id), None)
-    if relation is not None:
-        _notify_player(player_id, 1, relation)
-
-
-def apply_relationship_action(action: str, id1: int, id2: int) -> dict[str, Any]:
-    action = action.lower().strip()
-    if action == "addfriend":
-        _set_player_relationship(id1, id2, 3)
-        _set_player_relationship(id2, id1, 3)
-    elif action == "removefriend":
-        _set_player_relationship(id1, id2, 0)
-        _set_player_relationship(id2, id1, 0)
-    elif action == "sendfriendrequest":
-        _set_player_relationship(id1, id2, 1)
-        _set_player_relationship(id2, id1, 2)
-    elif action == "acceptfriendrequest":
-        _set_player_relationship(id1, id2, 3)
-        _set_player_relationship(id2, id1, 3)
-    elif action == "blockplayer":
-        _set_player_relationship(id1, id2, 4)
-        remote_current = next((entry for entry in get_player_relationships(id2) if _safe_int(entry.get("PlayerID"), 0) == id1), None)
-        remote_type = _safe_int(remote_current.get("RelationshipType") if remote_current else 0, 0)
-        _set_player_relationship(id2, id1, 6 if remote_type == 4 else 5)
-    elif action == "unblockplayer":
-        _set_player_relationship(id1, id2, 0)
-        _set_player_relationship(id2, id1, 0)
-    relation = next((entry for entry in get_player_relationships(id1) if _safe_int(entry.get("PlayerID"), 0) == id2), {"PlayerID": id2, "RelationshipType": 0})
-    _push_relationship_update(id1, id2)
-    _push_relationship_update(id2, id1)
-    return relation
-
-
-def _load_messages() -> list[dict[str, Any]]:
-    payload = load_json(MESSAGES_PATH, [])
-    return payload if isinstance(payload, list) else []
-
-
-def _save_messages(payload: list[dict[str, Any]]) -> None:
-    save_json(MESSAGES_PATH, payload)
-
-
-def _sanitize_message(message: Any) -> dict[str, Any] | None:
-    if not isinstance(message, dict):
-        return None
-    message_id = _safe_int(message.get("Id"), 0)
-    from_player_id = _safe_int(message.get("FromPlayerId"), 0)
-    to_player_id = _safe_int(message.get("ToPlayerId"), 0)
-    msg_type = _safe_int(message.get("Type"), 0)
-    sent_time = str(message.get("SentTime") or _utcnow_iso())
-    data = str(message.get("Data") or "")
-    if message_id <= 0 or from_player_id <= 0 or to_player_id <= 0:
-        return None
-    return {
-        "Id": message_id,
-        "FromPlayerId": from_player_id,
-        "ToPlayerId": to_player_id,
-        "SentTime": sent_time,
-        "Type": msg_type,
-        "Data": data,
-    }
-
-
-def _next_message_id(messages: list[dict[str, Any]]) -> int:
-    return max((_safe_int(item.get("Id"), 0) for item in messages if isinstance(item, dict)), default=0) + 1
-
-
-def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: str = "") -> dict[str, Any]:
-    messages = _load_messages()
-    message = {
-        "Id": _next_message_id(messages),
-        "FromPlayerId": from_player_id,
-        "ToPlayerId": to_player_id,
-        "SentTime": _utcnow_iso(),
-        "Type": msg_type,
-        "Data": str(data or ""),
-    }
-    messages.append(message)
-    _save_messages(messages)
-    _notify_player(to_player_id, 2, {k: v for k, v in message.items() if k != "ToPlayerId"})
-    return message
-
-
-def delete_message_for_player(message_id: int) -> bool:
-    messages = _load_messages()
-    kept: list[dict[str, Any]] = []
-    removed: dict[str, Any] | None = None
-    for item in messages:
-        sanitized = _sanitize_message(item)
-        if sanitized is None:
-            continue
-        if sanitized["Id"] == message_id and removed is None:
-            removed = sanitized
-            continue
-        kept.append(sanitized)
-    if removed is None:
-        return False
-    _save_messages(kept)
-    _notify_player(_safe_int(removed.get("ToPlayerId"), 0), 3, {"Id": message_id})
-    return True
-
-
-def get_messages_for_player(player_id: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in _load_messages():
-        sanitized = _sanitize_message(item)
-        if sanitized is None:
-            continue
-        if _safe_int(sanitized.get("ToPlayerId"), 0) == player_id:
-            rows.append({k: v for k, v in sanitized.items() if k != "ToPlayerId"})
-    rows.sort(key=lambda item: _safe_int(item.get("Id"), 0))
-    return rows
-
-
-def _load_game_sessions() -> list[dict[str, Any]]:
-    payload = load_json(GAME_SESSIONS_PATH, [])
-    return payload if isinstance(payload, list) else []
-
-
-def _save_game_sessions(payload: list[dict[str, Any]]) -> None:
-    save_json(GAME_SESSIONS_PATH, payload)
-
-
-def _sanitize_game_session(entry: Any) -> dict[str, Any] | None:
-    if not isinstance(entry, dict):
-        return None
-    session_id = str(entry.get("Id") or "").strip()
-    if not session_id:
-        return None
-    player_ids = entry.get("PlayerIds", [])
-    if not isinstance(player_ids, list):
-        player_ids = []
-    return {
-        "Id": session_id,
-        "AppVersion": str(entry.get("AppVersion") or ""),
-        "Activity": str(entry.get("Activity") or "DormRoom"),
-        "Private": _safe_bool(entry.get("Private", False)),
-        "AvailableSpace": max(0, _safe_int(entry.get("AvailableSpace", 0), 0)),
-        "GameInProgress": _safe_bool(entry.get("GameInProgress", False)),
-        "PlayerIds": [_safe_int(player_id, 0) for player_id in player_ids if _safe_int(player_id, 0) > 0],
-    }
-
-
-def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in _load_game_sessions():
-        sanitized = _sanitize_game_session(item)
-        if sanitized is None:
-            continue
-        if app_version and sanitized["AppVersion"] and sanitized["AppVersion"] != app_version:
-            continue
-        rows.append(sanitized)
-    return rows
-
-
-def get_game_session(session_id: str) -> dict[str, Any] | None:
-    session_id = str(session_id or "").strip()
-    for item in _load_game_sessions():
-        sanitized = _sanitize_game_session(item)
-        if sanitized and sanitized["Id"] == session_id:
-            return sanitized
-    return None
-
-
-def _load_gift_packages() -> dict[str, list[dict[str, Any]]]:
-    payload = load_json(GIFT_PACKAGES_PATH, {})
-    return payload if isinstance(payload, dict) else {}
-
-
-def _save_gift_packages(payload: dict[str, list[dict[str, Any]]]) -> None:
-    save_json(GIFT_PACKAGES_PATH, payload)
-
-
-def _sanitize_gift_packages(entries: Any) -> list[dict[str, Any]]:
-    if not isinstance(entries, list):
-        return []
-    sanitized: list[dict[str, Any]] = []
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        gift_id = _safe_int(item.get("Id"), 0)
-        avatar_item_desc = str(item.get("AvatarItemDesc") or "")
-        xp = max(0, _safe_int(item.get("Xp"), 0))
-        if gift_id <= 0:
-            continue
-        sanitized.append({"Id": gift_id, "AvatarItemDesc": avatar_item_desc, "Xp": xp})
-    return sanitized
-
-
-def get_gift_packages(player_id: int) -> list[dict[str, Any]]:
-    payload = _load_gift_packages()
-    return _sanitize_gift_packages(payload.get(str(player_id), []))
-
-
-def create_gift_package(player_id: int, avatar_item_desc: str, xp: int) -> dict[str, Any]:
-    payload = _load_gift_packages()
-    all_entries = [gift for gifts in payload.values() if isinstance(gifts, list) for gift in gifts if isinstance(gift, dict)]
-    next_id = max((_safe_int(item.get("Id"), 0) for item in all_entries), default=0) + 1
-    gift = {"Id": next_id, "AvatarItemDesc": str(avatar_item_desc or ""), "Xp": max(0, _safe_int(xp, 0))}
-    current = get_gift_packages(player_id)
-    current.append(gift)
-    payload[str(player_id)] = current
-    _save_gift_packages(payload)
-    return gift
-
-
-def consume_gift_package(player_id: int, gift_id: int) -> bool:
-    payload = _load_gift_packages()
-    current = get_gift_packages(player_id)
-    updated = [gift for gift in current if _safe_int(gift.get("Id"), 0) != gift_id]
-    if len(updated) == len(current):
-        return False
-    payload[str(player_id)] = updated
-    _save_gift_packages(payload)
-    return True
-
-
-def xp_required_for_level(level: int) -> int:
-    level = max(1, _safe_int(level, 1))
-    return 500 + ((level - 1) * 250)
-
-
-def apply_objective_completion(player_id: int, objective_type: int, additional_xp: int, in_party: bool) -> dict[str, int]:
-    players = load_players()
-    player = get_player_by_id(player_id)
-    if player is None:
-        player = make_player(DEFAULT_PLATFORM, player_id)
-    base_xp_lookup = {item["type"]: item["xp"] for item in DEFAULT_OBJECTIVE_POOL if isinstance(item, dict) and "type" in item and "xp" in item}
-    delta_xp = max(25, _safe_int(base_xp_lookup.get(_safe_int(objective_type, 0), 100), 100) + max(0, _safe_int(additional_xp, 0)))
-    if in_party:
-        delta_xp += 25
-
-    current_xp = max(0, _safe_int(player.get("XP"), 0)) + delta_xp
-    current_level = max(1, _safe_int(player.get("Level"), 1))
-    threshold = xp_required_for_level(current_level)
-
-    while current_xp >= threshold:
-        current_xp -= threshold
-        current_level += 1
-        threshold = xp_required_for_level(current_level)
-
-    player["XP"] = current_xp
-    player["Level"] = current_level
-    player = _sanitize_player_for_response(player)
-    players[player_key(player["Platform"], player["PlatformId"])] = player
-    save_players(players)
-
-    return {
-        "deltaXp": delta_xp,
-        "currentLevel": current_level,
-        "currentXp": current_xp,
-        "xpRequiredToLevelUp": threshold,
-    }
-
-
-def _ws_authorized() -> bool:
-    if not REQUIRE_WS_AUTH:
-        return True
-    return _is_authenticated()
-
-
-def _ws_register_player(player_id: int, ws: Any) -> None:
-    with _ws_clients_lock:
-        _ws_clients_by_player[player_id].add(ws)
-
-
-def _ws_unregister_player(player_id: int, ws: Any) -> None:
-    with _ws_clients_lock:
-        clients = _ws_clients_by_player.get(player_id)
-        if not clients:
-            return
-        clients.discard(ws)
-        if not clients:
-            _ws_clients_by_player.pop(player_id, None)
-
-
-def _notify_player(player_id: int, notification_id: int, message: Any) -> None:
-    if player_id <= 0:
-        return
-    packet = json.dumps({"Id": int(notification_id), "Msg": message}, separators=(",", ":"))
-    stale: list[Any] = []
-    with _ws_clients_lock:
-        clients = list(_ws_clients_by_player.get(player_id, set()))
-    for ws in clients:
-        try:
-            ws.send(packet)
-        except Exception:
-            stale.append(ws)
-    for ws in stale:
-        _ws_unregister_player(player_id, ws)
-
-
-=======
->>>>>>> parent of fae4b24 (Server update 23 November 2016)
 
 def _stable_player_id(platform: int, platform_id: int) -> int:
     digest = hashlib.sha256(f"{platform}:{platform_id}".encode("utf-8")).digest()
@@ -1311,13 +856,6 @@ def get_player_by_id(player_id: int) -> dict[str, Any] | None:
 
 
 
-def ensure_player_related_state(player_id: int) -> None:
-    try:
-        get_or_create_avatar(player_id)
-    except Exception:
-        pass
-
-
 def get_or_create_player(platform: int, platform_id: int) -> dict[str, Any] | None:
     players = load_players()
     key = player_key(platform, platform_id)
@@ -1326,14 +864,12 @@ def get_or_create_player(platform: int, platform_id: int) -> dict[str, Any] | No
         if canonical != players[key]:
             players[key] = canonical
             save_players(players)
-        ensure_player_related_state(_safe_int(canonical.get("Id"), 0))
         return canonical
     if not AUTO_CREATE_ON_GET:
         return None
     player = _sanitize_player_for_response(make_player(platform, platform_id))
     players[key] = player
     save_players(players)
-    ensure_player_related_state(_safe_int(player.get("Id"), 0))
     return player
 
 
@@ -1535,8 +1071,8 @@ def _guess_image_content_type(image_bytes: bytes, provided_content_type: str = "
     return "application/octet-stream"
 
 
-def _load_player_image(player_id: int) -> tuple[bytes, str, Path | None]:
-    image_path = _resolve_existing_image_path_for_player(player_id)
+def _load_player_image(player_id: int) -> tuple[bytes, str]:
+    image_path = _image_path_for_player(player_id)
     meta_path = _image_meta_path_for_player(player_id)
     if image_path.exists():
         try:
@@ -1545,10 +1081,10 @@ def _load_player_image(player_id: int) -> tuple[bytes, str, Path | None]:
             stored_type = str(meta.get("content_type") or "") if isinstance(meta, dict) else ""
             content_type = _supported_image_content_type(payload, stored_type, str(meta.get("filename") or image_path.name) if isinstance(meta, dict) else image_path.name)
             if content_type:
-                return payload, content_type, image_path
+                return payload, content_type
         except Exception:
             pass
-    return _TRANSPARENT_PNG, "image/png", None
+    return _TRANSPARENT_PNG, "image/png"
 
 
 
@@ -1580,7 +1116,6 @@ def _sanitize_player_for_response(player: dict[str, Any]) -> dict[str, Any]:
     username = str(player.get("Username") or player.get("username") or display_name).strip() or display_name
 
     email = DEFAULT_VERIFIED_EMAIL
-    level = max(1, _safe_int(player.get("Level"), 1))
     sanitized = {
         "Id": _safe_int(player.get("Id"), 0),
         "Platform": _safe_int(player.get("Platform"), DEFAULT_PLATFORM),
@@ -1588,8 +1123,7 @@ def _sanitize_player_for_response(player: dict[str, Any]) -> dict[str, Any]:
         "Name": display_name,
         "DisplayName": display_name,
         "XP": max(0, _safe_int(player.get("XP"), 0)),
-        "Level": level,
-        "XpRequiredToLevelUp": xp_required_for_level(level),
+        "Level": max(1, _safe_int(player.get("Level"), 1)),
         "Reputation": _safe_int(player.get("Reputation"), DEFAULT_REPUTATION),
         "Email": email,
         "Username": username,
@@ -1651,16 +1185,6 @@ def debug_players() -> Any:
 
 
 
-@app.get("/__debug/websockets")
-def debug_websockets() -> Any:
-    if not ENABLE_DEBUG_ENDPOINTS:
-        return _debug_enabled_response()
-    with _ws_clients_lock:
-        connected = {str(player_id): len(clients) for player_id, clients in _ws_clients_by_player.items()}
-    return jsonify({"connected": connected, "events": load_websocket_logs()})
-
-
-
 @app.get("/")
 def root() -> Any:
     return jsonify(
@@ -1687,12 +1211,10 @@ def players_v1_create() -> Any:
         merged = _merge_player_records(existing, player, payload)
         players[key] = merged
         save_players(players)
-        ensure_player_related_state(_safe_int(merged.get("Id"), 0))
         return jsonify(merged)
 
     players[key] = _merge_player_records({}, player, payload)
     save_players(players)
-    ensure_player_related_state(_safe_int(players[key].get("Id"), 0))
     return jsonify(players[key]), 201
 
 
@@ -1719,7 +1241,6 @@ def players_v1_update(player_id: int) -> Any:
         del players[old_key]
     players[new_key] = merged
     save_players(players)
-    ensure_player_related_state(_safe_int(merged.get("Id"), 0))
     return jsonify(merged)
 
 
@@ -1766,15 +1287,11 @@ def players_v1(subpath: str = "") -> Any:
 
     if request.method == "GET":
         if existing is not None:
-            existing = _sanitize_player_for_response(existing)
-            ensure_player_related_state(_safe_int(existing.get("Id"), 0))
-            return jsonify(existing)
+            return jsonify(_sanitize_player_for_response(existing))
         player = get_or_create_player(platform, platform_id)
         if player is None:
             return jsonify({"error": "player not found"}), 404
-        player = _sanitize_player_for_response(player)
-        ensure_player_related_state(_safe_int(player.get("Id"), 0))
-        return jsonify(player)
+        return jsonify(_sanitize_player_for_response(player))
 
     if request.method == "POST":
         player = normalize_player_payload(payload, platform, platform_id)
@@ -1782,7 +1299,6 @@ def players_v1(subpath: str = "") -> Any:
         merged = _merge_player_records(players.get(key) or {}, player, payload)
         players[key] = merged
         save_players(players)
-        ensure_player_related_state(_safe_int(merged.get("Id"), 0))
         return jsonify(merged), 201
 
     current = existing if existing is not None else make_player(platform, platform_id)
@@ -1794,7 +1310,6 @@ def players_v1(subpath: str = "") -> Any:
         del players[old_key]
     players[new_key] = merged
     save_players(players)
-    ensure_player_related_state(_safe_int(merged.get("Id"), 0))
     return jsonify(merged)
 
 
@@ -1802,13 +1317,8 @@ def players_v1(subpath: str = "") -> Any:
 @app.route("/api/images/v1/profile/<int:player_id>", methods=["GET", "POST", "PUT"])
 def player_profile_image(player_id: int) -> Any:
     if request.method == "GET":
-        image_bytes, content_type, image_path = _load_player_image(player_id)
-        if image_path is not None and _if_modified_since_matches(image_path, request.headers.get("If-Modified-Since")):
-            return Response(status=304)
-        headers = {"Content-Length": str(len(image_bytes))}
-        if image_path is not None:
-            headers["Last-Modified"] = _http_last_modified_for_path(image_path)
-        return Response(image_bytes, mimetype=content_type, headers=headers)
+        image_bytes, content_type = _load_player_image(player_id)
+        return Response(image_bytes, mimetype=content_type, headers={"Content-Length": str(len(image_bytes))})
 
     image_bytes, content_type, filename = _extract_image_upload_from_request()
 
@@ -1932,209 +1442,6 @@ def motd_config_v1() -> Any:
 
 
 
-<<<<<<< HEAD
-@app.route("/api/players/v1/list", methods=["POST"])
-def players_v1_list() -> Any:
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, list):
-        payload = _extract_request_payload().get("ids", [])
-        if not isinstance(payload, list):
-            payload = []
-    profiles: list[dict[str, Any]] = []
-    for raw_id in payload:
-        player = get_player_by_id(_safe_int(raw_id, 0))
-        if player is not None:
-            profiles.append(_sanitize_player_for_response(player))
-    return jsonify(profiles)
-
-
-@app.route("/api/players/v1/updateReputation/<int:player_id>", methods=["POST"])
-def players_v1_update_reputation(player_id: int) -> Any:
-    players = load_players()
-    current = get_player_by_id(player_id)
-    if current is None:
-        current = make_player(DEFAULT_PLATFORM, player_id)
-    payload = _extract_request_payload()
-    current["Reputation"] = _safe_int(payload.get("reputation", payload.get("Reputation", current.get("Reputation", DEFAULT_REPUTATION))), DEFAULT_REPUTATION)
-    current = _sanitize_player_for_response(current)
-    players[player_key(current["Platform"], current["PlatformId"])] = current
-    save_players(players)
-    return jsonify(current)
-
-
-@app.route("/api/players/v1/objective/<int:player_id>", methods=["POST"])
-def players_v1_objective(player_id: int) -> Any:
-    payload = _extract_request_payload()
-    response = apply_objective_completion(
-        player_id,
-        _safe_int(payload.get("objectiveType", payload.get("ObjectiveType", 0)), 0),
-        _safe_int(payload.get("additionalXp", payload.get("AdditionalXp", 0)), 0),
-        _safe_bool(payload.get("inParty", payload.get("InParty", False))),
-    )
-    return jsonify(response)
-
-
-@app.route("/api/presence/v1/list", methods=["POST"])
-def presence_v1_list() -> Any:
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, list):
-        payload = []
-    rows: list[dict[str, Any]] = []
-    for raw_id in payload:
-        player_id = _safe_int(raw_id, 0)
-        presence = get_player_presence(player_id)
-        if presence is not None:
-            rows.append(presence)
-    return jsonify(rows)
-
-
-@app.route("/api/presence/v1/<int:player_id>", methods=["GET", "POST"])
-def presence_v1_player(player_id: int) -> Any:
-    if request.method == "GET":
-        presence = get_player_presence(player_id)
-        if presence is None:
-            return Response("null", mimetype="application/json")
-        return jsonify(presence)
-
-    payload = _extract_request_payload()
-    updated = set_player_presence(player_id, payload)
-    return jsonify(updated)
-
-
-@app.route("/api/gamesessions/v1/", methods=["GET"])
-@app.route("/api/gamesessions/v1", methods=["GET"])
-def gamesessions_v1_all() -> Any:
-    version = str(request.args.get("v", "") or "")
-    return jsonify(get_game_sessions(version))
-
-
-@app.route("/api/gamesessions/v1/<path:session_id>", methods=["GET"])
-def gamesessions_v1_single(session_id: str) -> Any:
-    session = get_game_session(session_id)
-    if session is None:
-        return jsonify({}), 404
-    return jsonify(session)
-
-
-@app.route("/api/messages/v1/get/<int:player_id>", methods=["GET"])
-def messages_v1_get(player_id: int) -> Any:
-    return jsonify(get_messages_for_player(player_id))
-
-
-@app.route("/api/messages/v1/send", methods=["POST"])
-def messages_v1_send() -> Any:
-    payload = _extract_request_payload()
-    message = create_message(
-        _safe_int(payload.get("FromPlayerId", payload.get("fromPlayerId", 0)), 0),
-        _safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0),
-        _safe_int(payload.get("Type", payload.get("type", 0)), 0),
-        str(payload.get("Data", payload.get("data", "")) or ""),
-    )
-    return jsonify({k: v for k, v in message.items() if k != "ToPlayerId"})
-
-
-@app.route("/api/messages/v1/delete", methods=["POST"])
-def messages_v1_delete() -> Any:
-    payload = _extract_request_payload()
-    message_id = _safe_int(payload.get("Id", payload.get("id", 0)), 0)
-    if message_id <= 0:
-        return jsonify({"error": "message not found"}), 404
-    if not delete_message_for_player(message_id):
-        return jsonify({"error": "message not found"}), 404
-    return jsonify({"ok": True, "Id": message_id})
-
-
-@app.route("/api/relationships/v1/get/<int:player_id>", methods=["GET"])
-def relationships_v1_get(player_id: int) -> Any:
-    return jsonify(get_player_relationships(player_id))
-
-
-@app.route("/api/relationships/v1/<action>", methods=["GET"])
-def relationships_v1_action(action: str) -> Any:
-    id1 = _safe_int(request.args.get("id1", 0), 0)
-    id2 = _safe_int(request.args.get("id2", 0), 0)
-    relation = apply_relationship_action(action, id1, id2)
-    return jsonify(relation)
-
-
-@app.route("/api/avatar/v1/gifts/<int:player_id>", methods=["GET"])
-def avatar_gifts_get(player_id: int) -> Any:
-    return jsonify(get_gift_packages(player_id))
-
-
-@app.route("/api/avatar/v1/gifts/create/<int:player_id>", methods=["POST"])
-def avatar_gifts_create(player_id: int) -> Any:
-    payload = _extract_request_payload()
-    gift = create_gift_package(
-        player_id,
-        str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""),
-        _safe_int(payload.get("Xp", payload.get("xp", 0)), 0),
-    )
-    return jsonify(gift)
-
-
-@app.route("/api/avatar/v1/gifts/consume/", methods=["POST"])
-@app.route("/api/avatar/v1/gifts/consume", methods=["POST"])
-def avatar_gifts_consume() -> Any:
-    payload = _extract_request_payload()
-    player_id = _safe_int(payload.get("PlayerId", payload.get("playerId", 0)), 0)
-    gift_id = _safe_int(payload.get("Id", payload.get("id", 0)), 0)
-    if not consume_gift_package(player_id, gift_id):
-        return jsonify({"error": "gift not found"}), 404
-    return jsonify({"ok": True, "Id": gift_id})
-
-
-@sock.route("/api/notification/v1")
-def notification_socket(ws: Any) -> None:
-    log_websocket_event("connect_attempt")
-    if not _ws_authorized():
-        log_websocket_event("unauthorized")
-        try:
-            ws.close(message="unauthorized")
-        except Exception:
-            pass
-        return
-
-    player_id = 0
-    try:
-        handshake = ws.receive()
-        log_websocket_event("handshake_received", detail=handshake)
-        if handshake is None:
-            return
-        parsed = json.loads(handshake)
-        if not isinstance(parsed, dict):
-            log_websocket_event("handshake_invalid", detail=handshake)
-            ws.close(message="invalid handshake")
-            return
-        player_id = _safe_int(parsed.get("Id", 0), 0)
-        if player_id <= 0:
-            log_websocket_event("handshake_missing_player", detail=parsed)
-            ws.close(message="missing player id")
-            return
-
-        ensure_player_related_state(player_id)
-        _ws_register_player(player_id, ws)
-        log_websocket_event("registered", player_id=player_id)
-        ws.send("OK")
-        log_websocket_event("handshake_ok", player_id=player_id)
-
-        while True:
-            message = ws.receive()
-            if message is None:
-                break
-            if isinstance(message, str) and message.strip().lower() == "ping":
-                ws.send("pong")
-                log_websocket_event("ping", player_id=player_id)
-    except Exception as exc:
-        log_websocket_event("socket_exception", player_id=player_id, detail=str(exc))
-    finally:
-        if player_id > 0:
-            _ws_unregister_player(player_id, ws)
-            log_websocket_event("disconnected", player_id=player_id)
-
-
-=======
->>>>>>> parent of fae4b24 (Server update 23 November 2016)
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
     return jsonify(
