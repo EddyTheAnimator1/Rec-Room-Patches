@@ -56,7 +56,7 @@ DEFAULT_OBJECTIVES_CONFIG_V1 = [
     ],
     [
         {"type": 701, "score": 1, "xp": 100},
-        {"type": 702, "score": 5, "xp": 100},
+        {"type": 502, "score": 5, "xp": 100},
         {"type": 501, "score": 1, "xp": 100},
     ],
     [
