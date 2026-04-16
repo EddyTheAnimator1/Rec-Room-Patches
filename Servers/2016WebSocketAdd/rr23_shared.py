@@ -32,6 +32,37 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def datetime_to_dotnet_ticks(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    unix_us = int(value.timestamp() * 1_000_000)
+    return 621355968000000000 + (unix_us * 10)
+
+
+def utcnow_ticks() -> int:
+    return datetime_to_dotnet_ticks(datetime.now(timezone.utc))
+
+
+def parse_dotnet_ticks(value: Any, default: int | None = None) -> int:
+    if default is None:
+        default = utcnow_ticks()
+    if isinstance(value, (int, float)):
+        ivalue = int(value)
+        return ivalue if ivalue > 0 else default
+    raw = str(value or '').strip()
+    if not raw:
+        return default
+    if raw.lstrip('-').isdigit():
+        ivalue = int(raw)
+        return ivalue if ivalue > 0 else default
+    try:
+        return datetime_to_dotnet_ticks(datetime.fromisoformat(raw.replace('Z', '+00:00')) )
+    except Exception:
+        return default
+
+
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -532,7 +563,7 @@ def get_presence(player_id: int) -> dict[str, Any] | None:
         "PlayerId": safe_int(row["player_id"], 0),
         "GameSessionId": str(row["game_session_id"] or ""),
         "AppVersion": str(row["app_version"] or ""),
-        "LastUpdateTime": str(row["last_update_time"] or utcnow_iso()),
+        "LastUpdateTime": parse_dotnet_ticks(row["last_update_time"]),
         "Activity": str(row["activity"] or "DormRoom"),
         "Private": bool(row["private"]),
         "AvailableSpace": max(0, safe_int(row["available_space"], 0)),
@@ -545,7 +576,7 @@ def set_presence(player_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         "PlayerId": player_id,
         "GameSessionId": "",
         "AppVersion": "",
-        "LastUpdateTime": utcnow_iso(),
+        "LastUpdateTime": utcnow_ticks(),
         "Activity": "DormRoom",
         "Private": False,
         "AvailableSpace": 0,
@@ -555,7 +586,7 @@ def set_presence(player_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         "PlayerId": player_id,
         "GameSessionId": str(payload.get("GameSessionId", payload.get("gameSessionId", current["GameSessionId"])) or ""),
         "AppVersion": str(payload.get("AppVersion", payload.get("appVersion", current["AppVersion"])) or ""),
-        "LastUpdateTime": str(payload.get("LastUpdateTime", payload.get("lastUpdateTime", utcnow_iso())) or utcnow_iso()),
+        "LastUpdateTime": parse_dotnet_ticks(payload.get("LastUpdateTime", payload.get("lastUpdateTime", current["LastUpdateTime"]))),
         "Activity": str(payload.get("Activity", payload.get("activity", current["Activity"])) or "DormRoom"),
         "Private": parse_bool(payload.get("Private", payload.get("private", current["Private"])), False),
         "AvailableSpace": max(0, safe_int(payload.get("AvailableSpace", payload.get("availableSpace", current["AvailableSpace"])), 0)),
@@ -649,7 +680,7 @@ def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: 
     with closing(connect()) as conn:
         cursor = conn.execute(
             "INSERT INTO messages(from_player_id, to_player_id, sent_time, type, data) VALUES (?, ?, ?, ?, ?)",
-            (from_player_id, to_player_id, utcnow_iso(), msg_type, str(data or "")),
+            (from_player_id, to_player_id, str(utcnow_ticks()), msg_type, str(data or "")),
         )
         message_id = safe_int(cursor.lastrowid, 0)
         conn.commit()
@@ -657,7 +688,7 @@ def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: 
         "Id": message_id,
         "FromPlayerId": from_player_id,
         "ToPlayerId": to_player_id,
-        "SentTime": utcnow_iso(),
+        "SentTime": utcnow_ticks(),
         "Type": msg_type,
         "Data": str(data or ""),
     }
@@ -676,7 +707,7 @@ def get_messages_for_player(player_id: int) -> list[dict[str, Any]]:
         {
             "Id": safe_int(row["id"], 0),
             "FromPlayerId": safe_int(row["from_player_id"], 0),
-            "SentTime": str(row["sent_time"]),
+            "SentTime": parse_dotnet_ticks(row["sent_time"]),
             "Type": safe_int(row["type"], 0),
             "Data": str(row["data"] or ""),
         }

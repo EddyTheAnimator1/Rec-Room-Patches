@@ -665,6 +665,28 @@ def avatar_v2_items() -> Any:
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
 
+@app.route("/api/avatar/v2/unlocked", methods=["GET"])
+@app.route("/api/avatar/v2/unlocked/", methods=["GET"])
+@app.route("/api/avatar/v2/items/unlocked", methods=["GET"])
+@app.route("/api/avatar/v2/items/unlocked/", methods=["GET"])
+@app.route("/api/avatar/v2/list", methods=["GET"])
+@app.route("/api/avatar/v2/list/", methods=["GET"])
+def avatar_v2_items_aliases() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
+
+
+@app.route("/api/avatar/v2/<path:subpath>", methods=["GET"])
+def avatar_v2_fallback(subpath: str) -> Any:
+    normalized = subpath.strip("/").lower()
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    if any(token in normalized for token in ("item", "unlock", "list")):
+        return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
+    return Response(json.dumps(shared.get_avatar(player_id)), mimetype="application/json")
+
+
 @app.route("/api/avatar/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH"])
 @app.route("/api/avatar/v1/<int:player_id>/", methods=["GET", "POST", "PUT", "PATCH"])
 def avatar_v1(player_id: int) -> Any:
