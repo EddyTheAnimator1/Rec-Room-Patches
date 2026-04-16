@@ -28,7 +28,7 @@ DEFAULT_OBJECTIVES = [
         "Date": "fallback",
         "Objectives": [
             {"ObjectiveType": 301, "RequiredScore": 1, "Xp": 100},
-            {"ObjectiveType": 302, "RequiredScore": 5, "Xp": 100},
+            {"ObjectiveType": 300, "RequiredScore": 1, "Xp": 100},
             {"ObjectiveType": 801, "RequiredScore": 1, "Xp": 100},
         ],
     }
@@ -36,38 +36,38 @@ DEFAULT_OBJECTIVES = [
 DEFAULT_OBJECTIVES_CONFIG_V1 = [
     [
         {"type": 301, "score": 1, "xp": 100},
-        {"type": 302, "score": 5, "xp": 100},
+        {"type": 300, "score": 1, "xp": 100},
         {"type": 801, "score": 1, "xp": 100},
     ],
     [
         {"type": 801, "score": 1, "xp": 100},
         {"type": 800, "score": 1, "xp": 100},
-        {"type": 400, "score": 1, "xp": 100},
+        {"type": 301, "score": 1, "xp": 100},
     ],
     [
         {"type": 201, "score": 1, "xp": 100},
         {"type": 200, "score": 1, "xp": 100},
-        {"type": 301, "score": 1, "xp": 100},
+        {"type": 400, "score": 1, "xp": 100},
     ],
     [
         {"type": 500, "score": 1, "xp": 100},
         {"type": 501, "score": 1, "xp": 100},
-        {"type": 502, "score": 5, "xp": 100},
+        {"type": 301, "score": 1, "xp": 100},
     ],
     [
         {"type": 601, "score": 1, "xp": 100},
         {"type": 600, "score": 1, "xp": 100},
-        {"type": 602, "score": 5, "xp": 100},
+        {"type": 801, "score": 1, "xp": 100},
     ],
     [
         {"type": 701, "score": 1, "xp": 100},
         {"type": 700, "score": 1, "xp": 100},
-        {"type": 702, "score": 5, "xp": 100},
+        {"type": 500, "score": 1, "xp": 100},
     ],
     [
         {"type": 400, "score": 1, "xp": 100},
         {"type": 401, "score": 1, "xp": 100},
-        {"type": 402, "score": 5, "xp": 100},
+        {"type": 201, "score": 1, "xp": 100},
     ],
 ]
 
