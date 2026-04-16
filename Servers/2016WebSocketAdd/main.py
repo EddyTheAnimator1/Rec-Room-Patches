@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -41,33 +41,33 @@ DEFAULT_OBJECTIVES_CONFIG_V1 = [
     ],
     [
         {"type": 801, "score": 1, "xp": 100},
-        {"type": 802, "score": 2, "xp": 100},
+        {"type": 800, "score": 1, "xp": 100},
         {"type": 400, "score": 1, "xp": 100},
     ],
     [
         {"type": 201, "score": 1, "xp": 100},
-        {"type": 202, "score": 3, "xp": 100},
-        {"type": 302, "score": 3, "xp": 100},
+        {"type": 200, "score": 1, "xp": 100},
+        {"type": 301, "score": 1, "xp": 100},
     ],
     [
         {"type": 500, "score": 1, "xp": 100},
+        {"type": 501, "score": 1, "xp": 100},
         {"type": 502, "score": 5, "xp": 100},
-        {"type": 603, "score": 1, "xp": 100},
+    ],
+    [
+        {"type": 601, "score": 1, "xp": 100},
+        {"type": 600, "score": 1, "xp": 100},
+        {"type": 602, "score": 5, "xp": 100},
     ],
     [
         {"type": 701, "score": 1, "xp": 100},
+        {"type": 700, "score": 1, "xp": 100},
         {"type": 702, "score": 5, "xp": 100},
-        {"type": 501, "score": 1, "xp": 100},
-    ],
-    [
-        {"type": 100, "score": 1, "xp": 100},
-        {"type": 101, "score": 1, "xp": 100},
-        {"type": 300, "score": 1, "xp": 100},
     ],
     [
         {"type": 400, "score": 1, "xp": 100},
+        {"type": 401, "score": 1, "xp": 100},
         {"type": 402, "score": 5, "xp": 100},
-        {"type": 200, "score": 1, "xp": 100},
     ],
 ]
 
@@ -83,13 +83,27 @@ def now_http_date() -> str:
     return format_datetime(datetime.now(timezone.utc), usegmt=True)
 
 
-def daily_objectives_for_date(target_date: datetime | None = None) -> dict[str, Any]:
-    current_date = (target_date or datetime.now(timezone.utc)).date()
+def objective_day_index(target_date: date | datetime | None = None) -> int:
+    if target_date is None:
+        current_date = datetime.now(timezone.utc).date()
+    elif isinstance(target_date, datetime):
+        current_date = target_date.date()
+    else:
+        current_date = target_date
+    return (current_date.weekday() + 1) % 7
+
+
+def daily_objectives_for_date(target_date: date | datetime | None = None) -> dict[str, Any]:
+    if target_date is None:
+        current_date = datetime.now(timezone.utc).date()
+    elif isinstance(target_date, datetime):
+        current_date = target_date.date()
+    else:
+        current_date = target_date
     if not DEFAULT_OBJECTIVES_CONFIG_V1:
         return DEFAULT_OBJECTIVES[0]
 
-    cycle_index = current_date.toordinal() % len(DEFAULT_OBJECTIVES_CONFIG_V1)
-    config = DEFAULT_OBJECTIVES_CONFIG_V1[cycle_index]
+    config = DEFAULT_OBJECTIVES_CONFIG_V1[objective_day_index(current_date)]
     return {
         "Date": current_date.isoformat(),
         "Objectives": [
@@ -406,6 +420,7 @@ def settings_v1(player_id: int = 0) -> Any:
 
 
 @app.route("/api/avatar/v1/<int:player_id>", methods=["GET", "POST", "PUT", "PATCH"])
+@app.route("/api/avatar/v1/<int:player_id>/", methods=["GET", "POST", "PUT", "PATCH"])
 def avatar_v1(player_id: int) -> Any:
     if request.method == "GET":
         return jsonify(shared.get_avatar(player_id))
@@ -430,18 +445,23 @@ def avatar_items_create() -> Any:
 
 
 @app.route("/api/avatar/v1/items/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/items/<int:player_id>/", methods=["GET"])
 @app.route("/api/avatar/v1/items/unlocked/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/items/unlocked/<int:player_id>/", methods=["GET"])
 @app.route("/api/avatar/v1/unlocked/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/unlocked/<int:player_id>/", methods=["GET"])
 def avatar_items_get(player_id: int) -> Any:
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
 
 @app.route("/api/avatar/v1/gifts/<int:player_id>", methods=["GET"])
+@app.route("/api/avatar/v1/gifts/<int:player_id>/", methods=["GET"])
 def gifts_get(player_id: int) -> Any:
     return Response(json.dumps(shared.get_gift_packages(player_id)), mimetype="application/json")
 
 
 @app.route("/api/avatar/v1/gifts/create/<int:player_id>", methods=["POST"])
+@app.route("/api/avatar/v1/gifts/create/<int:player_id>/", methods=["POST"])
 def gifts_create(player_id: int) -> Any:
     payload = request_payload()
     return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0)))
@@ -530,6 +550,7 @@ def presence_list() -> Any:
 
 
 @app.route("/api/presence/v1/<int:player_id>", methods=["GET", "POST"])
+@app.route("/api/presence/v1/<int:player_id>/", methods=["GET", "POST"])
 def presence_player(player_id: int) -> Any:
     if request.method == "GET":
         presence = shared.get_presence(player_id)
@@ -544,6 +565,7 @@ def game_sessions() -> Any:
 
 
 @app.route("/api/gamesessions/v1/<path:session_id>", methods=["GET"])
+@app.route("/api/gamesessions/v1/<path:session_id>/", methods=["GET"])
 def game_session(session_id: str) -> Any:
     session = shared.get_game_session(session_id)
     if session is None:
@@ -561,6 +583,7 @@ def messages_get(player_id: int | None = None) -> Any:
 
 
 @app.route("/api/messages/v1/send", methods=["POST"])
+@app.route("/api/messages/v1/send/", methods=["POST"])
 def messages_send() -> Any:
     payload = request_payload()
     message = shared.create_message(
@@ -573,7 +596,9 @@ def messages_send() -> Any:
 
 
 @app.route("/api/messages/v1/delete", methods=["POST"])
+@app.route("/api/messages/v1/delete/", methods=["POST"])
 @app.route("/api/messages/v1/delete/<int:message_id>", methods=["POST", "DELETE"])
+@app.route("/api/messages/v1/delete/<int:message_id>/", methods=["POST", "DELETE"])
 def messages_delete(message_id: int | None = None) -> Any:
     payload = request_payload()
     resolved_message_id = message_id if message_id is not None else shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
@@ -592,10 +617,17 @@ def relationships_get(player_id: int | None = None) -> Any:
 
 
 @app.route("/api/relationships/v1/<action>", methods=["GET"])
+@app.route("/api/relationships/v1/<action>/", methods=["GET"])
 def relationships_action(action: str) -> Any:
     id1 = shared.safe_int(request.args.get("id1", 0), 0)
     id2 = shared.safe_int(request.args.get("id2", 0), 0)
     return Response(json.dumps(shared.apply_relationship_action(action, id1, id2)), mimetype="application/json")
+
+
+@app.route("/api/notification/v1", methods=["GET", "POST"])
+@app.route("/api/notification/v1/", methods=["GET", "POST"])
+def notifications_http_placeholder() -> Any:
+    return jsonify({"ok": True, "transport": "websocket", "path": "/api/notification/v1"})
 
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
