@@ -464,7 +464,8 @@ def players_create() -> Any:
         platform_id=platform_id,
         payload=player_payload_defaults(payload, platform, platform_id),
     )
-    return jsonify(player), 201
+    remember_local_player_id(shared.safe_int(player.get("Id"), 0))
+    return jsonify(profile_response_2016(player)), 201
 
 
 @app.route("/api/players/v1/update/<int:player_id>", methods=["POST", "PUT", "PATCH"])
@@ -480,7 +481,8 @@ def players_update(player_id: int) -> Any:
         platform_id=platform_id,
         payload=player_payload_defaults(payload, platform, platform_id, forced_player_id=player_id),
     )
-    return jsonify(player)
+    remember_local_player_id(shared.safe_int(player.get("Id"), 0))
+    return jsonify(profile_response_2016(player))
 
 
 @app.route("/api/players/v1/verify/<int:player_id>", methods=["POST"])
@@ -518,16 +520,19 @@ def players_v1(subpath: str = "") -> Any:
             player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
         if player is None:
             return jsonify({"error": "player not found"}), 404
-        return jsonify(player)
+        remember_local_player_id(shared.safe_int(player.get("Id"), 0))
+        return jsonify(profile_response_2016(player))
 
     player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
+    remember_local_player_id(shared.safe_int(player.get("Id"), 0))
     status_code = 201 if request.method == "POST" else 200
-    return jsonify(player), status_code
+    return jsonify(profile_response_2016(player)), status_code
 
 
 @app.route("/api/players/v1/list", methods=["POST"])
 def players_list() -> Any:
-    return Response(json.dumps(shared.list_players_by_ids(request_id_list())), mimetype="application/json")
+    players = [profile_response_2016(player) for player in shared.list_players_by_ids(request_id_list())]
+    return Response(json.dumps(players), mimetype="application/json")
 
 
 @app.route("/api/players/v1/updateReputation/<int:player_id>", methods=["POST"])
@@ -675,6 +680,28 @@ def avatar_v2_items_aliases() -> Any:
     player_id = resolve_local_player_id(request_payload())
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
+
+
+@app.route("/api/avatar/v3/items", methods=["GET"])
+@app.route("/api/avatar/v3/items/", methods=["GET"])
+@app.route("/api/avatar/v3/unlocked", methods=["GET"])
+@app.route("/api/avatar/v3/unlocked/", methods=["GET"])
+@app.route("/api/avatar/v3/list", methods=["GET"])
+@app.route("/api/avatar/v3/list/", methods=["GET"])
+def avatar_v3_items() -> Any:
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
+
+
+@app.route("/api/avatar/v3/<path:subpath>", methods=["GET"])
+def avatar_v3_fallback(subpath: str) -> Any:
+    normalized = subpath.strip("/").lower()
+    player_id = resolve_local_player_id(request_payload())
+    remember_local_player_id(player_id)
+    if any(token in normalized for token in ("item", "unlock", "list")):
+        return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
+    return Response(json.dumps(shared.get_avatar(player_id)), mimetype="application/json")
 
 
 @app.route("/api/avatar/v2/<path:subpath>", methods=["GET"])
