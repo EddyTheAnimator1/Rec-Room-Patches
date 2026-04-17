@@ -586,7 +586,11 @@ def set_presence(player_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         "PlayerId": player_id,
         "GameSessionId": str(payload.get("GameSessionId", payload.get("gameSessionId", current["GameSessionId"])) or ""),
         "AppVersion": str(payload.get("AppVersion", payload.get("appVersion", current["AppVersion"])) or ""),
-        "LastUpdateTime": parse_dotnet_ticks(payload.get("LastUpdateTime", payload.get("lastUpdateTime", current["LastUpdateTime"]))),
+        # Presence freshness must be stamped by the server on every heartbeat.
+        # The client may omit LastUpdateTime or keep sending an older value, which
+        # would make active-player counts drift low even while /api/presence/v2 is
+        # still arriving regularly.
+        "LastUpdateTime": utcnow_ticks(),
         "Activity": str(payload.get("Activity", payload.get("activity", current["Activity"])) or "DormRoom"),
         "Private": parse_bool(payload.get("Private", payload.get("private", current["Private"])), False),
         "AvailableSpace": max(0, safe_int(payload.get("AvailableSpace", payload.get("availableSpace", current["AvailableSpace"])), 0)),
