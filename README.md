@@ -73,7 +73,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | 24 November 2016 | `8464629802564135940` | ✅ |
 | 29 November 2016 | `1964111244192991547` | ✅ |
 | 9 December 2016 | `8224493981844824938` | ✅ |
-| 9 December 2016 | `1341823113150898819` | ❌ |
+| 9 December 2016 | `1341823113150898819` | ✅ |
 | 16 December 2016 | `8356502470941083689` | ❌ |
 | 23 December 2016 | `44843189150346366` | ❌ |
 
