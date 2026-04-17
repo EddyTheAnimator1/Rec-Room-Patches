@@ -14,6 +14,7 @@ import rr23_shared as shared
 import rr23_notifier as notifier
 
 app = Flask(__name__)
+notifier.start_background_workers()
 
 DATA_DIR = shared.DATA_DIR
 IMAGES_DIR = DATA_DIR / "player_images"
@@ -864,7 +865,12 @@ def presence_v2() -> Any:
     player_id = resolve_local_player_id(payload)
     payload = {**payload, "PlayerId": player_id}
     remember_local_player_id(player_id)
-    return jsonify(shared.set_presence(player_id, payload))
+    presence = shared.set_presence(player_id, payload)
+    try:
+        notifier.emit_presence_snapshot_now()
+    except Exception:
+        pass
+    return jsonify(presence)
 
 
 @app.route("/api/presence/v1/list", methods=["POST", "GET"])
@@ -884,7 +890,12 @@ def presence_player(player_id: int) -> Any:
     if request.method == "GET":
         presence = shared.get_presence(player_id)
         return Response("null" if presence is None else json.dumps(presence), mimetype="application/json")
-    return jsonify(shared.set_presence(player_id, request_payload()))
+    presence = shared.set_presence(player_id, request_payload())
+    try:
+        notifier.emit_presence_snapshot_now()
+    except Exception:
+        pass
+    return jsonify(presence)
 
 
 @app.route("/api/gamesessions/v1", methods=["GET"])

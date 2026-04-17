@@ -4,9 +4,7 @@ import json
 import os
 import threading
 import time
-import urllib.error
 import urllib.request
-from pathlib import Path
 from typing import Any
 
 import rr23_shared as shared
@@ -18,25 +16,40 @@ MONITORING_TIMEOUT_SECONDS = max(1.0, float(os.environ.get("MONITORING_TIMEOUT_S
 MONITORING_SNAPSHOT_INTERVAL_SECONDS = max(60, int(os.environ.get("MONITORING_SNAPSHOT_INTERVAL_SECONDS", "300")))
 MONITORING_STALE_TIMEOUT_SECONDS = max(60, int(os.environ.get("MONITORING_STALE_TIMEOUT_SECONDS", "180")))
 MONITORING_HEALTH_WINDOW_SECONDS = max(60, int(os.environ.get("MONITORING_HEALTH_WINDOW_SECONDS", "300")))
+MONITORING_PRESENCE_SWEEP_SECONDS = max(10, int(os.environ.get("MONITORING_PRESENCE_SWEEP_SECONDS", "30")))
 SERVICE_NAME = os.environ.get("MONITORING_SERVICE_NAME", os.environ.get("RAILWAY_SERVICE_NAME", "rr23-2016"))
 SERVICE_ENVIRONMENT = os.environ.get("MONITORING_SERVICE_ENVIRONMENT", os.environ.get("RAILWAY_ENVIRONMENT_NAME", "production"))
-STATE_PATH = shared.DATA_DIR / 'monitoring_state.json'
+STATE_PATH = shared.DATA_DIR / "monitoring_state.json"
 _STATE_LOCK = threading.Lock()
+_WORKER_STARTED = False
+
+
+def _default_state() -> dict[str, Any]:
+    return {
+        "last_presence_snapshot_unix": 0.0,
+        "last_health_snapshot_unix": 0.0,
+        "last_presence_signature": {},
+    }
 
 
 def _load_state() -> dict[str, Any]:
     if not STATE_PATH.exists():
-        return {}
+        return _default_state()
     try:
-        return json.loads(STATE_PATH.read_text(encoding='utf-8'))
+        loaded = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return _default_state()
+        state = _default_state()
+        state.update(loaded)
+        return state
     except Exception:
-        return {}
+        return _default_state()
 
 
 def _save_state(state: dict[str, Any]) -> None:
     try:
         shared.ensure_data_dir()
-        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
+        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -46,39 +59,36 @@ def monitoring_enabled() -> bool:
 
 
 def _post_json(url: str, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode('utf-8')
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
         headers={
-            'Content-Type': 'application/json; charset=utf-8',
-            'X-RR-Monitoring-Secret': MONITORING_SHARED_SECRET,
+            "Content-Type": "application/json; charset=utf-8",
+            "X-RR-Monitoring-Secret": MONITORING_SHARED_SECRET,
         },
-        method='POST',
+        method="POST",
     )
     with urllib.request.urlopen(req, timeout=MONITORING_TIMEOUT_SECONDS) as resp:
         resp.read(1024)
 
 
 def _source() -> dict[str, str]:
-    return {
-        'service': SERVICE_NAME,
-        'environment': SERVICE_ENVIRONMENT,
-    }
+    return {"service": SERVICE_NAME, "environment": SERVICE_ENVIRONMENT}
 
 
 def send_event(event_type: str, severity: str, fingerprint: str, summary: str, details: dict[str, Any]) -> None:
     if not monitoring_enabled():
         return
     payload = {
-        'schema_version': 1,
-        'event_type': str(event_type),
-        'severity': str(severity),
-        'timestamp_utc': shared.utcnow_iso(),
-        'source': _source(),
-        'fingerprint': str(fingerprint),
-        'summary': str(summary),
-        'details': details,
+        "schema_version": 1,
+        "event_type": str(event_type),
+        "severity": str(severity),
+        "timestamp_utc": shared.utcnow_iso(),
+        "source": _source(),
+        "fingerprint": str(fingerprint),
+        "summary": str(summary),
+        "details": details,
     }
     try:
         _post_json(MONITORING_NOTIFIER_URL, payload)
@@ -97,69 +107,112 @@ def safe_preview_dict(payload: dict[str, Any] | None, allowed_keys: list[str] | 
     return preview
 
 
-def emit_missing_http_endpoint(method: str, path: str, reason: str, *, status_code: int = 404, payload: dict[str, Any] | None = None, query_string: str = '', user_agent: str = '') -> None:
-    preview = safe_preview_dict(payload, ['Id', 'PlayerId', 'ProfileId', 'GameSessionId', 'Category', 'Action', 'Label'])
+def emit_missing_http_endpoint(method: str, path: str, reason: str, *, status_code: int = 404, payload: dict[str, Any] | None = None, query_string: str = "", user_agent: str = "") -> None:
+    preview = safe_preview_dict(payload, ["Id", "PlayerId", "ProfileId", "GameSessionId", "Category", "Action", "Label"])
     send_event(
-        'missing_http_endpoint',
-        'warning',
-        f'missing_http:{method.upper()}:{path}',
-        'A request arrived, but no implemented HTTP route answered this path.',
+        "missing_http_endpoint",
+        "warning",
+        f"missing_http:{method.upper()}:{path}",
+        "A request arrived, but no implemented HTTP route answered this path.",
         {
-            'method': method.upper(),
-            'path': path,
-            'status_code': int(status_code),
-            'reason': str(reason),
-            'query_string': str(query_string or ''),
-            'client': {
-                'kind': 'game_client' if 'Unity' in (user_agent or '') else 'unknown',
-                'user_agent_hint': 'UnityPlayer' if 'Unity' in (user_agent or '') else (str(user_agent or '')[:80] or 'unknown'),
+            "method": method.upper(),
+            "path": path,
+            "status_code": int(status_code),
+            "reason": str(reason),
+            "query_string": str(query_string or ""),
+            "client": {
+                "kind": "game_client" if "Unity" in (user_agent or "") else "unknown",
+                "user_agent_hint": "UnityPlayer" if "Unity" in (user_agent or "") else (str(user_agent or "")[:80] or "unknown"),
             },
-            'payload_excerpt': {
-                'keys': sorted(preview.keys()),
-                'preview': preview,
-            },
+            "payload_excerpt": {"keys": sorted(preview.keys()), "preview": preview},
         },
     )
 
 
 def emit_missing_ws_action(message_type: str, reason: str, *, payload: dict[str, Any] | None = None, status_code: int = 404) -> None:
-    preview = safe_preview_dict(payload, ['PlayerId', 'Id', 'GameSessionId', 'Type'])
+    preview = safe_preview_dict(payload, ["PlayerId", "Id", "GameSessionId", "Type", "Path"])
     send_event(
-        'missing_ws_action',
-        'warning',
-        f'missing_ws:{message_type}',
-        'A websocket message arrived, but no implemented handler accepted its action.',
+        "missing_ws_action",
+        "warning",
+        f"missing_ws:{message_type}",
+        "A websocket message arrived, but no implemented handler accepted its action.",
         {
-            'message_type': str(message_type),
-            'status_code': int(status_code),
-            'reason': str(reason),
-            'payload_excerpt': {
-                'keys': sorted(preview.keys()),
-                'preview': preview,
-            },
+            "message_type": str(message_type),
+            "status_code": int(status_code),
+            "reason": str(reason),
+            "payload_excerpt": {"keys": sorted(preview.keys()), "preview": preview},
         },
     )
 
 
 def emit_analytics_event(payload: dict[str, Any]) -> None:
-    category = str(payload.get('Category', payload.get('category', '')) or '')
-    action = str(payload.get('Action', payload.get('action', '')) or '')
-    label = str(payload.get('Label', payload.get('label', '')) or '')
+    category = str(payload.get("Category", payload.get("category", "")) or "")
+    action = str(payload.get("Action", payload.get("action", "")) or "")
+    label = str(payload.get("Label", payload.get("label", "")) or "")
     send_event(
-        'analytics_event',
-        'info',
-        f'analytics:{category}:{action}:{label}',
-        'A client submitted an analytics event.',
+        "analytics_event",
+        "info",
+        f"analytics:{category}:{action}:{label}",
+        "A client submitted an analytics event.",
         {
-            'session_id_present': bool(payload.get('SessionId') or payload.get('sessionId')),
-            'category': category,
-            'action': action,
-            'label': label,
-            'value': payload.get('Value', payload.get('value')),
-            'value2': payload.get('Value2', payload.get('value2')),
-            'value3': payload.get('Value3', payload.get('value3')),
+            "session_id_present": bool(payload.get("SessionId") or payload.get("sessionId")),
+            "category": category,
+            "action": action,
+            "label": label,
+            "value": payload.get("Value", payload.get("value")),
+            "value2": payload.get("Value2", payload.get("value2")),
+            "value3": payload.get("Value3", payload.get("value3")),
         },
     )
+
+
+def _presence_snapshot_signature(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "active_players": int(snapshot.get("active_players", 0) or 0),
+        "players_in_rooms": int(snapshot.get("players_in_rooms", 0) or 0),
+        "stale_timeout_seconds": int(snapshot.get("stale_timeout_seconds", MONITORING_STALE_TIMEOUT_SECONDS) or MONITORING_STALE_TIMEOUT_SECONDS),
+    }
+
+
+def emit_presence_snapshot_now(force: bool = False) -> bool:
+    if not monitoring_enabled():
+        return False
+    now = time.time()
+    with _STATE_LOCK:
+        state = _load_state()
+        snapshot = shared.get_presence_snapshot(stale_timeout_seconds=MONITORING_STALE_TIMEOUT_SECONDS)
+        signature = _presence_snapshot_signature(snapshot)
+        last_signature = state.get("last_presence_signature") if isinstance(state.get("last_presence_signature"), dict) else {}
+        should_emit = force or not last_signature or signature != last_signature
+        if not should_emit:
+            return False
+        send_event(
+            "presence_snapshot",
+            "info",
+            f"presence_snapshot:{SERVICE_NAME}",
+            "Current active presence counts were refreshed.",
+            snapshot,
+        )
+        state["last_presence_snapshot_unix"] = now
+        state["last_presence_signature"] = signature
+        _save_state(state)
+        return True
+
+
+def _emit_health_snapshot_if_due(state: dict[str, Any], now: float) -> bool:
+    last_health = float(state.get("last_health_snapshot_unix", 0.0) or 0.0)
+    if now - last_health < MONITORING_SNAPSHOT_INTERVAL_SECONDS:
+        return False
+    snapshot = shared.get_health_snapshot(window_seconds=MONITORING_HEALTH_WINDOW_SECONDS)
+    send_event(
+        "health_snapshot",
+        "info",
+        f"health_snapshot:{SERVICE_NAME}",
+        "Recent request health metrics were refreshed.",
+        snapshot,
+    )
+    state["last_health_snapshot_unix"] = now
+    return True
 
 
 def maybe_emit_periodic_snapshots() -> None:
@@ -168,26 +221,38 @@ def maybe_emit_periodic_snapshots() -> None:
     now = time.time()
     with _STATE_LOCK:
         state = _load_state()
-        last_presence = float(state.get('last_presence_snapshot_unix', 0.0) or 0.0)
-        last_health = float(state.get('last_health_snapshot_unix', 0.0) or 0.0)
-        if now - last_presence >= MONITORING_SNAPSHOT_INTERVAL_SECONDS:
+        last_presence = float(state.get("last_presence_snapshot_unix", 0.0) or 0.0)
+        if now - last_presence >= MONITORING_PRESENCE_SWEEP_SECONDS:
             snapshot = shared.get_presence_snapshot(stale_timeout_seconds=MONITORING_STALE_TIMEOUT_SECONDS)
-            send_event(
-                'presence_snapshot',
-                'info',
-                f'presence_snapshot:{SERVICE_NAME}',
-                'Current active presence counts were refreshed.',
-                snapshot,
-            )
-            state['last_presence_snapshot_unix'] = now
-        if now - last_health >= MONITORING_SNAPSHOT_INTERVAL_SECONDS:
-            snapshot = shared.get_health_snapshot(window_seconds=MONITORING_HEALTH_WINDOW_SECONDS)
-            send_event(
-                'health_snapshot',
-                'info',
-                f'health_snapshot:{SERVICE_NAME}',
-                'Recent request health metrics were refreshed.',
-                snapshot,
-            )
-            state['last_health_snapshot_unix'] = now
+            signature = _presence_snapshot_signature(snapshot)
+            last_signature = state.get("last_presence_signature") if isinstance(state.get("last_presence_signature"), dict) else {}
+            if not last_signature or signature != last_signature:
+                send_event(
+                    "presence_snapshot",
+                    "info",
+                    f"presence_snapshot:{SERVICE_NAME}",
+                    "Current active presence counts were refreshed.",
+                    snapshot,
+                )
+                state["last_presence_signature"] = signature
+            state["last_presence_snapshot_unix"] = now
+        _emit_health_snapshot_if_due(state, now)
         _save_state(state)
+
+
+def _background_worker_loop() -> None:
+    sleep_seconds = max(5, min(MONITORING_PRESENCE_SWEEP_SECONDS, MONITORING_SNAPSHOT_INTERVAL_SECONDS, 30))
+    while True:
+        try:
+            maybe_emit_periodic_snapshots()
+        except Exception:
+            pass
+        time.sleep(sleep_seconds)
+
+
+def start_background_workers() -> None:
+    global _WORKER_STARTED
+    if _WORKER_STARTED or not monitoring_enabled():
+        return
+    _WORKER_STARTED = True
+    threading.Thread(target=_background_worker_loop, name="rr23-monitoring-worker", daemon=True).start()
