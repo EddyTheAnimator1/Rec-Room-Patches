@@ -19,7 +19,6 @@ MONITORING_SNAPSHOT_INTERVAL_SECONDS = max(60, int(os.environ.get("MONITORING_SN
 MONITORING_STALE_TIMEOUT_SECONDS = max(60, int(os.environ.get("MONITORING_STALE_TIMEOUT_SECONDS", "180")))
 MONITORING_HEALTH_WINDOW_SECONDS = max(60, int(os.environ.get("MONITORING_HEALTH_WINDOW_SECONDS", "300")))
 SERVICE_NAME = os.environ.get("MONITORING_SERVICE_NAME", os.environ.get("RAILWAY_SERVICE_NAME", "rr23-2016"))
-SERVICE_INSTANCE = os.environ.get("MONITORING_SERVICE_INSTANCE", os.environ.get("RAILWAY_PUBLIC_DOMAIN", os.environ.get("RAILWAY_SERVICE_NAME", "local-instance")))
 SERVICE_ENVIRONMENT = os.environ.get("MONITORING_SERVICE_ENVIRONMENT", os.environ.get("RAILWAY_ENVIRONMENT_NAME", "production"))
 STATE_PATH = shared.DATA_DIR / 'monitoring_state.json'
 _STATE_LOCK = threading.Lock()
@@ -64,7 +63,6 @@ def _post_json(url: str, payload: dict[str, Any]) -> None:
 def _source() -> dict[str, str]:
     return {
         'service': SERVICE_NAME,
-        'instance': SERVICE_INSTANCE,
         'environment': SERVICE_ENVIRONMENT,
     }
 
@@ -177,7 +175,7 @@ def maybe_emit_periodic_snapshots() -> None:
             send_event(
                 'presence_snapshot',
                 'info',
-                f'presence_snapshot:{SERVICE_INSTANCE}',
+                f'presence_snapshot:{SERVICE_NAME}',
                 'Current active presence counts were refreshed.',
                 snapshot,
             )
@@ -187,7 +185,7 @@ def maybe_emit_periodic_snapshots() -> None:
             send_event(
                 'health_snapshot',
                 'info',
-                f'health_snapshot:{SERVICE_INSTANCE}',
+                f'health_snapshot:{SERVICE_NAME}',
                 'Recent request health metrics were refreshed.',
                 snapshot,
             )
