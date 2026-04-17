@@ -2,7 +2,15 @@
   "version": 1,
   "instructions": [
     {
+      "type": "install_patch_file",
+      "source": "Assembly-CSharp.dll",
+      "base_dir": "Recroom_Release_Data/Managed",
+      "file": "Assembly-CSharp.dll",
+      "overwrite": true
+    },
+    {
       "type": "replace_bytes",
+      "base_dir": "Recroom_Release_Data",
       "file": "resources.assets",
       "replacements": [
         {
