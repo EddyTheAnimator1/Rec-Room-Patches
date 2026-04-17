@@ -11,6 +11,7 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 import rr23_shared as shared
+import rr23_notifier as notifier
 
 app = Flask(__name__)
 
@@ -356,8 +357,13 @@ def before_request() -> Any:
 def after_request(response: Response) -> Response:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Cache-Control", "no-store")
+    request_note = response.headers.pop('X-RR-Log-Note', '')
     try:
-        shared.log_request(request.method, request.path, dict(request.args), response.status_code)
+        shared.log_request(request.method, request.path, dict(request.args), response.status_code, request_note)
+    except Exception:
+        pass
+    try:
+        notifier.maybe_emit_periodic_snapshots()
     except Exception:
         pass
     return response
@@ -654,9 +660,8 @@ def avatar_v2_gifts_create() -> Any:
 @app.route("/api/avatar/v2/gifts/consume/", methods=["POST"])
 def avatar_v2_gifts_consume() -> Any:
     payload = request_payload()
+    player_id = resolve_local_player_id(payload)
     gift_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
-    player_payload = {k: v for k, v in payload.items() if k not in {"Id", "id"}}
-    player_id = resolve_local_player_id(player_payload)
     remember_local_player_id(player_id)
     if not shared.consume_gift_package(player_id, gift_id):
         return jsonify({"error": "gift not found"}), 404
@@ -995,27 +1000,14 @@ def relationships_action(action: str) -> Any:
     return Response(json.dumps(shared.apply_relationship_action(action, id1, id2)), mimetype="application/json")
 
 
-@app.route("/api/versioncheck/v1", methods=["GET"])
-@app.route("/api/versioncheck/v1/", methods=["GET"])
-def versioncheck_v1() -> Any:
-    return Response("", status=204)
-
-
-@app.route("/api/tournament", methods=["GET"])
-@app.route("/api/tournament/", methods=["GET"])
-def tournament_status() -> Any:
-    return Response("", mimetype="application/json")
-
-
-@app.route("/api/tournament/forfeit", methods=["GET", "POST"])
-@app.route("/api/tournament/forfeit/", methods=["GET", "POST"])
-def tournament_forfeit() -> Any:
-    return jsonify({"ok": True})
-
-
 @app.route("/api/analytics/v1/session/event", methods=["POST"])
 @app.route("/api/analytics/v1/session/event/", methods=["POST"])
 def analytics_session_event() -> Any:
+    payload = request_payload()
+    try:
+        notifier.emit_analytics_event(payload)
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 
@@ -1033,7 +1025,44 @@ def notifications_http_placeholder() -> Any:
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
-    return jsonify({"ok": True, "path": f"/api/{subpath}", "method": request.method, "note": "Fallback response"})
+    payload = request_payload()
+    full_path = f"/api/{subpath}"
+    try:
+        notifier.emit_missing_http_endpoint(
+            request.method,
+            full_path,
+            "No matching Flask route handled this API path. A compatibility fallback answered instead.",
+            status_code=404,
+            payload=payload,
+            query_string=request.query_string.decode('utf-8', 'ignore'),
+            user_agent=request.headers.get('User-Agent', ''),
+        )
+    except Exception:
+        pass
+    response = jsonify({"ok": True, "path": full_path, "method": request.method, "note": "Fallback response"})
+    response.headers['X-RR-Log-Note'] = 'missing-http-route'
+    return response
+
+
+@app.errorhandler(404)
+def not_found_error(_: Any) -> Any:
+    payload = request_payload() if request.path.startswith('/api/') or request.path == '/favicon.ico' else {}
+    try:
+        notifier.emit_missing_http_endpoint(
+            request.method,
+            request.path,
+            'No matching HTTP route exists for this path.' if request.path != '/favicon.ico' else 'A browser-style favicon probe reached the service.',
+            status_code=404,
+            payload=payload,
+            query_string=request.query_string.decode('utf-8', 'ignore'),
+            user_agent=request.headers.get('User-Agent', ''),
+        )
+    except Exception:
+        pass
+    response = jsonify({'error': 'not found'})
+    response.status_code = 404
+    response.headers['X-RR-Log-Note'] = 'missing-http-route'
+    return response
 
 
 if __name__ == "__main__":

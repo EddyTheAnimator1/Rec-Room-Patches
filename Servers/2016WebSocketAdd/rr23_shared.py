@@ -942,3 +942,82 @@ def list_recent_requests(limit: int = 200) -> list[dict[str, Any]]:
             "Note": str(row["note"] or ""),
         })
     return result
+
+
+
+def get_presence_snapshot(stale_timeout_seconds: int = 180) -> dict[str, Any]:
+    init_db()
+    stale_timeout_seconds = max(60, safe_int(stale_timeout_seconds, 180))
+    now = datetime.now(timezone.utc)
+    active_players = 0
+    players_in_rooms = 0
+    with closing(connect()) as conn:
+        rows = conn.execute("SELECT player_id, game_session_id, last_update_time FROM presence ORDER BY player_id").fetchall()
+    for row in rows:
+        last_update_ticks = parse_dotnet_ticks(row['last_update_time'])
+        last_update_dt = datetime.fromtimestamp(max(0, (last_update_ticks - 621355968000000000) / 10_000_000), tz=timezone.utc)
+        if (now - last_update_dt).total_seconds() > stale_timeout_seconds:
+            continue
+        active_players += 1
+        if str(row['game_session_id'] or '').strip():
+            players_in_rooms += 1
+    return {
+        'active_players': active_players,
+        'players_in_rooms': players_in_rooms,
+        'stale_timeout_seconds': stale_timeout_seconds,
+    }
+
+
+def get_health_snapshot(window_seconds: int = 300) -> dict[str, Any]:
+    init_db()
+    window_seconds = max(60, safe_int(window_seconds, 300))
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - window_seconds
+    total_requests = 0
+    counted_errors = 0
+    missing_http_count = 0
+    missing_ws_count = 0
+    server_error_count = 0
+    with closing(connect()) as conn:
+        rows = conn.execute("SELECT created_at, method, path, status_code, note FROM request_log ORDER BY id DESC").fetchall()
+    for row in rows:
+        created_raw = str(row['created_at'] or '')
+        try:
+            created_at = datetime.fromisoformat(created_raw.replace('Z', '+00:00'))
+        except Exception:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if created_at.timestamp() < cutoff:
+            break
+        path = str(row['path'] or '')
+        method = str(row['method'] or '')
+        status_code = safe_int(row['status_code'], 0)
+        note = str(row['note'] or '')
+        if method == 'WS' and note == 'connect-attempt':
+            total_requests += 1
+        elif method != 'WS':
+            total_requests += 1
+        if path == '/favicon.ico':
+            continue
+        if note == 'missing-http-route':
+            counted_errors += 1
+            missing_http_count += 1
+        elif note == 'missing-ws-route':
+            counted_errors += 1
+            missing_ws_count += 1
+        elif status_code >= 500:
+            counted_errors += 1
+            server_error_count += 1
+    error_rate_percent = round((counted_errors / total_requests) * 100.0, 2) if total_requests > 0 else 0.0
+    return {
+        'window_seconds': window_seconds,
+        'total_requests': total_requests,
+        'counted_errors': counted_errors,
+        'error_rate_percent': error_rate_percent,
+        'missing_http_count': missing_http_count,
+        'missing_ws_count': missing_ws_count,
+        'server_error_count': server_error_count,
+    }
