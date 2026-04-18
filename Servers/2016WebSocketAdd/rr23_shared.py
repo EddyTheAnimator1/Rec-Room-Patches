@@ -979,8 +979,6 @@ def get_health_snapshot(window_seconds: int = 300) -> dict[str, Any]:
     cutoff = now.timestamp() - window_seconds
     total_requests = 0
     counted_errors = 0
-    missing_http_count = 0
-    missing_ws_count = 0
     server_error_count = 0
     with closing(connect()) as conn:
         rows = conn.execute("SELECT created_at, method, path, status_code, note FROM request_log ORDER BY id DESC").fetchall()
@@ -1006,13 +1004,7 @@ def get_health_snapshot(window_seconds: int = 300) -> dict[str, Any]:
             total_requests += 1
         if path == '/favicon.ico':
             continue
-        if note == 'missing-http-route':
-            counted_errors += 1
-            missing_http_count += 1
-        elif note == 'missing-ws-route':
-            counted_errors += 1
-            missing_ws_count += 1
-        elif status_code >= 500:
+        if status_code >= 500:
             counted_errors += 1
             server_error_count += 1
     error_rate_percent = round((counted_errors / total_requests) * 100.0, 2) if total_requests > 0 else 0.0
@@ -1021,7 +1013,7 @@ def get_health_snapshot(window_seconds: int = 300) -> dict[str, Any]:
         'total_requests': total_requests,
         'counted_errors': counted_errors,
         'error_rate_percent': error_rate_percent,
-        'missing_http_count': missing_http_count,
-        'missing_ws_count': missing_ws_count,
+        'missing_http_count': 0,
+        'missing_ws_count': 0,
         'server_error_count': server_error_count,
     }

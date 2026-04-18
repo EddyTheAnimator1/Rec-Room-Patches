@@ -1053,43 +1053,16 @@ def notifications_http_placeholder() -> Any:
 
 @app.route("/api/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def api_fallback(subpath: str) -> Any:
-    payload = request_payload()
     full_path = f"/api/{subpath}"
-    try:
-        notifier.emit_missing_http_endpoint(
-            request.method,
-            full_path,
-            "No matching Flask route handled this API path. A compatibility fallback answered instead.",
-            status_code=404,
-            payload=payload,
-            query_string=request.query_string.decode('utf-8', 'ignore'),
-            user_agent=request.headers.get('User-Agent', ''),
-        )
-    except Exception:
-        pass
     response = jsonify({"ok": True, "path": full_path, "method": request.method, "note": "Fallback response"})
-    response.headers['X-RR-Log-Note'] = 'missing-http-route'
+    response.headers['X-RR-Log-Note'] = 'api-fallback'
     return response
 
 
 @app.errorhandler(404)
 def not_found_error(_: Any) -> Any:
-    payload = request_payload() if request.path.startswith('/api/') or request.path == '/favicon.ico' else {}
-    try:
-        notifier.emit_missing_http_endpoint(
-            request.method,
-            request.path,
-            'No matching HTTP route exists for this path.' if request.path != '/favicon.ico' else 'A browser-style favicon probe reached the service.',
-            status_code=404,
-            payload=payload,
-            query_string=request.query_string.decode('utf-8', 'ignore'),
-            user_agent=request.headers.get('User-Agent', ''),
-        )
-    except Exception:
-        pass
     response = jsonify({'error': 'not found'})
     response.status_code = 404
-    response.headers['X-RR-Log-Note'] = 'missing-http-route'
     return response
 
 

@@ -11,7 +11,6 @@ from typing import Any
 from websockets.asyncio.server import serve
 from websockets.datastructures import Headers
 
-import rr23_notifier as notifier
 
 from rr23_shared import (
     auth_header_valid,
@@ -57,16 +56,7 @@ async def notification_handler(websocket: Any) -> None:
 
     normalized_path = path.split("?", 1)[0]
     if normalized_path not in {"/api/notification/v1", "/api/notification/v2"}:
-        try:
-            notifier.emit_missing_ws_action(
-                normalized_path or 'unknown-path',
-                'No websocket handler is bound to this path.',
-                payload={'Path': normalized_path or ''},
-                status_code=404,
-            )
-        except Exception:
-            pass
-        log_request('WS', normalized_path or '/unknown', {}, 404, 'missing-ws-route')
+        log_request('WS', normalized_path or '/unknown', {}, 404, 'wrong-ws-path')
         await websocket.close(code=1008, reason="wrong path")
         return
 

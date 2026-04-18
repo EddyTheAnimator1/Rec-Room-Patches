@@ -107,44 +107,6 @@ def safe_preview_dict(payload: dict[str, Any] | None, allowed_keys: list[str] | 
     return preview
 
 
-def emit_missing_http_endpoint(method: str, path: str, reason: str, *, status_code: int = 404, payload: dict[str, Any] | None = None, query_string: str = "", user_agent: str = "") -> None:
-    preview = safe_preview_dict(payload, ["Id", "PlayerId", "ProfileId", "GameSessionId", "Category", "Action", "Label"])
-    send_event(
-        "missing_http_endpoint",
-        "warning",
-        f"missing_http:{method.upper()}:{path}",
-        "A request arrived, but no implemented HTTP route answered this path.",
-        {
-            "method": method.upper(),
-            "path": path,
-            "status_code": int(status_code),
-            "reason": str(reason),
-            "query_string": str(query_string or ""),
-            "client": {
-                "kind": "game_client" if "Unity" in (user_agent or "") else "unknown",
-                "user_agent_hint": "UnityPlayer" if "Unity" in (user_agent or "") else (str(user_agent or "")[:80] or "unknown"),
-            },
-            "payload_excerpt": {"keys": sorted(preview.keys()), "preview": preview},
-        },
-    )
-
-
-def emit_missing_ws_action(message_type: str, reason: str, *, payload: dict[str, Any] | None = None, status_code: int = 404) -> None:
-    preview = safe_preview_dict(payload, ["PlayerId", "Id", "GameSessionId", "Type", "Path"])
-    send_event(
-        "missing_ws_action",
-        "warning",
-        f"missing_ws:{message_type}",
-        "A websocket message arrived, but no implemented handler accepted its action.",
-        {
-            "message_type": str(message_type),
-            "status_code": int(status_code),
-            "reason": str(reason),
-            "payload_excerpt": {"keys": sorted(preview.keys()), "preview": preview},
-        },
-    )
-
-
 def emit_analytics_event(payload: dict[str, Any]) -> None:
     category = str(payload.get("Category", payload.get("category", "")) or "")
     action = str(payload.get("Action", payload.get("action", "")) or "")
