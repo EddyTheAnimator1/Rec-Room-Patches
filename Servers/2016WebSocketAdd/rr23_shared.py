@@ -6,15 +6,18 @@ import hashlib
 import hmac
 import json
 import os
-import sqlite3
+import re
 import threading
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+import psycopg
+from psycopg.rows import dict_row
 
 DATA_DIR = Path(os.environ.get("DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ".").resolve()
-DB_PATH = DATA_DIR / "rr23_2016.db"
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or ""
 INIT_LOCK = threading.Lock()
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
@@ -58,7 +61,7 @@ def parse_dotnet_ticks(value: Any, default: int | None = None) -> int:
         ivalue = int(raw)
         return ivalue if ivalue > 0 else default
     try:
-        return datetime_to_dotnet_ticks(datetime.fromisoformat(raw.replace('Z', '+00:00')) )
+        return datetime_to_dotnet_ticks(datetime.fromisoformat(raw.replace('Z', '+00:00')))
     except Exception:
         return default
 
@@ -67,13 +70,82 @@ def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def connect() -> sqlite3.Connection:
+def _resolve_connection_kwargs() -> dict[str, Any]:
+    if DATABASE_URL:
+        return {"conninfo": DATABASE_URL}
+
+    host = os.environ.get("PGHOST", "").strip()
+    database = os.environ.get("PGDATABASE", "").strip()
+    user = os.environ.get("PGUSER", "").strip()
+    if not (host and database and user):
+        raise RuntimeError(
+            "PostgreSQL is required. Set DATABASE_URL or PGHOST/PGDATABASE/PGUSER/PGPASSWORD."
+        )
+    return {
+        "host": host,
+        "port": int(os.environ.get("PGPORT", "5432") or "5432"),
+        "dbname": database,
+        "user": user,
+        "password": os.environ.get("PGPASSWORD", ""),
+        "sslmode": os.environ.get("PGSSLMODE", "prefer"),
+    }
+
+
+def _adapt_query(query: str) -> str:
+    adapted = query
+    insert_or_ignore = "INSERT OR IGNORE INTO" in adapted.upper()
+    if insert_or_ignore:
+        adapted = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", adapted, flags=re.IGNORECASE)
+    adapted = adapted.replace("?", "%s")
+    if insert_or_ignore:
+        adapted = f"{adapted.rstrip()} ON CONFLICT DO NOTHING"
+    return adapted
+
+
+class PgCursorResult:
+    def __init__(self, cursor: psycopg.Cursor[Any]) -> None:
+        self._cursor = cursor
+
+    def fetchone(self) -> dict[str, Any] | None:
+        row = self._cursor.fetchone()
+        return None if row is None else dict(row)
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self._cursor.fetchall()]
+
+    @property
+    def rowcount(self) -> int:
+        return self._cursor.rowcount
+
+
+class PgConnection:
+    def __init__(self, raw: psycopg.Connection[Any]) -> None:
+        self._raw = raw
+
+    def execute(self, query: str, params: tuple[Any, ...] | list[Any] = ()) -> PgCursorResult:
+        cursor = self._raw.cursor(row_factory=dict_row)
+        cursor.execute(_adapt_query(query), params)
+        return PgCursorResult(cursor)
+
+    def executescript(self, script: str) -> None:
+        for statement in (chunk.strip() for chunk in script.split(';')):
+            if statement:
+                self.execute(statement)
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def rollback(self) -> None:
+        self._raw.rollback()
+
+    def close(self) -> None:
+        self._raw.close()
+
+
+def connect() -> PgConnection:
     ensure_data_dir()
-    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
+    raw = psycopg.connect(**_resolve_connection_kwargs())
+    return PgConnection(raw)
 
 
 def init_db() -> None:
@@ -82,9 +154,9 @@ def init_db() -> None:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS players (
-                    id INTEGER PRIMARY KEY,
+                    id BIGINT PRIMARY KEY,
                     platform INTEGER NOT NULL,
-                    platform_id INTEGER NOT NULL,
+                    platform_id BIGINT NOT NULL,
                     name TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     username TEXT NOT NULL,
@@ -98,28 +170,28 @@ def init_db() -> None:
                     ON players(platform, platform_id);
 
                 CREATE TABLE IF NOT EXISTS settings (
-                    player_id INTEGER NOT NULL,
+                    player_id BIGINT NOT NULL,
                     key TEXT NOT NULL,
                     value TEXT NOT NULL,
                     PRIMARY KEY (player_id, key)
                 );
 
                 CREATE TABLE IF NOT EXISTS avatars (
-                    player_id INTEGER PRIMARY KEY,
+                    player_id BIGINT PRIMARY KEY,
                     outfit_selections TEXT NOT NULL DEFAULT '',
                     skin_color TEXT NOT NULL DEFAULT '',
                     hair_color TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS avatar_items (
-                    player_id INTEGER NOT NULL,
+                    player_id BIGINT NOT NULL,
                     avatar_item_desc TEXT NOT NULL,
                     unlocked_level INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (player_id, avatar_item_desc)
                 );
 
                 CREATE TABLE IF NOT EXISTS presence (
-                    player_id INTEGER PRIMARY KEY,
+                    player_id BIGINT PRIMARY KEY,
                     game_session_id TEXT NOT NULL DEFAULT '',
                     app_version TEXT NOT NULL DEFAULT '',
                     last_update_time TEXT NOT NULL,
@@ -130,16 +202,16 @@ def init_db() -> None:
                 );
 
                 CREATE TABLE IF NOT EXISTS relationships (
-                    player_id INTEGER NOT NULL,
-                    other_player_id INTEGER NOT NULL,
+                    player_id BIGINT NOT NULL,
+                    other_player_id BIGINT NOT NULL,
                     relationship_type INTEGER NOT NULL,
                     PRIMARY KEY (player_id, other_player_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    from_player_id INTEGER NOT NULL,
-                    to_player_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    from_player_id BIGINT NOT NULL,
+                    to_player_id BIGINT NOT NULL,
                     sent_time TEXT NOT NULL,
                     type INTEGER NOT NULL,
                     data TEXT NOT NULL
@@ -156,8 +228,8 @@ def init_db() -> None:
                 );
 
                 CREATE TABLE IF NOT EXISTS gift_packages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    player_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    player_id BIGINT NOT NULL,
                     avatar_item_desc TEXT NOT NULL DEFAULT '',
                     xp INTEGER NOT NULL DEFAULT 0
                 );
@@ -168,7 +240,7 @@ def init_db() -> None:
                 );
 
                 CREATE TABLE IF NOT EXISTS request_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     created_at TEXT NOT NULL,
                     method TEXT NOT NULL,
                     path TEXT NOT NULL,
@@ -178,15 +250,15 @@ def init_db() -> None:
                 );
 
                 CREATE TABLE IF NOT EXISTS websocket_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    player_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    player_id BIGINT NOT NULL,
                     notification_id INTEGER NOT NULL,
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS websocket_sessions (
-                    player_id INTEGER NOT NULL,
+                    player_id BIGINT NOT NULL,
                     session_id TEXT NOT NULL,
                     connected_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
@@ -194,7 +266,6 @@ def init_db() -> None:
                 );
                 """
             )
-            # Seed MOTD row if absent
             conn.execute(
                 "INSERT OR IGNORE INTO kv_store(key, value) VALUES('motd', ?)",
                 (DEFAULT_MOTD_TEXT,),
@@ -244,7 +315,7 @@ def stable_player_id(platform: int, platform_id: int) -> int:
     return raw_value or 1
 
 
-def player_response(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+def player_response(row: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     return {
         "Id": safe_int(data.get("id", data.get("Id")), 0),
@@ -353,7 +424,8 @@ def create_or_update_player(
                     DEFAULT_VERIFIED_EMAIL,
                 ),
             )
-        except sqlite3.IntegrityError:
+        except psycopg.IntegrityError:
+            conn.rollback()
             conn.execute(
                 """
                 UPDATE players
@@ -683,10 +755,11 @@ def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: 
     init_db()
     with closing(connect()) as conn:
         cursor = conn.execute(
-            "INSERT INTO messages(from_player_id, to_player_id, sent_time, type, data) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO messages(from_player_id, to_player_id, sent_time, type, data) VALUES (?, ?, ?, ?, ?) RETURNING id",
             (from_player_id, to_player_id, str(utcnow_ticks()), msg_type, str(data or "")),
         )
-        message_id = safe_int(cursor.lastrowid, 0)
+        inserted = cursor.fetchone()
+        message_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
     message = {
         "Id": message_id,
@@ -784,10 +857,11 @@ def create_gift_package(player_id: int, avatar_item_desc: str, xp: int) -> dict[
     init_db()
     with closing(connect()) as conn:
         cursor = conn.execute(
-            "INSERT INTO gift_packages(player_id, avatar_item_desc, xp) VALUES (?, ?, ?)",
+            "INSERT INTO gift_packages(player_id, avatar_item_desc, xp) VALUES (?, ?, ?) RETURNING id",
             (player_id, str(avatar_item_desc or ""), max(0, safe_int(xp, 0))),
         )
-        gift_id = safe_int(cursor.lastrowid, 0)
+        inserted = cursor.fetchone()
+        gift_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
     return {"Id": gift_id, "AvatarItemDesc": str(avatar_item_desc or ""), "Xp": max(0, safe_int(xp, 0))}
 
@@ -823,10 +897,11 @@ def enqueue_ws_event(player_id: int, notification_id: int, payload: Any) -> int:
     payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
     with closing(connect()) as conn:
         cursor = conn.execute(
-            "INSERT INTO websocket_events(player_id, notification_id, payload_json, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO websocket_events(player_id, notification_id, payload_json, created_at) VALUES (?, ?, ?, ?) RETURNING id",
             (player_id, notification_id, payload_json, utcnow_iso()),
         )
-        event_id = safe_int(cursor.lastrowid, 0)
+        inserted = cursor.fetchone()
+        event_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
     return event_id
 
