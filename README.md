@@ -83,7 +83,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | --- | --- | --- |
 | 7 January 2017 | `1355637356417786081` | ✅ |
 | 11 January 2017 | `4426211608086196524` | ✅ |
-| 18 January 2017 | `4350859901318817364` | ❌ |
+| 18 January 2017 | `4350859901318817364` | ✅ |
 | 18 January 2017 | `7500062053385944746` | ❌ |
 | 20 January 2017 | `8061750969870240553` | ❌ |
 | 26 January 2017 | `151686977716385839` | ❌ |
