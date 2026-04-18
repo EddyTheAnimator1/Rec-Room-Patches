@@ -661,13 +661,30 @@ def avatar_v2_gifts_create() -> Any:
 @app.route("/api/avatar/v2/gifts/consume/", methods=["POST"])
 def avatar_v2_gifts_consume() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_payload = {k: v for k, v in payload.items() if k not in {"Id", "id"}}
+    player_id = resolve_local_player_id(player_payload)
     gift_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
     remember_local_player_id(player_id)
     if not shared.consume_gift_package(player_id, gift_id):
         return jsonify({"error": "gift not found"}), 404
     return jsonify({"ok": True, "Id": gift_id})
 
+@app.route("/api/versioncheck/v1", methods=["GET"])
+@app.route("/api/versioncheck/v1/", methods=["GET"])
+def versioncheck_v1() -> Any:
+    return Response("", status=204)
+
+
+@app.route("/api/tournament", methods=["GET"])
+@app.route("/api/tournament/", methods=["GET"])
+def tournament_status() -> Any:
+    return Response("", mimetype="application/json")
+
+
+@app.route("/api/tournament/forfeit", methods=["GET", "POST"])
+@app.route("/api/tournament/forfeit/", methods=["GET", "POST"])
+def tournament_forfeit() -> Any:
+    return jsonify({"ok": True})
 
 @app.route("/api/avatar/v2/items", methods=["GET"])
 @app.route("/api/avatar/v2/items/", methods=["GET"])
