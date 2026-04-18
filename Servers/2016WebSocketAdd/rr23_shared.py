@@ -164,7 +164,8 @@ def init_db() -> None:
                     level INTEGER NOT NULL,
                     reputation INTEGER NOT NULL,
                     email TEXT NOT NULL,
-                    verified INTEGER NOT NULL DEFAULT 1
+                    verified INTEGER NOT NULL DEFAULT 1,
+                    developer INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_players_platform_platformid
                     ON players(platform, platform_id);
@@ -270,6 +271,7 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO kv_store(key, value) VALUES('motd', ?)",
                 (DEFAULT_MOTD_TEXT,),
             )
+            conn.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS developer INTEGER NOT NULL DEFAULT 0")
             conn.commit()
 
 
@@ -317,6 +319,7 @@ def stable_player_id(platform: int, platform_id: int) -> int:
 
 def player_response(row: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
+    level_value = max(1, safe_int(data.get("level", data.get("Level")), 1))
     return {
         "Id": safe_int(data.get("id", data.get("Id")), 0),
         "Platform": safe_int(data.get("platform", data.get("Platform")), DEFAULT_PLATFORM),
@@ -324,12 +327,13 @@ def player_response(row: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
         "Name": str(data.get("name", data.get("Name")) or DEFAULT_PLAYER_NAME),
         "DisplayName": str(data.get("display_name", data.get("DisplayName")) or data.get("name", DEFAULT_PLAYER_NAME)),
         "XP": max(0, safe_int(data.get("xp", data.get("XP")), 0)),
-        "Level": max(1, safe_int(data.get("level", data.get("Level")), 1)),
+        "Level": level_value,
         "Reputation": safe_int(data.get("reputation", data.get("Reputation")), DEFAULT_REPUTATION),
         "Email": str(data.get("email", data.get("Email")) or DEFAULT_VERIFIED_EMAIL),
         "Username": str(data.get("username", data.get("Username")) or data.get("display_name", DEFAULT_PLAYER_NAME)),
-        "Verified": True,
-        "XpRequiredToLevelUp": xp_required_for_level(max(1, safe_int(data.get("level", data.get("Level")), 1))),
+        "Verified": bool(safe_int(data.get("verified", data.get("Verified")), 1)),
+        "Developer": bool(safe_int(data.get("developer", data.get("Developer")), 0)),
+        "XpRequiredToLevelUp": xp_required_for_level(level_value),
     }
 
 
@@ -360,6 +364,7 @@ def create_or_update_player(
     xp: int | None = None,
     level: int | None = None,
     reputation: int | None = None,
+    developer: int | bool | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     init_db()
@@ -387,6 +392,10 @@ def create_or_update_player(
     level = safe_int(payload.get("Level", payload.get("level", level)), DEFAULT_LEVEL if level is None else level)
     reputation = safe_int(payload.get("Reputation", payload.get("reputation", reputation)), DEFAULT_REPUTATION if reputation is None else reputation)
 
+    developer_payload_value = payload.get("Developer", payload.get("developer", developer))
+    if developer_payload_value is not None:
+        developer = 1 if parse_bool(developer_payload_value, False) else 0
+
     existing = get_player_by_platform(platform, platform_id)
     if existing is not None:
         player_id = safe_int(existing.get("Id"), player_id)
@@ -395,21 +404,24 @@ def create_or_update_player(
         xp = existing["XP"] if xp is None else xp
         level = existing["Level"] if level is None else level
         reputation = existing["Reputation"] if reputation is None else reputation
+        developer = safe_int(existing.get("Developer"), 0) if developer is None else (1 if developer else 0)
     else:
         xp = DEFAULT_XP if xp is None else xp
         level = DEFAULT_LEVEL if level is None else level
         reputation = DEFAULT_REPUTATION if reputation is None else reputation
+        developer = 0 if developer is None else (1 if developer else 0)
 
     normalized_xp = max(0, safe_int(xp, 0))
     normalized_level = max(1, safe_int(level, 1))
     normalized_reputation = safe_int(reputation, DEFAULT_REPUTATION)
+    normalized_developer = 1 if developer else 0
 
     with closing(connect()) as conn:
         try:
             conn.execute(
                 """
-                INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified, developer)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     player_id,
@@ -422,6 +434,7 @@ def create_or_update_player(
                     normalized_level,
                     normalized_reputation,
                     DEFAULT_VERIFIED_EMAIL,
+                    normalized_developer,
                 ),
             )
         except psycopg.IntegrityError:
@@ -437,7 +450,8 @@ def create_or_update_player(
                     level = ?,
                     reputation = ?,
                     email = ?,
-                    verified = 1
+                    verified = 1,
+                    developer = ?
                 WHERE platform = ? AND platform_id = ?
                 """,
                 (
@@ -448,6 +462,7 @@ def create_or_update_player(
                     normalized_level,
                     normalized_reputation,
                     DEFAULT_VERIFIED_EMAIL,
+                    normalized_developer,
                     platform,
                     platform_id,
                 ),
