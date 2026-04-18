@@ -6,7 +6,7 @@ This project is not affiliated with [Rec Room Inc.]([https://example.com](https:
 
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the latest Release.exe
-2. Put the Release.exe in a folder (It downloads Depotdownloader)
+2. Put the Release.exe in a folder to stay organized (It downloads Depotdownloader)
 
 If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
 
