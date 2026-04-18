@@ -123,6 +123,7 @@ def profile_response_2016(player: dict[str, Any]) -> dict[str, Any]:
         "Level": max(1, shared.safe_int(player.get("Level"), 1)),
         "Reputation": shared.safe_int(player.get("Reputation"), 0),
         "Verified": bool(player.get("Verified", True)),
+        "Developer": bool(player.get("Developer", False)),
     }
 
 
