@@ -2,11 +2,15 @@
 
 This repository tries to recover old rec room builds (Some of them), providing servers, easy downloading.
 
+
+
+
+
 This project is not affiliated with [Rec Room Inc.]([https://example.com](https://recroom.com/)). It is made by a solo developer and it isn't official.
 
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the latest Release.exe
-2. Put the Release.exe in a folder to stay organized (It downloads Depotdownloader)
+2. Put the RecRoompatches.exe in a folder to stay organized (It downloads Depotdownloader)
 
 If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
 
