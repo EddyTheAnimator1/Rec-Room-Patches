@@ -844,7 +844,7 @@ def get_relationships(player_id: int) -> list[dict[str, Any]]:
     init_db()
     with closing(connect()) as conn:
         rows = conn.execute(
-            "SELECT other_player_id, relationship_type FROM relationships WHERE player_id = ? AND other_player_id <> ? ORDER BY other_player_id",
+            "SELECT other_player_id, relationship_type FROM relationships WHERE player_id = ? AND other_player_id <> ? AND relationship_type <> 0 ORDER BY other_player_id",
             (player_id, player_id),
         ).fetchall()
     return [{"PlayerID": safe_int(row["other_player_id"], 0), "RelationshipType": safe_int(row["relationship_type"], 0)} for row in rows]
@@ -853,16 +853,22 @@ def get_relationships(player_id: int) -> list[dict[str, Any]]:
 def set_relationship(player_id: int, other_player_id: int, relationship_type: int) -> dict[str, Any]:
     init_db()
     with closing(connect()) as conn:
-        conn.execute(
-            """
-            INSERT INTO relationships(player_id, other_player_id, relationship_type)
-            VALUES (?, ?, ?)
-            ON CONFLICT(player_id, other_player_id) DO UPDATE SET relationship_type = excluded.relationship_type
-            """,
-            (player_id, other_player_id, relationship_type),
-        )
+        if safe_int(relationship_type, 0) == 0:
+            conn.execute(
+                "DELETE FROM relationships WHERE player_id = ? AND other_player_id = ?",
+                (player_id, other_player_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO relationships(player_id, other_player_id, relationship_type)
+                VALUES (?, ?, ?)
+                ON CONFLICT(player_id, other_player_id) DO UPDATE SET relationship_type = excluded.relationship_type
+                """,
+                (player_id, other_player_id, relationship_type),
+            )
         conn.commit()
-    relation = {"PlayerID": other_player_id, "RelationshipType": relationship_type}
+    relation = {"PlayerID": other_player_id, "RelationshipType": safe_int(relationship_type, 0)}
     enqueue_ws_event(player_id, 1, relation)
     return relation
 
@@ -898,12 +904,36 @@ def apply_relationship_action(action: str, id1: int, id2: int) -> dict[str, Any]
     return set_relationship(id1, id2, 0)
 
 
+def ensure_player_stub(player_id: int, preferred_name: str | None = None) -> dict[str, Any] | None:
+    safe_player_id = safe_int(player_id, 0)
+    if safe_player_id <= 0:
+        return None
+    existing = get_player_by_id(safe_player_id)
+    if existing is not None:
+        return existing
+    payload: dict[str, Any] = {}
+    fallback_name = str(preferred_name or f"Player {safe_player_id}").strip() or f"Player {safe_player_id}"
+    payload["Name"] = fallback_name
+    payload["DisplayName"] = fallback_name
+    payload["Username"] = fallback_name
+    return create_or_update_player(platform=DEFAULT_PLATFORM, platform_id=safe_player_id, payload=payload, player_id=safe_player_id)
+
+
 def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: str = "") -> dict[str, Any]:
+    from_player_id = safe_int(from_player_id, 0)
+    to_player_id = safe_int(to_player_id, 0)
+    if from_player_id <= 0 or to_player_id <= 0:
+        raise ValueError("message sender/recipient must be positive player ids")
+
+    ensure_player_stub(from_player_id)
+    ensure_player_stub(to_player_id)
+
+    sent_ticks = utcnow_ticks()
     init_db()
     with closing(connect()) as conn:
         cursor = conn.execute(
             "INSERT INTO messages(from_player_id, to_player_id, sent_time, type, data) VALUES (?, ?, ?, ?, ?) RETURNING id",
-            (from_player_id, to_player_id, str(utcnow_ticks()), msg_type, str(data or "")),
+            (from_player_id, to_player_id, str(sent_ticks), msg_type, str(data or "")),
         )
         inserted = cursor.fetchone()
         message_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
@@ -912,7 +942,7 @@ def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: 
         "Id": message_id,
         "FromPlayerId": from_player_id,
         "ToPlayerId": to_player_id,
-        "SentTime": utcnow_ticks(),
+        "SentTime": sent_ticks,
         "Type": msg_type,
         "Data": str(data or ""),
     }

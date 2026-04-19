@@ -149,6 +149,53 @@ def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int 
     return shared.safe_int(default, 0)
 
 
+def resolve_relationship_target_id(payload: dict[str, Any] | None = None) -> int:
+    payload = payload if isinstance(payload, dict) else {}
+
+    for raw in (
+        request.args.get("id"),
+        request.args.get("playerId"),
+        request.args.get("PlayerId"),
+        payload.get("TargetPlayerId"),
+        payload.get("targetPlayerId"),
+        payload.get("OtherPlayerId"),
+        payload.get("otherPlayerId"),
+        payload.get("PlayerId"),
+        payload.get("playerId"),
+        payload.get("Id"),
+        payload.get("id"),
+    ):
+        value = shared.safe_int(raw, 0)
+        if value > 0:
+            return value
+    return 0
+
+
+def resolve_message_sender_id(payload: dict[str, Any] | None = None) -> int:
+    payload = payload if isinstance(payload, dict) else {}
+
+    header_player_id = _header_local_player_id()
+    if header_player_id > 0:
+        return header_player_id
+
+    for key in ("FromPlayerId", "fromPlayerId", "SenderPlayerId", "senderPlayerId", "PlayerId", "playerId"):
+        value = shared.safe_int(payload.get(key), 0)
+        if value > 0:
+            return value
+
+    mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
+    if mapped > 0:
+        return mapped
+    if LAST_LOCAL_PLAYER_ID > 0:
+        return LAST_LOCAL_PLAYER_ID
+    return 0
+
+
+def _ensure_message_related_players(player_ids: list[int]) -> None:
+    for player_id in dict.fromkeys(pid for pid in player_ids if shared.safe_int(pid, 0) > 0):
+        shared.ensure_player_stub(shared.safe_int(player_id, 0))
+
+
 def profile_response_2016(player: dict[str, Any]) -> dict[str, Any]:
     return {
         "Id": shared.safe_int(player.get("Id"), 0),
@@ -160,6 +207,22 @@ def profile_response_2016(player: dict[str, Any]) -> dict[str, Any]:
         "Reputation": shared.safe_int(player.get("Reputation"), 0),
         "Verified": bool(player.get("Verified", True)),
         "Developer": bool(player.get("Developer", False)),
+    }
+
+
+def synthetic_profile_response_2016(player_id: int) -> dict[str, Any]:
+    safe_player_id = shared.safe_int(player_id, 0)
+    fallback_name = shared.DEFAULT_PLAYER_NAME if safe_player_id <= 0 else f"Player {safe_player_id}"
+    return {
+        "Id": safe_player_id,
+        "Username": fallback_name,
+        "DisplayName": fallback_name,
+        "XP": 0,
+        "XpRequiredToLevelUp": shared.xp_required_for_level(1),
+        "Level": 1,
+        "Reputation": shared.DEFAULT_REPUTATION,
+        "Verified": True,
+        "Developer": False,
     }
 
 
@@ -583,7 +646,16 @@ def players_v1(subpath: str = "") -> Any:
 
 @app.route("/api/players/v1/list", methods=["POST"])
 def players_list() -> Any:
-    players = [profile_response_2016(player) for player in shared.list_players_by_ids(request_id_list())]
+    requested_ids = [pid for pid in dict.fromkeys(pid for pid in request_id_list() if pid > 0)]
+    _ensure_message_related_players(requested_ids)
+    actual_players = [profile_response_2016(player) for player in shared.list_players_by_ids(requested_ids)]
+    players_by_id = {shared.safe_int(player.get("Id"), 0): player for player in actual_players}
+
+    # The 2016 nearby tab is driven by explicit Photon user IDs already known by the client.
+    # If one or more profiles are temporarily missing from storage, returning nothing for those
+    # IDs causes the nearby entry to disappear entirely. Fill only the missing explicit IDs with
+    # lightweight synthetic profiles so the UI still has something to render.
+    players = [players_by_id.get(player_id) or synthetic_profile_response_2016(player_id) for player_id in requested_ids]
     return Response(json.dumps(players), mimetype="application/json")
 
 
@@ -994,18 +1066,26 @@ def game_session(session_id: str) -> Any:
 @app.route("/api/messages/v2/get", methods=["GET", "POST"])
 @app.route("/api/messages/v2/get/", methods=["GET", "POST"])
 def messages_v2_get() -> Any:
-    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
+    payload = request_payload()
+    player_id = resolve_message_sender_id(payload) or resolve_local_player_id(payload, allow_generic_id=False)
     remember_local_player_id(player_id)
-    return Response(json.dumps(shared.get_messages_for_player(player_id)), mimetype="application/json")
+    messages = shared.get_messages_for_player(player_id)
+    _ensure_message_related_players([player_id, *[shared.safe_int(item.get("FromPlayerId"), 0) for item in messages]])
+    return Response(json.dumps(messages), mimetype="application/json")
 
 
 @app.route("/api/messages/v2/send", methods=["POST"])
 @app.route("/api/messages/v2/send/", methods=["POST"])
 def messages_v2_send() -> Any:
     payload = request_payload()
-    from_player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    from_player_id = resolve_message_sender_id(payload)
     to_player_id = shared.safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0)
+    if from_player_id <= 0:
+        return jsonify({"error": "sender not resolved"}), 400
+    if to_player_id <= 0:
+        return jsonify({"error": "target player missing"}), 400
     remember_local_player_id(from_player_id)
+    _ensure_message_related_players([from_player_id, to_player_id])
     message = shared.create_message(from_player_id, to_player_id, shared.safe_int(payload.get("Type", payload.get("type", 0)), 0), str(payload.get("Data", payload.get("data", "")) or ""))
     return Response(json.dumps({k: v for k, v in message.items() if k != "ToPlayerId"}), mimetype="application/json")
 
@@ -1027,17 +1107,27 @@ def messages_v2_delete(message_id: int | None = None) -> Any:
 def messages_get(player_id: int | None = None) -> Any:
     if player_id is None:
         payload = request_payload()
-        player_id = resolve_local_player_id(payload, allow_generic_id=True)
-    return Response(json.dumps(shared.get_messages_for_player(shared.safe_int(player_id, 0))), mimetype="application/json")
+        player_id = resolve_message_sender_id(payload) or resolve_local_player_id(payload, allow_generic_id=False)
+    safe_player_id = shared.safe_int(player_id, 0)
+    messages = shared.get_messages_for_player(safe_player_id)
+    _ensure_message_related_players([safe_player_id, *[shared.safe_int(item.get("FromPlayerId"), 0) for item in messages]])
+    return Response(json.dumps(messages), mimetype="application/json")
 
 
 @app.route("/api/messages/v1/send", methods=["POST"])
 @app.route("/api/messages/v1/send/", methods=["POST"])
 def messages_send() -> Any:
     payload = request_payload()
+    from_player_id = shared.safe_int(payload.get("FromPlayerId", payload.get("fromPlayerId", 0)), 0) or resolve_message_sender_id(payload)
+    to_player_id = shared.safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0)
+    if from_player_id <= 0:
+        return jsonify({"error": "sender not resolved"}), 400
+    if to_player_id <= 0:
+        return jsonify({"error": "target player missing"}), 400
+    _ensure_message_related_players([from_player_id, to_player_id])
     message = shared.create_message(
-        shared.safe_int(payload.get("FromPlayerId", payload.get("fromPlayerId", 0)), 0),
-        shared.safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0),
+        from_player_id,
+        to_player_id,
         shared.safe_int(payload.get("Type", payload.get("type", 0)), 0),
         str(payload.get("Data", payload.get("data", "")) or ""),
     )
@@ -1068,8 +1158,8 @@ def relationships_v2_get() -> Any:
 @app.route("/api/relationships/v2/<action>/", methods=["GET"])
 def relationships_v2_action(action: str) -> Any:
     payload = request_payload(include_query=False)
-    local_player_id = resolve_local_player_id(payload, allow_generic_id=True)
-    other_player_id = shared.safe_int(request.args.get("id", payload.get("TargetPlayerId", payload.get("targetPlayerId", 0))), 0)
+    local_player_id = resolve_local_player_id(payload)
+    other_player_id = resolve_relationship_target_id(payload)
     if local_player_id <= 0 or other_player_id <= 0 or local_player_id == other_player_id:
         return jsonify({"error": "invalid relationship target"}), 400
     remember_local_player_id(local_player_id)
@@ -1080,17 +1170,30 @@ def relationships_v2_action(action: str) -> Any:
 @app.route("/api/relationships/v1/get", methods=["GET", "POST"])
 def relationships_get(player_id: int | None = None) -> Any:
     if player_id is None:
-        payload = request_payload()
-        player_id = resolve_local_player_id(payload, allow_generic_id=True)
-    return Response(json.dumps(shared.get_relationships(shared.safe_int(player_id, 0))), mimetype="application/json")
+        payload = request_payload(include_query=False)
+        player_id = resolve_local_player_id(payload)
+    player_id = shared.safe_int(player_id, 0)
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_relationships(player_id)), mimetype="application/json")
 
 
 @app.route("/api/relationships/v1/<action>", methods=["GET"])
 @app.route("/api/relationships/v1/<action>/", methods=["GET"])
 def relationships_action(action: str) -> Any:
-    id1 = shared.safe_int(request.args.get("id1", 0), 0)
-    id2 = shared.safe_int(request.args.get("id2", 0), 0)
-    return Response(json.dumps(shared.apply_relationship_action(action, id1, id2)), mimetype="application/json")
+    payload = request_payload(include_query=False)
+    local_player_id = shared.safe_int(request.args.get("id1", 0), 0)
+    other_player_id = shared.safe_int(request.args.get("id2", 0), 0)
+
+    if local_player_id <= 0:
+        local_player_id = resolve_local_player_id(payload)
+    if other_player_id <= 0:
+        other_player_id = resolve_relationship_target_id(payload)
+
+    if local_player_id <= 0 or other_player_id <= 0 or local_player_id == other_player_id:
+        return jsonify({"error": "invalid relationship target"}), 400
+
+    remember_local_player_id(local_player_id)
+    return Response(json.dumps(shared.apply_relationship_action(action, local_player_id, other_player_id)), mimetype="application/json")
 
 
 @app.route("/api/playerReputation/v1/heal", methods=["POST"])
