@@ -563,7 +563,7 @@ def enforce_latest_release() -> int:
 
     UI.huge_warning(
         [
-            "This Release.exe is outdated and will now close.",
+            "This RecRoomPatches.exe is outdated and will now close.",
             f"Current version : v{current_version}",
             f"Latest version  : v{latest_version}",
             "The GitHub releases page will open so you can download the latest version.",
