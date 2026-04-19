@@ -419,6 +419,21 @@ def request_id_list() -> list[int]:
     json_payload = request.get_json(silent=True)
     if isinstance(json_payload, list):
         return [shared.safe_int(item, 0) for item in json_payload]
+
+    raw_text = request.get_data(cache=True, as_text=True).strip()
+    if raw_text:
+        try:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, list):
+                return [shared.safe_int(item, 0) for item in parsed]
+            if isinstance(parsed, dict):
+                for key in ("ids", "Ids", "playerIds", "PlayerIds"):
+                    value = parsed.get(key)
+                    if isinstance(value, list):
+                        return [shared.safe_int(item, 0) for item in value]
+        except Exception:
+            pass
+
     payload = request_payload()
     for key in ("ids", "Ids", "playerIds", "PlayerIds"):
         value = payload.get(key)
@@ -647,7 +662,6 @@ def players_v1(subpath: str = "") -> Any:
 @app.route("/api/players/v1/list", methods=["POST"])
 def players_list() -> Any:
     requested_ids = [pid for pid in dict.fromkeys(pid for pid in request_id_list() if pid > 0)]
-    _ensure_message_related_players(requested_ids)
     actual_players = [profile_response_2016(player) for player in shared.list_players_by_ids(requested_ids)]
     players_by_id = {shared.safe_int(player.get("Id"), 0): player for player in actual_players}
 
