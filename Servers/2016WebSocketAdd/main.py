@@ -160,12 +160,49 @@ def config_v2_payload() -> dict[str, Any]:
 def get_or_create_player_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     platform = shared.parse_platform(payload.get("Platform", payload.get("platform", payload.get("p", shared.DEFAULT_PLATFORM))))
     platform_id = shared.safe_int(payload.get("PlatformId", payload.get("platformId", payload.get("id", payload.get("Id", 0)))), 0)
+    display_name = str(
+        payload.get("DisplayName")
+        or payload.get("displayName")
+        or payload.get("Name")
+        or payload.get("name")
+        or payload.get("Username")
+        or payload.get("username")
+        or ""
+    ).strip()
+
+    existing: dict[str, Any] | None = None
+    if platform_id > 0:
+        existing = shared.get_player_by_platform(platform, platform_id)
+
+    if existing is None:
+        remembered_id = resolve_local_player_id(payload)
+        if remembered_id > 0:
+            remembered = shared.get_player_by_id(remembered_id)
+            if remembered is not None and shared.safe_int(remembered.get("Platform"), platform) == platform:
+                existing = remembered
+                if platform_id <= 0:
+                    platform_id = shared.safe_int(remembered.get("PlatformId"), 0)
+
+    if existing is None and display_name:
+        named_matches = shared.get_players_by_name(platform, display_name)
+        if len(named_matches) == 1:
+            existing = named_matches[0]
+            if platform_id <= 0:
+                platform_id = shared.safe_int(existing.get("PlatformId"), 0)
+
     if platform_id <= 0:
-        platform_id = 1
+        if existing is not None:
+            platform_id = shared.safe_int(existing.get("PlatformId"), 0)
+        if platform_id <= 0:
+            platform_id = max(1, shared.stable_player_id(platform, max(1, shared.safe_int(resolve_local_player_id(payload), 0) or 1)))
+
+    normalized_payload = player_payload_defaults(payload, platform, platform_id)
+    if existing is not None:
+        normalized_payload.setdefault("Id", shared.safe_int(existing.get("Id"), 0))
     player = shared.create_or_update_player(
         platform=platform,
         platform_id=platform_id,
-        payload=player_payload_defaults(payload, platform, platform_id),
+        payload=normalized_payload,
     )
     remember_local_player_id(shared.safe_int(player.get("Id"), 0))
     return player
@@ -174,6 +211,10 @@ def get_or_create_player_from_payload(payload: dict[str, Any]) -> dict[str, Any]
 def ensure_dirs() -> None:
     shared.ensure_data_dir()
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+ensure_dirs()
+shared.init_db()
 
 
 def now_http_date() -> str:
@@ -346,7 +387,6 @@ def player_payload_defaults(payload: dict[str, Any], default_platform: int, defa
 
 @app.before_request
 def before_request() -> Any:
-    shared.init_db()
     ensure_dirs()
     if request.content_length is not None and request.content_length > MAX_REQUEST_BODY_BYTES:
         return jsonify({"error": "payload too large"}), 413
@@ -562,14 +602,7 @@ def players_objective(player_id: int) -> Any:
     )
 
 
-@app.route("/api/settings/v2", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-@app.route("/api/settings/v2/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-@app.route("/api/settings/v2/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-def settings_v2(subpath: str = "") -> Any:
-    payload = request_payload()
-    player_id = resolve_local_player_id(payload)
-    if request.method == "GET":
-        return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
+def _apply_settings_v2_change(player_id: int, payload: dict[str, Any], subpath: str = "", force_remove: bool = False) -> dict[str, Any]:
     entries = payload.get("settings") or payload.get("Settings") or payload
     if isinstance(entries, list):
         for item in entries:
@@ -578,19 +611,49 @@ def settings_v2(subpath: str = "") -> Any:
             key = str(item.get("Key") or item.get("key") or "").strip()
             if not key:
                 continue
-            if request.method == "DELETE" or shared.parse_bool(item.get("Remove", item.get("remove", False)), False):
+            should_remove = force_remove or shared.parse_bool(item.get("Remove", item.get("remove", False)), False)
+            if should_remove:
                 shared.delete_setting(player_id, key)
             else:
                 shared.upsert_setting(player_id, key, str(item.get("Value", item.get("value", ""))))
     else:
         key = str(payload.get("Key") or payload.get("key") or subpath.rsplit("/", 1)[-1] or "").strip()
         if key:
-            if request.method == "DELETE" or shared.parse_bool(payload.get("Remove", payload.get("remove", False)), False):
+            should_remove = force_remove or shared.parse_bool(payload.get("Remove", payload.get("remove", False)), False)
+            if should_remove:
                 shared.delete_setting(player_id, key)
             else:
                 shared.upsert_setting(player_id, key, str(payload.get("Value", payload.get("value", payload.get("SettingValue", "")))))
     remember_local_player_id(player_id)
-    return jsonify({"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))})
+    return {"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))}
+
+
+@app.route("/api/settings/v2/set", methods=["POST", "PUT", "PATCH"])
+@app.route("/api/settings/v2/set/", methods=["POST", "PUT", "PATCH"])
+def settings_v2_set() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    return jsonify(_apply_settings_v2_change(player_id, payload, subpath="set", force_remove=False))
+
+
+@app.route("/api/settings/v2/remove", methods=["POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/remove/", methods=["POST", "PUT", "PATCH", "DELETE"])
+def settings_v2_remove() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    return jsonify(_apply_settings_v2_change(player_id, payload, subpath="remove", force_remove=True))
+
+
+@app.route("/api/settings/v2", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def settings_v2(subpath: str = "") -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload)
+    if request.method == "GET":
+        remember_local_player_id(player_id)
+        return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
+    return jsonify(_apply_settings_v2_change(player_id, payload, subpath=subpath, force_remove=(request.method == "DELETE")))
 
 
 @app.route("/api/settings/v1", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
