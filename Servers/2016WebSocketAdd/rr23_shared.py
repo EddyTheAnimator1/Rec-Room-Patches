@@ -19,6 +19,8 @@ from psycopg.rows import dict_row
 DATA_DIR = Path(os.environ.get("DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or ".").resolve()
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or ""
 INIT_LOCK = threading.Lock()
+INIT_COMPLETE = False
+DB_SCHEMA_LOCK_ID = int(os.environ.get("DB_SCHEMA_LOCK_ID", "72016023001"))
 
 DEFAULT_PLAYER_NAME = os.environ.get("DEFAULT_PLAYER_NAME", "Eduard")
 DEFAULT_PLATFORM = int(os.environ.get("DEFAULT_PLATFORM", "0"))
@@ -148,132 +150,181 @@ def connect() -> PgConnection:
     return PgConnection(raw)
 
 
-def init_db() -> None:
+def init_db(force: bool = False) -> None:
+    global INIT_COMPLETE
+    if INIT_COMPLETE and not force:
+        return
+
     with INIT_LOCK:
+        if INIT_COMPLETE and not force:
+            return
+
         with closing(connect()) as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS players (
-                    id BIGINT PRIMARY KEY,
-                    platform INTEGER NOT NULL,
-                    platform_id BIGINT NOT NULL,
-                    name TEXT NOT NULL,
-                    display_name TEXT NOT NULL,
-                    username TEXT NOT NULL,
-                    xp INTEGER NOT NULL,
-                    level INTEGER NOT NULL,
-                    reputation INTEGER NOT NULL,
-                    email TEXT NOT NULL,
-                    verified INTEGER NOT NULL DEFAULT 1,
-                    developer INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_players_platform_platformid
-                    ON players(platform, platform_id);
+            advisory_lock_acquired = False
+            try:
+                conn.execute("SELECT pg_advisory_lock(?)", (DB_SCHEMA_LOCK_ID,))
+                advisory_lock_acquired = True
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS players (
+                        id BIGINT PRIMARY KEY,
+                        platform INTEGER NOT NULL,
+                        platform_id BIGINT NOT NULL,
+                        name TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        username TEXT NOT NULL,
+                        xp INTEGER NOT NULL,
+                        level INTEGER NOT NULL,
+                        reputation INTEGER NOT NULL,
+                        email TEXT NOT NULL,
+                        verified INTEGER NOT NULL DEFAULT 1,
+                        developer INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_players_platform_platformid
+                        ON players(platform, platform_id);
 
-                CREATE TABLE IF NOT EXISTS settings (
-                    player_id BIGINT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    PRIMARY KEY (player_id, key)
-                );
+                    CREATE TABLE IF NOT EXISTS settings (
+                        player_id BIGINT NOT NULL,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        PRIMARY KEY (player_id, key)
+                    );
 
-                CREATE TABLE IF NOT EXISTS avatars (
-                    player_id BIGINT PRIMARY KEY,
-                    outfit_selections TEXT NOT NULL DEFAULT '',
-                    skin_color TEXT NOT NULL DEFAULT '',
-                    hair_color TEXT NOT NULL DEFAULT ''
-                );
+                    CREATE TABLE IF NOT EXISTS avatars (
+                        player_id BIGINT PRIMARY KEY,
+                        outfit_selections TEXT NOT NULL DEFAULT '',
+                        skin_color TEXT NOT NULL DEFAULT '',
+                        hair_color TEXT NOT NULL DEFAULT ''
+                    );
 
-                CREATE TABLE IF NOT EXISTS avatar_items (
-                    player_id BIGINT NOT NULL,
-                    avatar_item_desc TEXT NOT NULL,
-                    unlocked_level INTEGER NOT NULL DEFAULT 1,
-                    PRIMARY KEY (player_id, avatar_item_desc)
-                );
+                    CREATE TABLE IF NOT EXISTS avatar_items (
+                        player_id BIGINT NOT NULL,
+                        avatar_item_desc TEXT NOT NULL,
+                        unlocked_level INTEGER NOT NULL DEFAULT 1,
+                        PRIMARY KEY (player_id, avatar_item_desc)
+                    );
 
-                CREATE TABLE IF NOT EXISTS presence (
-                    player_id BIGINT PRIMARY KEY,
-                    game_session_id TEXT NOT NULL DEFAULT '',
-                    app_version TEXT NOT NULL DEFAULT '',
-                    last_update_time TEXT NOT NULL,
-                    activity TEXT NOT NULL DEFAULT 'DormRoom',
-                    private INTEGER NOT NULL DEFAULT 0,
-                    available_space INTEGER NOT NULL DEFAULT 0,
-                    game_in_progress INTEGER NOT NULL DEFAULT 0
-                );
+                    CREATE TABLE IF NOT EXISTS presence (
+                        player_id BIGINT PRIMARY KEY,
+                        game_session_id TEXT NOT NULL DEFAULT '',
+                        app_version TEXT NOT NULL DEFAULT '',
+                        last_update_time TEXT NOT NULL,
+                        activity TEXT NOT NULL DEFAULT 'DormRoom',
+                        private INTEGER NOT NULL DEFAULT 0,
+                        available_space INTEGER NOT NULL DEFAULT 0,
+                        game_in_progress INTEGER NOT NULL DEFAULT 0
+                    );
 
-                CREATE TABLE IF NOT EXISTS relationships (
-                    player_id BIGINT NOT NULL,
-                    other_player_id BIGINT NOT NULL,
-                    relationship_type INTEGER NOT NULL,
-                    PRIMARY KEY (player_id, other_player_id)
-                );
+                    CREATE TABLE IF NOT EXISTS relationships (
+                        player_id BIGINT NOT NULL,
+                        other_player_id BIGINT NOT NULL,
+                        relationship_type INTEGER NOT NULL,
+                        PRIMARY KEY (player_id, other_player_id)
+                    );
 
-                CREATE TABLE IF NOT EXISTS messages (
-                    id BIGSERIAL PRIMARY KEY,
-                    from_player_id BIGINT NOT NULL,
-                    to_player_id BIGINT NOT NULL,
-                    sent_time TEXT NOT NULL,
-                    type INTEGER NOT NULL,
-                    data TEXT NOT NULL
-                );
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id BIGSERIAL PRIMARY KEY,
+                        from_player_id BIGINT NOT NULL,
+                        to_player_id BIGINT NOT NULL,
+                        sent_time TEXT NOT NULL,
+                        type INTEGER NOT NULL,
+                        data TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS game_sessions (
-                    id TEXT PRIMARY KEY,
-                    app_version TEXT NOT NULL DEFAULT '',
-                    activity TEXT NOT NULL DEFAULT 'DormRoom',
-                    private INTEGER NOT NULL DEFAULT 0,
-                    available_space INTEGER NOT NULL DEFAULT 0,
-                    game_in_progress INTEGER NOT NULL DEFAULT 0,
-                    player_ids_json TEXT NOT NULL DEFAULT '[]'
-                );
+                    CREATE TABLE IF NOT EXISTS game_sessions (
+                        id TEXT PRIMARY KEY,
+                        app_version TEXT NOT NULL DEFAULT '',
+                        activity TEXT NOT NULL DEFAULT 'DormRoom',
+                        private INTEGER NOT NULL DEFAULT 0,
+                        available_space INTEGER NOT NULL DEFAULT 0,
+                        game_in_progress INTEGER NOT NULL DEFAULT 0,
+                        player_ids_json TEXT NOT NULL DEFAULT '[]'
+                    );
 
-                CREATE TABLE IF NOT EXISTS gift_packages (
-                    id BIGSERIAL PRIMARY KEY,
-                    player_id BIGINT NOT NULL,
-                    avatar_item_desc TEXT NOT NULL DEFAULT '',
-                    xp INTEGER NOT NULL DEFAULT 0
-                );
+                    CREATE TABLE IF NOT EXISTS gift_packages (
+                        id BIGSERIAL PRIMARY KEY,
+                        player_id BIGINT NOT NULL,
+                        avatar_item_desc TEXT NOT NULL DEFAULT '',
+                        xp INTEGER NOT NULL DEFAULT 0
+                    );
 
-                CREATE TABLE IF NOT EXISTS kv_store (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
+                    CREATE TABLE IF NOT EXISTS kv_store (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS request_log (
-                    id BIGSERIAL PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    method TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    query_json TEXT NOT NULL,
-                    status_code INTEGER NOT NULL DEFAULT 0,
-                    note TEXT NOT NULL DEFAULT ''
-                );
+                    CREATE TABLE IF NOT EXISTS request_log (
+                        id BIGSERIAL PRIMARY KEY,
+                        created_at TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        query_json TEXT NOT NULL,
+                        status_code INTEGER NOT NULL DEFAULT 0,
+                        note TEXT NOT NULL DEFAULT ''
+                    );
 
-                CREATE TABLE IF NOT EXISTS websocket_events (
-                    id BIGSERIAL PRIMARY KEY,
-                    player_id BIGINT NOT NULL,
-                    notification_id INTEGER NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
+                    CREATE TABLE IF NOT EXISTS websocket_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        player_id BIGINT NOT NULL,
+                        notification_id INTEGER NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS websocket_sessions (
-                    player_id BIGINT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    connected_at TEXT NOT NULL,
-                    last_seen_at TEXT NOT NULL,
-                    PRIMARY KEY (player_id, session_id)
-                );
-                """
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO kv_store(key, value) VALUES('motd', ?)",
-                (DEFAULT_MOTD_TEXT,),
-            )
-            conn.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS developer INTEGER NOT NULL DEFAULT 0")
-            conn.commit()
+                    CREATE TABLE IF NOT EXISTS websocket_sessions (
+                        player_id BIGINT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        connected_at TEXT NOT NULL,
+                        last_seen_at TEXT NOT NULL,
+                        PRIMARY KEY (player_id, session_id)
+                    );
 
+                    CREATE TABLE IF NOT EXISTS player_reputation_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        player_id BIGINT NOT NULL,
+                        good_karma_minutes INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS player_scores (
+                        id BIGSERIAL PRIMARY KEY,
+                        player_id BIGINT NOT NULL,
+                        session_id TEXT NOT NULL DEFAULT '',
+                        activity TEXT NOT NULL DEFAULT '',
+                        category TEXT NOT NULL DEFAULT '',
+                        score DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        comment TEXT NOT NULL DEFAULT '',
+                        secondary_score DOUBLE PRECISION,
+                        created_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS player_reports (
+                        id BIGSERIAL PRIMARY KEY,
+                        reporter_player_id BIGINT NOT NULL,
+                        reported_player_id BIGINT NOT NULL,
+                        report_category INTEGER NOT NULL DEFAULT 0,
+                        activity TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    );
+                    """
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO kv_store(key, value) VALUES('motd', ?)",
+                    (DEFAULT_MOTD_TEXT,),
+                )
+                conn.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS developer INTEGER NOT NULL DEFAULT 0")
+                conn.commit()
+                INIT_COMPLETE = True
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                if advisory_lock_acquired:
+                    try:
+                        conn.execute("SELECT pg_advisory_unlock(?)", (DB_SCHEMA_LOCK_ID,))
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
 
 def safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -315,6 +366,73 @@ def stable_player_id(platform: int, platform_id: int) -> int:
     digest = hashlib.sha256(f"{platform}:{platform_id}".encode("utf-8")).digest()
     raw_value = int.from_bytes(digest[:8], "big") & 0x7FFFFFFF
     return raw_value or 1
+
+
+def _player_id_candidates(platform: int, platform_id: int, preferred_player_id: int | None = None):
+    seen: set[int] = set()
+
+    def emit(candidate: int) -> int | None:
+        candidate = safe_int(candidate, 0)
+        if candidate <= 0 or candidate in seen:
+            return None
+        seen.add(candidate)
+        return candidate
+
+    preferred = emit(preferred_player_id or 0)
+    if preferred is not None:
+        yield preferred
+
+    index = 0
+    while True:
+        seed = f"{platform}:{platform_id}:{index}"
+        digest = hashlib.sha256(seed.encode("utf-8")).digest()
+        candidate = emit((int.from_bytes(digest[:8], "big") & 0x7FFFFFFF) or 1)
+        if candidate is not None:
+            yield candidate
+        index += 1
+
+
+def _find_available_player_id(conn: PgConnection, platform: int, platform_id: int, preferred_player_id: int | None = None) -> int:
+    for index, candidate in enumerate(_player_id_candidates(platform, platform_id, preferred_player_id)):
+        row = conn.execute("SELECT id, platform, platform_id FROM players WHERE id = ?", (candidate,)).fetchone()
+        if row is None:
+            return candidate
+        if safe_int(row.get("platform"), DEFAULT_PLATFORM) == platform and safe_int(row.get("platform_id"), 0) == platform_id:
+            return candidate
+        if index >= 63:
+            break
+
+    fallback = max(1, stable_player_id(platform, platform_id))
+    for offset in range(1, 100000):
+        candidate = ((fallback + offset) & 0x7FFFFFFF) or 1
+        row = conn.execute("SELECT id FROM players WHERE id = ?", (candidate,)).fetchone()
+        if row is None:
+            return candidate
+    raise RuntimeError("Unable to allocate a free player id")
+
+
+def _payload_value(payload: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def _payload_string(payload: Mapping[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        if key not in payload:
+            continue
+        value = str(payload[key] or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _payload_optional_int(payload: Mapping[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        if key in payload:
+            return safe_int(payload[key], 0)
+    return None
 
 
 def player_response(row: Mapping[str, Any] | dict[str, Any]) -> dict[str, Any]:
@@ -370,124 +488,130 @@ def create_or_update_player(
     init_db()
     payload = payload if isinstance(payload, dict) else {}
 
-    incoming_display_name = str(
-        payload.get("DisplayName")
-        or payload.get("displayName")
-        or payload.get("Name")
-        or payload.get("name")
-        or display_name
-        or DEFAULT_PLAYER_NAME
-    ).strip() or DEFAULT_PLAYER_NAME
-    incoming_username = str(
-        payload.get("Username")
-        or payload.get("username")
-        or username
-        or incoming_display_name
-    ).strip() or incoming_display_name
+    requested_display_name = _payload_string(payload, "DisplayName", "displayName", "Name", "name")
+    requested_username = _payload_string(payload, "Username", "username")
+    requested_player_id = _payload_optional_int(payload, "Id", "id")
+    requested_xp = _payload_optional_int(payload, "XP", "xp")
+    requested_level = _payload_optional_int(payload, "Level", "level")
+    requested_reputation = _payload_optional_int(payload, "Reputation", "reputation")
 
-    display_name = incoming_display_name
-    username = incoming_username
-    player_id = safe_int(payload.get("Id", payload.get("id", player_id)), player_id or stable_player_id(platform, platform_id))
-    xp = safe_int(payload.get("XP", payload.get("xp", xp)), DEFAULT_XP if xp is None else xp)
-    level = safe_int(payload.get("Level", payload.get("level", level)), DEFAULT_LEVEL if level is None else level)
-    reputation = safe_int(payload.get("Reputation", payload.get("reputation", reputation)), DEFAULT_REPUTATION if reputation is None else reputation)
+    if requested_display_name is None and display_name is not None:
+        candidate = str(display_name or "").strip()
+        requested_display_name = candidate or None
+    if requested_username is None and username is not None:
+        candidate = str(username or "").strip()
+        requested_username = candidate or None
+    if requested_player_id is None and player_id is not None and player_id > 0:
+        requested_player_id = safe_int(player_id, 0)
+    if requested_xp is None and xp is not None:
+        requested_xp = safe_int(xp, 0)
+    if requested_level is None and level is not None:
+        requested_level = safe_int(level, 1)
+    if requested_reputation is None and reputation is not None:
+        requested_reputation = safe_int(reputation, DEFAULT_REPUTATION)
 
-    developer_payload_value = payload.get("Developer", payload.get("developer", developer))
+    developer_payload_value = _payload_value(payload, "Developer", "developer")
     if developer_payload_value is not None:
-        developer = 1 if parse_bool(developer_payload_value, False) else 0
-
-    existing = get_player_by_platform(platform, platform_id)
-    if existing is not None:
-        player_id = safe_int(existing.get("Id"), player_id)
-        display_name = display_name or existing["DisplayName"]
-        username = username or existing["Username"]
-        xp = existing["XP"] if xp is None else xp
-        level = existing["Level"] if level is None else level
-        reputation = existing["Reputation"] if reputation is None else reputation
-        developer = safe_int(existing.get("Developer"), 0) if developer is None else (1 if developer else 0)
+        requested_developer = 1 if parse_bool(developer_payload_value, False) else 0
+    elif developer is not None:
+        requested_developer = 1 if developer else 0
     else:
-        xp = DEFAULT_XP if xp is None else xp
-        level = DEFAULT_LEVEL if level is None else level
-        reputation = DEFAULT_REPUTATION if reputation is None else reputation
-        developer = 0 if developer is None else (1 if developer else 0)
+        requested_developer = None
 
-    normalized_xp = max(0, safe_int(xp, 0))
-    normalized_level = max(1, safe_int(level, 1))
-    normalized_reputation = safe_int(reputation, DEFAULT_REPUTATION)
-    normalized_developer = 1 if developer else 0
+    for attempt in range(3):
+        with closing(connect()) as conn:
+            try:
+                existing_row = conn.execute(
+                    "SELECT * FROM players WHERE platform = ? AND platform_id = ?",
+                    (platform, platform_id),
+                ).fetchone()
 
-    with closing(connect()) as conn:
-        try:
-            conn.execute(
-                """
-                INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified, developer)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-                """,
-                (
-                    player_id,
-                    platform,
-                    platform_id,
-                    display_name,
-                    display_name,
-                    username,
-                    normalized_xp,
-                    normalized_level,
-                    normalized_reputation,
-                    DEFAULT_VERIFIED_EMAIL,
-                    normalized_developer,
-                ),
-            )
-        except psycopg.IntegrityError:
-            conn.rollback()
-            conn.execute(
-                """
-                UPDATE players
-                SET
-                    name = ?,
-                    display_name = ?,
-                    username = ?,
-                    xp = ?,
-                    level = ?,
-                    reputation = ?,
-                    email = ?,
-                    verified = 1,
-                    developer = ?
-                WHERE platform = ? AND platform_id = ?
-                """,
-                (
-                    display_name,
-                    display_name,
-                    username,
-                    normalized_xp,
-                    normalized_level,
-                    normalized_reputation,
-                    DEFAULT_VERIFIED_EMAIL,
-                    normalized_developer,
-                    platform,
-                    platform_id,
-                ),
-            )
+                if existing_row is not None:
+                    existing = player_response(existing_row)
+                    actual_player_id = safe_int(existing.get("Id"), 0)
+                    final_display_name = requested_display_name or str(existing.get("DisplayName") or existing.get("Name") or DEFAULT_PLAYER_NAME)
+                    final_username = requested_username or str(existing.get("Username") or final_display_name or DEFAULT_PLAYER_NAME)
+                    final_xp = max(0, safe_int(existing.get("XP") if requested_xp is None else requested_xp, 0))
+                    final_level = max(1, safe_int(existing.get("Level") if requested_level is None else requested_level, 1))
+                    final_reputation = safe_int(existing.get("Reputation") if requested_reputation is None else requested_reputation, DEFAULT_REPUTATION)
+                    final_developer = safe_int(existing.get("Developer") if requested_developer is None else requested_developer, 0)
 
-        row = conn.execute(
-            "SELECT id FROM players WHERE platform = ? AND platform_id = ?",
-            (platform, platform_id),
-        ).fetchone()
-        actual_player_id = safe_int(row["id"] if row is not None else player_id, player_id)
+                    conn.execute(
+                        """
+                        UPDATE players
+                        SET
+                            name = ?,
+                            display_name = ?,
+                            username = ?,
+                            xp = ?,
+                            level = ?,
+                            reputation = ?,
+                            email = ?,
+                            verified = 1,
+                            developer = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            final_display_name,
+                            final_display_name,
+                            final_username,
+                            final_xp,
+                            final_level,
+                            final_reputation,
+                            DEFAULT_VERIFIED_EMAIL,
+                            final_developer,
+                            actual_player_id,
+                        ),
+                    )
+                else:
+                    actual_player_id = _find_available_player_id(conn, platform, platform_id, requested_player_id)
+                    final_display_name = requested_display_name or DEFAULT_PLAYER_NAME
+                    final_username = requested_username or final_display_name
+                    final_xp = max(0, safe_int(DEFAULT_XP if requested_xp is None else requested_xp, 0))
+                    final_level = max(1, safe_int(DEFAULT_LEVEL if requested_level is None else requested_level, 1))
+                    final_reputation = safe_int(DEFAULT_REPUTATION if requested_reputation is None else requested_reputation, DEFAULT_REPUTATION)
+                    final_developer = 0 if requested_developer is None else (1 if requested_developer else 0)
 
-        conn.execute(
-            "INSERT OR IGNORE INTO avatars(player_id, outfit_selections, skin_color, hair_color) VALUES(?, '', '', '')",
-            (actual_player_id,),
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO presence(
-                player_id, game_session_id, app_version, last_update_time, activity, private, available_space, game_in_progress
-            ) VALUES (?, '', '', ?, 'DormRoom', 0, 0, 0)
-            """,
-            (actual_player_id, utcnow_iso()),
-        )
-        conn.commit()
-    return get_player_by_id(actual_player_id)  # type: ignore[return-value]
+                    conn.execute(
+                        """
+                        INSERT INTO players(id, platform, platform_id, name, display_name, username, xp, level, reputation, email, verified, developer)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                        """,
+                        (
+                            actual_player_id,
+                            platform,
+                            platform_id,
+                            final_display_name,
+                            final_display_name,
+                            final_username,
+                            final_xp,
+                            final_level,
+                            final_reputation,
+                            DEFAULT_VERIFIED_EMAIL,
+                            final_developer,
+                        ),
+                    )
+
+                conn.execute(
+                    "INSERT OR IGNORE INTO avatars(player_id, outfit_selections, skin_color, hair_color) VALUES(?, '', '', '')",
+                    (actual_player_id,),
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO presence(
+                        player_id, game_session_id, app_version, last_update_time, activity, private, available_space, game_in_progress
+                    ) VALUES (?, '', '', ?, 'DormRoom', 0, 0, 0)
+                    """,
+                    (actual_player_id, utcnow_iso()),
+                )
+                conn.commit()
+                return get_player_by_id(actual_player_id)  # type: ignore[return-value]
+            except psycopg.IntegrityError:
+                conn.rollback()
+                if attempt >= 2:
+                    raise
+
+    raise RuntimeError("Failed to create or update player")
 
 def list_players_by_ids(player_ids: list[int]) -> list[dict[str, Any]]:
     unique_ids = [pid for pid in dict.fromkeys(pid for pid in player_ids if pid > 0)]
@@ -720,8 +844,8 @@ def get_relationships(player_id: int) -> list[dict[str, Any]]:
     init_db()
     with closing(connect()) as conn:
         rows = conn.execute(
-            "SELECT other_player_id, relationship_type FROM relationships WHERE player_id = ? ORDER BY other_player_id",
-            (player_id,),
+            "SELECT other_player_id, relationship_type FROM relationships WHERE player_id = ? AND other_player_id <> ? ORDER BY other_player_id",
+            (player_id, player_id),
         ).fetchall()
     return [{"PlayerID": safe_int(row["other_player_id"], 0), "RelationshipType": safe_int(row["relationship_type"], 0)} for row in rows]
 
@@ -745,24 +869,32 @@ def set_relationship(player_id: int, other_player_id: int, relationship_type: in
 
 def apply_relationship_action(action: str, id1: int, id2: int) -> dict[str, Any]:
     action = action.lower().strip()
+    if id1 <= 0 or id2 <= 0 or id1 == id2:
+        return {"PlayerID": safe_int(id2, 0), "RelationshipType": 0}
     if action == "addfriend":
-        set_relationship(id1, id2, 3)
-        return set_relationship(id2, id1, 3)
+        local_relation = set_relationship(id1, id2, 3)
+        set_relationship(id2, id1, 3)
+        return local_relation
     if action == "removefriend":
-        set_relationship(id1, id2, 0)
-        return set_relationship(id2, id1, 0)
+        local_relation = set_relationship(id1, id2, 0)
+        set_relationship(id2, id1, 0)
+        return local_relation
     if action == "sendfriendrequest":
-        set_relationship(id1, id2, 1)
-        return set_relationship(id2, id1, 2)
+        local_relation = set_relationship(id1, id2, 1)
+        set_relationship(id2, id1, 2)
+        return local_relation
     if action == "acceptfriendrequest":
-        set_relationship(id1, id2, 3)
-        return set_relationship(id2, id1, 3)
+        local_relation = set_relationship(id1, id2, 3)
+        set_relationship(id2, id1, 3)
+        return local_relation
     if action == "blockplayer":
-        set_relationship(id1, id2, 4)
-        return set_relationship(id2, id1, 5)
+        local_relation = set_relationship(id1, id2, 4)
+        set_relationship(id2, id1, 5)
+        return local_relation
     if action == "unblockplayer":
-        set_relationship(id1, id2, 0)
-        return set_relationship(id2, id1, 0)
+        local_relation = set_relationship(id1, id2, 0)
+        set_relationship(id2, id1, 0)
+        return local_relation
     return set_relationship(id1, id2, 0)
 
 
@@ -818,6 +950,78 @@ def delete_message(message_id: int) -> bool:
         conn.commit()
     enqueue_ws_event(to_player_id, 3, {"Id": message_id})
     return True
+
+
+def record_good_karma(player_id: int, good_karma_minutes: int) -> dict[str, Any]:
+    init_db()
+    normalized_minutes = max(0, safe_int(good_karma_minutes, 0))
+    with closing(connect()) as conn:
+        conn.execute(
+            "INSERT INTO player_reputation_events(player_id, good_karma_minutes, created_at) VALUES (?, ?, ?)",
+            (player_id, normalized_minutes, utcnow_iso()),
+        )
+        conn.commit()
+    return {"PlayerId": player_id, "GoodKarmaMinutes": normalized_minutes}
+
+
+def record_player_score(
+    player_id: int,
+    session_id: str,
+    activity: str,
+    category: str,
+    score: float,
+    comment: str = "",
+    secondary_score: float | None = None,
+) -> dict[str, Any]:
+    init_db()
+    normalized_score = float(score)
+    normalized_secondary = None if secondary_score is None else float(secondary_score)
+    with closing(connect()) as conn:
+        conn.execute(
+            """
+            INSERT INTO player_scores(player_id, session_id, activity, category, score, comment, secondary_score, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                player_id,
+                str(session_id or ""),
+                str(activity or ""),
+                str(category or ""),
+                normalized_score,
+                str(comment or ""),
+                normalized_secondary,
+                utcnow_iso(),
+            ),
+        )
+        conn.commit()
+    return {
+        "PlayerId": player_id,
+        "SessionId": str(session_id or ""),
+        "Activity": str(activity or ""),
+        "Category": str(category or ""),
+        "Score": normalized_score,
+        "Comment": str(comment or ""),
+        "SecondaryScore": normalized_secondary,
+    }
+
+
+def record_player_report(reporter_player_id: int, reported_player_id: int, report_category: int, activity: str) -> dict[str, Any]:
+    init_db()
+    with closing(connect()) as conn:
+        conn.execute(
+            """
+            INSERT INTO player_reports(reporter_player_id, reported_player_id, report_category, activity, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (reporter_player_id, reported_player_id, safe_int(report_category, 0), str(activity or ""), utcnow_iso()),
+        )
+        conn.commit()
+    return {
+        "ReporterPlayerId": reporter_player_id,
+        "PlayerIdReported": reported_player_id,
+        "ReportCategory": safe_int(report_category, 0),
+        "Activity": str(activity or ""),
+    }
 
 
 def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:

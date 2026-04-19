@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 from datetime import date, datetime, timezone
 from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
@@ -77,6 +78,20 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 
 CLIENT_LOCAL_PLAYER_IDS: dict[str, int] = {}
 LAST_LOCAL_PLAYER_ID: int = 0
+RUNTIME_INIT_LOCK = threading.Lock()
+RUNTIME_READY = False
+
+
+def ensure_runtime_ready() -> None:
+    global RUNTIME_READY
+    if RUNTIME_READY:
+        return
+    with RUNTIME_INIT_LOCK:
+        if RUNTIME_READY:
+            return
+        shared.init_db()
+        ensure_dirs()
+        RUNTIME_READY = True
 
 
 def client_identity_key() -> str:
@@ -84,6 +99,19 @@ def client_identity_key() -> str:
     remote = forwarded_for or (request.remote_addr or "")
     user_agent = request.headers.get("User-Agent", "")
     return f"{remote}|{user_agent}"
+
+
+def _header_local_player_id() -> int:
+    for header_name in (
+        "X-Rec-Room-Profile",
+        "X-RecRoom-Profile",
+        "X-Rec-Room-PlayerId",
+        "X-RecRoom-PlayerId",
+    ):
+        header_value = shared.safe_int(request.headers.get(header_name), 0)
+        if header_value > 0:
+            return header_value
+    return 0
 
 
 def remember_local_player_id(player_id: int) -> None:
@@ -95,16 +123,24 @@ def remember_local_player_id(player_id: int) -> None:
     CLIENT_LOCAL_PLAYER_IDS[client_identity_key()] = player_id
 
 
-def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int = 0) -> int:
+def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int = 0, *, allow_generic_id: bool = False) -> int:
     payload = payload if isinstance(payload, dict) else {}
-    for key in ("PlayerId", "playerId", "Id", "id", "ProfileId", "profileId"):
+
+    header_player_id = _header_local_player_id()
+    if header_player_id > 0:
+        return header_player_id
+
+    for key in ("PlayerId", "playerId", "PlayerID", "playerID", "ProfileId", "profileId"):
         value = shared.safe_int(payload.get(key), 0)
         if value > 0:
             return value
-    if "X-RecRoom-PlayerId" in request.headers:
-        header_value = shared.safe_int(request.headers.get("X-RecRoom-PlayerId"), 0)
-        if header_value > 0:
-            return header_value
+
+    if allow_generic_id:
+        for key in ("Id", "id"):
+            value = shared.safe_int(payload.get(key), 0)
+            if value > 0:
+                return value
+
     mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
     if mapped > 0:
         return mapped
@@ -288,17 +324,23 @@ def save_image(player_id: int, image_bytes: bytes, content_type: str, filename: 
     return meta
 
 
-def request_payload() -> dict[str, Any]:
+def request_payload(include_query: bool = True) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     json_payload = request.get_json(silent=True)
     if isinstance(json_payload, dict):
         payload.update(json_payload)
-    for mapping in (request.args, request.form):
+
+    mappings = [request.form]
+    if include_query:
+        mappings.insert(0, request.args)
+
+    for mapping in mappings:
         for key in mapping.keys():
             values = mapping.getlist(key)
             if not values:
                 continue
             payload[key] = values[-1] if len(values) == 1 else values
+
     raw_text = request.get_data(cache=True, as_text=True).strip()
     if raw_text and not payload:
         try:
@@ -346,8 +388,8 @@ def player_payload_defaults(payload: dict[str, Any], default_platform: int, defa
 
 @app.before_request
 def before_request() -> Any:
-    shared.init_db()
-    ensure_dirs()
+    if not RUNTIME_READY:
+        ensure_runtime_ready()
     if request.content_length is not None and request.content_length > MAX_REQUEST_BODY_BYTES:
         return jsonify({"error": "payload too large"}), 413
     if request.path.startswith("/api/") and auth_required() and not shared.auth_header_valid(request.headers.get("Authorization")):
@@ -396,6 +438,7 @@ def debug_websockets() -> Any:
 
 
 @app.route("/api/players/v1/getorcreate", methods=["POST"])
+@app.route("/api/players/v1/getorcreate/", methods=["POST"])
 def players_get_or_create_v1() -> Any:
     player = get_or_create_player_from_payload(request_payload())
     return jsonify(profile_response_2016(player))
@@ -420,7 +463,7 @@ def players_v2_root() -> Any:
 @app.route("/api/players/v2/updateReputation/", methods=["POST"])
 def players_v2_update_reputation() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     player = shared.get_player_by_id(player_id)
     if player is None:
         player = get_or_create_player_from_payload({"Id": player_id or 1, **payload})
@@ -444,7 +487,7 @@ def players_v2_verify() -> Any:
 @app.route("/api/players/v2/objective/", methods=["POST"])
 def players_v2_objective() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     remember_local_player_id(player_id)
     return jsonify(
         shared.apply_objective_completion(
@@ -524,7 +567,8 @@ def players_v1(subpath: str = "") -> Any:
         player = shared.get_player_by_platform(platform, platform_id)
 
     if request.method == "GET":
-        if player is None and os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}:
+        allow_auto_create = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
+        if player is None and allow_auto_create and not (len(pieces) == 1 and pieces[0].isdigit()) and platform_id > 0:
             player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
         if player is None:
             return jsonify({"error": "player not found"}), 404
@@ -562,35 +606,51 @@ def players_objective(player_id: int) -> Any:
     )
 
 
+def _settings_action_from_subpath(subpath: str = "") -> str:
+    normalized = subpath.strip("/").lower()
+    return normalized if normalized in {"set", "remove"} else ""
+
+
+def _apply_settings_mutation(player_id: int, payload: dict[str, Any], subpath: str = "") -> dict[str, Any]:
+    action = _settings_action_from_subpath(subpath)
+    should_remove_all = request.method == "DELETE" or action == "remove"
+    entries = payload.get("settings") or payload.get("Settings") or payload
+
+    def apply_entry(item: dict[str, Any], fallback_key: str = "") -> None:
+        key = str(item.get("Key") or item.get("key") or fallback_key or "").strip()
+        if not key:
+            return
+        should_remove = should_remove_all or shared.parse_bool(item.get("Remove", item.get("remove", False)), False)
+        if should_remove:
+            shared.delete_setting(player_id, key)
+            return
+        shared.upsert_setting(player_id, key, str(item.get("Value", item.get("value", item.get("SettingValue", "")))))
+
+    if isinstance(entries, list):
+        for item in entries:
+            if isinstance(item, dict):
+                apply_entry(item)
+    elif isinstance(entries, dict):
+        fallback_key = "" if action else subpath.rsplit("/", 1)[-1].strip()
+        apply_entry(entries, fallback_key)
+
+    remember_local_player_id(player_id)
+    return {"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))}
+
+
 @app.route("/api/settings/v2", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 @app.route("/api/settings/v2/", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/set", methods=["POST", "PUT", "PATCH"])
+@app.route("/api/settings/v2/set/", methods=["POST", "PUT", "PATCH"])
+@app.route("/api/settings/v2/remove", methods=["POST", "PUT", "PATCH", "DELETE"])
+@app.route("/api/settings/v2/remove/", methods=["POST", "PUT", "PATCH", "DELETE"])
 @app.route("/api/settings/v2/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def settings_v2(subpath: str = "") -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     if request.method == "GET":
         return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
-    entries = payload.get("settings") or payload.get("Settings") or payload
-    if isinstance(entries, list):
-        for item in entries:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("Key") or item.get("key") or "").strip()
-            if not key:
-                continue
-            if request.method == "DELETE" or shared.parse_bool(item.get("Remove", item.get("remove", False)), False):
-                shared.delete_setting(player_id, key)
-            else:
-                shared.upsert_setting(player_id, key, str(item.get("Value", item.get("value", ""))))
-    else:
-        key = str(payload.get("Key") or payload.get("key") or subpath.rsplit("/", 1)[-1] or "").strip()
-        if key:
-            if request.method == "DELETE" or shared.parse_bool(payload.get("Remove", payload.get("remove", False)), False):
-                shared.delete_setting(player_id, key)
-            else:
-                shared.upsert_setting(player_id, key, str(payload.get("Value", payload.get("value", payload.get("SettingValue", "")))))
-    remember_local_player_id(player_id)
-    return jsonify({"ok": True, "playerId": player_id, "count": len(shared.get_settings(player_id))})
+    return jsonify(_apply_settings_mutation(player_id, payload, subpath))
 
 
 @app.route("/api/settings/v1", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
@@ -599,7 +659,7 @@ def settings_v2(subpath: str = "") -> Any:
 def settings_v1(player_id: int = 0) -> Any:
     payload = request_payload()
     if player_id <= 0:
-        player_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+        player_id = resolve_local_player_id(payload, allow_generic_id=True)
     if request.method == "GET":
         return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
     entries = payload.get("settings") or payload.get("Settings") or payload
@@ -627,7 +687,7 @@ def settings_v1(player_id: int = 0) -> Any:
 @app.route("/api/avatar/v2", methods=["GET"])
 @app.route("/api/avatar/v2/", methods=["GET"])
 def avatar_v2_get() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return jsonify(shared.get_avatar(player_id))
 
@@ -636,7 +696,7 @@ def avatar_v2_get() -> Any:
 @app.route("/api/avatar/v2/set/", methods=["POST", "PUT", "PATCH"])
 def avatar_v2_set() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     remember_local_player_id(player_id)
     return jsonify(shared.set_avatar(player_id, payload))
 
@@ -644,7 +704,7 @@ def avatar_v2_set() -> Any:
 @app.route("/api/avatar/v2/gifts", methods=["GET"])
 @app.route("/api/avatar/v2/gifts/", methods=["GET"])
 def avatar_v2_gifts() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_gift_packages(player_id)), mimetype="application/json")
 
@@ -653,7 +713,7 @@ def avatar_v2_gifts() -> Any:
 @app.route("/api/avatar/v2/gifts/create/", methods=["POST"])
 def avatar_v2_gifts_create() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     remember_local_player_id(player_id)
     return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0)))
 
@@ -663,7 +723,7 @@ def avatar_v2_gifts_create() -> Any:
 def avatar_v2_gifts_consume() -> Any:
     payload = request_payload()
     player_payload = {k: v for k, v in payload.items() if k not in {"Id", "id"}}
-    player_id = resolve_local_player_id(player_payload)
+    player_id = resolve_local_player_id(player_payload, allow_generic_id=True)
     gift_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
     remember_local_player_id(player_id)
     if not shared.consume_gift_package(player_id, gift_id):
@@ -690,7 +750,7 @@ def tournament_forfeit() -> Any:
 @app.route("/api/avatar/v2/items", methods=["GET"])
 @app.route("/api/avatar/v2/items/", methods=["GET"])
 def avatar_v2_items() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
@@ -702,7 +762,7 @@ def avatar_v2_items() -> Any:
 @app.route("/api/avatar/v2/list", methods=["GET"])
 @app.route("/api/avatar/v2/list/", methods=["GET"])
 def avatar_v2_items_aliases() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
@@ -714,7 +774,7 @@ def avatar_v2_items_aliases() -> Any:
 @app.route("/api/avatar/v3/list", methods=["GET"])
 @app.route("/api/avatar/v3/list/", methods=["GET"])
 def avatar_v3_items() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
 
@@ -722,7 +782,7 @@ def avatar_v3_items() -> Any:
 @app.route("/api/avatar/v3/<path:subpath>", methods=["GET"])
 def avatar_v3_fallback(subpath: str) -> Any:
     normalized = subpath.strip("/").lower()
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     if any(token in normalized for token in ("item", "unlock", "list")):
         return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
@@ -732,7 +792,7 @@ def avatar_v3_fallback(subpath: str) -> Any:
 @app.route("/api/avatar/v2/<path:subpath>", methods=["GET"])
 def avatar_v2_fallback(subpath: str) -> Any:
     normalized = subpath.strip("/").lower()
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     if any(token in normalized for token in ("item", "unlock", "list")):
         return Response(json.dumps(shared.get_avatar_items(player_id)), mimetype="application/json")
@@ -802,7 +862,7 @@ def gifts_consume() -> Any:
 @app.route("/api/images/v2/profile/", methods=["POST", "PUT"])
 def profile_image_v2() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     image_bytes, content_type, filename = parse_upload()
     if not image_bytes:
         return jsonify({"error": "image payload missing"}), 400
@@ -880,7 +940,7 @@ def motd() -> Any:
 @app.route("/api/presence/v2/", methods=["POST", "PUT", "PATCH"])
 def presence_v2() -> Any:
     payload = request_payload()
-    player_id = resolve_local_player_id(payload)
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
     payload = {**payload, "PlayerId": player_id}
     remember_local_player_id(player_id)
     presence = shared.set_presence(player_id, payload)
@@ -934,7 +994,7 @@ def game_session(session_id: str) -> Any:
 @app.route("/api/messages/v2/get", methods=["GET", "POST"])
 @app.route("/api/messages/v2/get/", methods=["GET", "POST"])
 def messages_v2_get() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_messages_for_player(player_id)), mimetype="application/json")
 
@@ -943,7 +1003,7 @@ def messages_v2_get() -> Any:
 @app.route("/api/messages/v2/send/", methods=["POST"])
 def messages_v2_send() -> Any:
     payload = request_payload()
-    from_player_id = resolve_local_player_id(payload)
+    from_player_id = resolve_local_player_id(payload, allow_generic_id=True)
     to_player_id = shared.safe_int(payload.get("ToPlayerId", payload.get("toPlayerId", 0)), 0)
     remember_local_player_id(from_player_id)
     message = shared.create_message(from_player_id, to_player_id, shared.safe_int(payload.get("Type", payload.get("type", 0)), 0), str(payload.get("Data", payload.get("data", "")) or ""))
@@ -952,9 +1012,11 @@ def messages_v2_send() -> Any:
 
 @app.route("/api/messages/v2/delete", methods=["POST", "DELETE"])
 @app.route("/api/messages/v2/delete/", methods=["POST", "DELETE"])
-def messages_v2_delete() -> Any:
+@app.route("/api/messages/v2/delete/<int:message_id>", methods=["POST", "DELETE"])
+@app.route("/api/messages/v2/delete/<int:message_id>/", methods=["POST", "DELETE"])
+def messages_v2_delete(message_id: int | None = None) -> Any:
     payload = request_payload()
-    resolved_message_id = shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
+    resolved_message_id = message_id if message_id is not None else shared.safe_int(payload.get("Id", payload.get("id", 0)), 0)
     if resolved_message_id <= 0 or not shared.delete_message(resolved_message_id):
         return jsonify({"error": "message not found"}), 404
     return jsonify({"ok": True, "Id": resolved_message_id})
@@ -965,7 +1027,7 @@ def messages_v2_delete() -> Any:
 def messages_get(player_id: int | None = None) -> Any:
     if player_id is None:
         payload = request_payload()
-        player_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+        player_id = resolve_local_player_id(payload, allow_generic_id=True)
     return Response(json.dumps(shared.get_messages_for_player(shared.safe_int(player_id, 0))), mimetype="application/json")
 
 
@@ -997,7 +1059,7 @@ def messages_delete(message_id: int | None = None) -> Any:
 @app.route("/api/relationships/v2/get", methods=["GET", "POST"])
 @app.route("/api/relationships/v2/get/", methods=["GET", "POST"])
 def relationships_v2_get() -> Any:
-    player_id = resolve_local_player_id(request_payload())
+    player_id = resolve_local_player_id(request_payload(include_query=False), allow_generic_id=True)
     remember_local_player_id(player_id)
     return Response(json.dumps(shared.get_relationships(player_id)), mimetype="application/json")
 
@@ -1005,9 +1067,11 @@ def relationships_v2_get() -> Any:
 @app.route("/api/relationships/v2/<action>", methods=["GET"])
 @app.route("/api/relationships/v2/<action>/", methods=["GET"])
 def relationships_v2_action(action: str) -> Any:
-    payload = request_payload()
-    local_player_id = resolve_local_player_id(payload)
-    other_player_id = shared.safe_int(request.args.get("id", payload.get("id", payload.get("TargetPlayerId", payload.get("targetPlayerId", 0)))), 0)
+    payload = request_payload(include_query=False)
+    local_player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    other_player_id = shared.safe_int(request.args.get("id", payload.get("TargetPlayerId", payload.get("targetPlayerId", 0))), 0)
+    if local_player_id <= 0 or other_player_id <= 0 or local_player_id == other_player_id:
+        return jsonify({"error": "invalid relationship target"}), 400
     remember_local_player_id(local_player_id)
     return Response(json.dumps(shared.apply_relationship_action(action, local_player_id, other_player_id)), mimetype="application/json")
 
@@ -1017,7 +1081,7 @@ def relationships_v2_action(action: str) -> Any:
 def relationships_get(player_id: int | None = None) -> Any:
     if player_id is None:
         payload = request_payload()
-        player_id = shared.safe_int(payload.get("PlayerId", payload.get("playerId", payload.get("Id", payload.get("id", 0)))), 0)
+        player_id = resolve_local_player_id(payload, allow_generic_id=True)
     return Response(json.dumps(shared.get_relationships(shared.safe_int(player_id, 0))), mimetype="application/json")
 
 
@@ -1027,6 +1091,61 @@ def relationships_action(action: str) -> Any:
     id1 = shared.safe_int(request.args.get("id1", 0), 0)
     id2 = shared.safe_int(request.args.get("id2", 0), 0)
     return Response(json.dumps(shared.apply_relationship_action(action, id1, id2)), mimetype="application/json")
+
+
+@app.route("/api/playerReputation/v1/heal", methods=["POST"])
+@app.route("/api/playerReputation/v1/heal/", methods=["POST"])
+def player_reputation_heal_v1() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    remember_local_player_id(player_id)
+    good_karma_minutes = shared.safe_int(payload.get("GoodKarmaMinutes", payload.get("goodKarmaMinutes", 0)), 0)
+    shared.record_good_karma(player_id, good_karma_minutes)
+    return jsonify({"ok": True, "PlayerId": player_id, "GoodKarmaMinutes": good_karma_minutes})
+
+
+@app.route("/api/players/v1/score", methods=["POST"])
+@app.route("/api/players/v1/score/", methods=["POST"])
+def players_score_v1() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    remember_local_player_id(player_id)
+    try:
+        score_value = float(payload.get("Score", payload.get("score", 0)) or 0)
+    except Exception:
+        score_value = 0.0
+    secondary_raw = payload.get("SecondaryScore", payload.get("secondaryScore", None))
+    try:
+        secondary_score = None if secondary_raw in (None, "") else float(secondary_raw)
+    except Exception:
+        secondary_score = None
+    shared.record_player_score(
+        player_id=player_id,
+        session_id=str(payload.get("SessionId", payload.get("sessionId", "")) or ""),
+        activity=str(payload.get("Activity", payload.get("activity", "")) or ""),
+        category=str(payload.get("Category", payload.get("category", "")) or ""),
+        score=score_value,
+        comment=str(payload.get("Comment", payload.get("comment", "")) or ""),
+        secondary_score=secondary_score,
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/api/PlayerReporting/v1/create", methods=["POST"])
+@app.route("/api/PlayerReporting/v1/create/", methods=["POST"])
+@app.route("/api/playerreporting/v1/create", methods=["POST"])
+@app.route("/api/playerreporting/v1/create/", methods=["POST"])
+def player_reporting_create_v1() -> Any:
+    payload = request_payload()
+    reporter_player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    remember_local_player_id(reporter_player_id)
+    shared.record_player_report(
+        reporter_player_id=reporter_player_id,
+        reported_player_id=shared.safe_int(payload.get("PlayerIdReported", payload.get("playerIdReported", 0)), 0),
+        report_category=shared.safe_int(payload.get("ReportCategory", payload.get("reportCategory", 0)), 0),
+        activity=str(payload.get("Activity", payload.get("activity", "")) or ""),
+    )
+    return jsonify({"ok": True})
 
 
 @app.route("/api/analytics/v1/session/event", methods=["POST"])
@@ -1068,7 +1187,6 @@ def not_found_error(_: Any) -> Any:
 
 
 if __name__ == "__main__":
-    shared.init_db()
-    ensure_dirs()
+    ensure_runtime_ready()
     port = int(os.environ.get("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
