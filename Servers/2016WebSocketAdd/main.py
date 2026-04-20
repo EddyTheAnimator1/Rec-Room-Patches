@@ -13,10 +13,8 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 import rr23_shared as shared
-import rr23_notifier as notifier
 
 app = Flask(__name__)
-notifier.start_background_workers()
 
 DATA_DIR = shared.DATA_DIR
 IMAGES_DIR = DATA_DIR / "player_images"
@@ -541,10 +539,6 @@ def after_request(response: Response) -> Response:
     request_note = response.headers.pop('X-RR-Log-Note', '')
     try:
         shared.log_request(request.method, request.path, dict(request.args), response.status_code, request_note)
-    except Exception:
-        pass
-    try:
-        notifier.maybe_emit_periodic_snapshots()
     except Exception:
         pass
     return response
@@ -1104,10 +1098,6 @@ def presence_v2() -> Any:
     payload = {**payload, "PlayerId": player_id}
     remember_local_player_id(player_id)
     presence = shared.set_presence(player_id, payload)
-    try:
-        notifier.emit_presence_snapshot_now()
-    except Exception:
-        pass
     return jsonify(presence)
 
 
@@ -1129,10 +1119,6 @@ def presence_player(player_id: int) -> Any:
         presence = shared.get_presence(player_id)
         return Response("null" if presence is None else json.dumps(presence), mimetype="application/json")
     presence = shared.set_presence(player_id, request_payload())
-    try:
-        notifier.emit_presence_snapshot_now()
-    except Exception:
-        pass
     return jsonify(presence)
 
 
@@ -1342,12 +1328,8 @@ def player_reporting_create_v1() -> Any:
 @app.route("/api/analytics/v1/session/event", methods=["POST"])
 @app.route("/api/analytics/v1/session/event/", methods=["POST"])
 def analytics_session_event() -> Any:
-    payload = request_payload()
-    try:
-        notifier.emit_analytics_event(payload)
-    except Exception:
-        pass
-    return jsonify({"ok": True})
+    request_payload()
+    return jsonify({"ok": True, "analyticsAccepted": False})
 
 
 @app.route("/api/notification/v2", methods=["GET", "POST"])
