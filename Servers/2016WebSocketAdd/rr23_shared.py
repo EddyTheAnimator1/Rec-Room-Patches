@@ -31,6 +31,7 @@ DEFAULT_VERIFIED_EMAIL = os.environ.get("DEFAULT_VERIFIED_EMAIL", "NotAnEmail@gm
 DEFAULT_MOTD_TEXT = os.environ.get("DEFAULT_MOTD_TEXT", "Online on RecNet! Welcome to Rec Room!")
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "recroom@gmail.com")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "recnet87")
+GAME_SESSION_STALE_TIMEOUT_SECONDS = max(60, int(os.environ.get("GAME_SESSION_STALE_TIMEOUT_SECONDS", "180")))
 
 
 def utcnow_iso() -> str:
@@ -1054,45 +1055,65 @@ def record_player_report(reporter_player_id: int, reported_player_id: int, repor
     }
 
 
-def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:
+def _active_presence_rows(stale_timeout_seconds: int = GAME_SESSION_STALE_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
     init_db()
-    query = "SELECT * FROM game_sessions"
-    params: tuple[Any, ...] = ()
-    if app_version:
-        query += " WHERE app_version = ?"
-        params = (app_version,)
-    query += " ORDER BY id"
+    stale_timeout_seconds = max(60, safe_int(stale_timeout_seconds, GAME_SESSION_STALE_TIMEOUT_SECONDS))
+    now = datetime.now(timezone.utc)
     with closing(connect()) as conn:
-        rows = conn.execute(query, params).fetchall()
-    result = []
+        rows = conn.execute(
+            "SELECT player_id, game_session_id, app_version, last_update_time, activity, private, available_space, game_in_progress FROM presence ORDER BY player_id"
+        ).fetchall()
+
+    active_rows: list[dict[str, Any]] = []
     for row in rows:
-        result.append({
-            "Id": str(row["id"]),
-            "AppVersion": str(row["app_version"] or ""),
-            "Activity": str(row["activity"] or "DormRoom"),
-            "Private": bool(row["private"]),
-            "AvailableSpace": max(0, safe_int(row["available_space"], 0)),
-            "GameInProgress": bool(row["game_in_progress"]),
-            "PlayerIds": json.loads(str(row["player_ids_json"] or "[]")),
+        last_update_ticks = parse_dotnet_ticks(row["last_update_time"])
+        last_update_dt = datetime.fromtimestamp(max(0, (last_update_ticks - 621355968000000000) / 10_000_000), tz=timezone.utc)
+        if (now - last_update_dt).total_seconds() > stale_timeout_seconds:
+            continue
+        active_rows.append(dict(row))
+    return active_rows
+
+
+def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:
+    sessions: dict[str, dict[str, Any]] = {}
+    for row in _active_presence_rows():
+        session_id = str(row.get("game_session_id") or "").strip()
+        if not session_id:
+            continue
+        session = sessions.setdefault(session_id, {
+            "Id": session_id,
+            "AppVersion": str(row.get("app_version") or ""),
+            "Activity": str(row.get("activity") or "DormRoom"),
+            "Private": bool(row.get("private")),
+            "AvailableSpace": max(0, safe_int(row.get("available_space"), 0)),
+            "GameInProgress": bool(row.get("game_in_progress")),
+            "PlayerIds": [],
         })
+        if not session["AppVersion"] and row.get("app_version"):
+            session["AppVersion"] = str(row.get("app_version") or "")
+        if session["Activity"] == "DormRoom" and row.get("activity"):
+            session["Activity"] = str(row.get("activity") or "DormRoom")
+        session["Private"] = session["Private"] or bool(row.get("private"))
+        session["AvailableSpace"] = max(session["AvailableSpace"], max(0, safe_int(row.get("available_space"), 0)))
+        session["GameInProgress"] = session["GameInProgress"] or bool(row.get("game_in_progress"))
+        player_id = safe_int(row.get("player_id"), 0)
+        if player_id > 0 and player_id not in session["PlayerIds"]:
+            session["PlayerIds"].append(player_id)
+
+    result = sorted(sessions.values(), key=lambda item: str(item["Id"]))
+    if app_version:
+        result = [item for item in result if str(item.get("AppVersion") or "") == str(app_version)]
     return result
 
 
 def get_game_session(session_id: str) -> dict[str, Any] | None:
-    init_db()
-    with closing(connect()) as conn:
-        row = conn.execute("SELECT * FROM game_sessions WHERE id = ?", (session_id,)).fetchone()
-    if row is None:
+    normalized = str(session_id or "").strip()
+    if not normalized:
         return None
-    return {
-        "Id": str(row["id"]),
-        "AppVersion": str(row["app_version"] or ""),
-        "Activity": str(row["activity"] or "DormRoom"),
-        "Private": bool(row["private"]),
-        "AvailableSpace": max(0, safe_int(row["available_space"], 0)),
-        "GameInProgress": bool(row["game_in_progress"]),
-        "PlayerIds": json.loads(str(row["player_ids_json"] or "[]")),
-    }
+    for session in get_game_sessions():
+        if str(session.get("Id") or "") == normalized:
+            return session
+    return None
 
 
 def get_gift_packages(player_id: int) -> list[dict[str, Any]]:

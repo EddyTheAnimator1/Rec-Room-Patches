@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -77,7 +78,6 @@ DEFAULT_OBJECTIVES_CONFIG_V1 = [
 app.config["MAX_CONTENT_LENGTH"] = MAX_REQUEST_BODY_BYTES
 
 CLIENT_LOCAL_PLAYER_IDS: dict[str, int] = {}
-LAST_LOCAL_PLAYER_ID: int = 0
 RUNTIME_INIT_LOCK = threading.Lock()
 RUNTIME_READY = False
 
@@ -115,11 +115,9 @@ def _header_local_player_id() -> int:
 
 
 def remember_local_player_id(player_id: int) -> None:
-    global LAST_LOCAL_PLAYER_ID
     player_id = shared.safe_int(player_id, 0)
     if player_id <= 0:
         return
-    LAST_LOCAL_PLAYER_ID = player_id
     CLIENT_LOCAL_PLAYER_IDS[client_identity_key()] = player_id
 
 
@@ -130,7 +128,7 @@ def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int 
     if header_player_id > 0:
         return header_player_id
 
-    for key in ("PlayerId", "playerId", "PlayerID", "playerID", "ProfileId", "profileId"):
+    for key in ("PlayerId", "playerId", "PlayerID", "playerID", "ProfileId", "profileId", "LocalPlayerId", "localPlayerId"):
         value = shared.safe_int(payload.get(key), 0)
         if value > 0:
             return value
@@ -144,8 +142,6 @@ def resolve_local_player_id(payload: dict[str, Any] | None = None, default: int 
     mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
     if mapped > 0:
         return mapped
-    if LAST_LOCAL_PLAYER_ID > 0:
-        return LAST_LOCAL_PLAYER_ID
     return shared.safe_int(default, 0)
 
 
@@ -178,7 +174,7 @@ def resolve_message_sender_id(payload: dict[str, Any] | None = None) -> int:
     if header_player_id > 0:
         return header_player_id
 
-    for key in ("FromPlayerId", "fromPlayerId", "SenderPlayerId", "senderPlayerId", "PlayerId", "playerId"):
+    for key in ("FromPlayerId", "fromPlayerId", "SenderPlayerId", "senderPlayerId", "PlayerId", "playerId", "LocalPlayerId", "localPlayerId"):
         value = shared.safe_int(payload.get(key), 0)
         if value > 0:
             return value
@@ -186,8 +182,6 @@ def resolve_message_sender_id(payload: dict[str, Any] | None = None) -> int:
     mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
     if mapped > 0:
         return mapped
-    if LAST_LOCAL_PLAYER_ID > 0:
-        return LAST_LOCAL_PLAYER_ID
     return 0
 
 
@@ -256,9 +250,59 @@ def config_v2_payload() -> dict[str, Any]:
     }
 
 
+def _payload_platform_id(payload: dict[str, Any]) -> int:
+    for key in ("PlatformId", "platformId", "PlatformProfileId", "platformProfileId", "AccountId", "accountId", "id", "Id"):
+        value = shared.safe_int(payload.get(key), 0)
+        if value > 0:
+            return value
+
+    seed_parts = [
+        str(payload.get("Username") or payload.get("username") or "").strip(),
+        str(payload.get("DisplayName") or payload.get("displayName") or payload.get("Name") or payload.get("name") or "").strip(),
+        client_identity_key(),
+    ]
+    seed = "|".join(part for part in seed_parts if part)
+    if not seed:
+        return 0
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return (int.from_bytes(digest[:8], "big") & 0x7FFFFFFF) or 1
+
+
+def profile_response_compat(player: dict[str, Any]) -> dict[str, Any]:
+    base = profile_response_2016(player)
+    return {
+        **base,
+        "Name": base["DisplayName"],
+        "PlayerId": base["Id"],
+        "playerId": base["Id"],
+        "Platform": shared.safe_int(player.get("Platform"), shared.DEFAULT_PLATFORM),
+        "platform": shared.safe_int(player.get("Platform"), shared.DEFAULT_PLATFORM),
+        "PlatformId": shared.safe_int(player.get("PlatformId"), 0),
+        "platformId": shared.safe_int(player.get("PlatformId"), 0),
+        "XP": base["XP"],
+        "xp": base["XP"],
+        "Level": base["Level"],
+        "level": base["Level"],
+        "Reputation": base["Reputation"],
+        "reputation": base["Reputation"],
+        "Verified": base["Verified"],
+        "verified": base["Verified"],
+        "Developer": base["Developer"],
+        "developer": base["Developer"],
+        "XpRequiredToLevelUp": base["XpRequiredToLevelUp"],
+        "xpRequiredToLevelUp": base["XpRequiredToLevelUp"],
+    }
+
+
 def get_or_create_player_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     platform = shared.parse_platform(payload.get("Platform", payload.get("platform", payload.get("p", shared.DEFAULT_PLATFORM))))
-    platform_id = shared.safe_int(payload.get("PlatformId", payload.get("platformId", payload.get("id", payload.get("Id", 0)))), 0)
+    platform_id = _payload_platform_id(payload)
+    if platform_id <= 0:
+        mapped = shared.safe_int(CLIENT_LOCAL_PLAYER_IDS.get(client_identity_key()), 0)
+        if mapped > 0:
+            existing = shared.get_player_by_id(mapped)
+            if existing is not None:
+                platform_id = shared.safe_int(existing.get("PlatformId"), 0)
     if platform_id <= 0:
         platform_id = 1
     player = shared.create_or_update_player(
@@ -416,21 +460,36 @@ def request_payload(include_query: bool = True) -> dict[str, Any]:
 
 
 def request_id_list() -> list[int]:
+    def normalize(items: list[Any]) -> list[int]:
+        result: list[int] = []
+        for item in items:
+            if isinstance(item, dict):
+                for key in ("PlayerId", "playerId", "ProfileId", "profileId", "Id", "id"):
+                    value = shared.safe_int(item.get(key), 0)
+                    if value > 0:
+                        result.append(value)
+                        break
+            else:
+                value = shared.safe_int(item, 0)
+                if value > 0:
+                    result.append(value)
+        return result
+
     json_payload = request.get_json(silent=True)
     if isinstance(json_payload, list):
-        return [shared.safe_int(item, 0) for item in json_payload]
+        return normalize(json_payload)
 
     raw_text = request.get_data(cache=True, as_text=True).strip()
     if raw_text:
         try:
             parsed = json.loads(raw_text)
             if isinstance(parsed, list):
-                return [shared.safe_int(item, 0) for item in parsed]
+                return normalize(parsed)
             if isinstance(parsed, dict):
                 for key in ("ids", "Ids", "playerIds", "PlayerIds"):
                     value = parsed.get(key)
                     if isinstance(value, list):
-                        return [shared.safe_int(item, 0) for item in value]
+                        return normalize(value)
         except Exception:
             pass
 
@@ -438,7 +497,7 @@ def request_id_list() -> list[int]:
     for key in ("ids", "Ids", "playerIds", "PlayerIds"):
         value = payload.get(key)
         if isinstance(value, list):
-            return [shared.safe_int(item, 0) for item in value]
+            return normalize(value)
     return []
 
 
@@ -519,22 +578,28 @@ def debug_websockets() -> Any:
 @app.route("/api/players/v1/getorcreate/", methods=["POST"])
 def players_get_or_create_v1() -> Any:
     player = get_or_create_player_from_payload(request_payload())
-    return jsonify(profile_response_2016(player))
+    return jsonify(profile_response_compat(player))
 
 
 @app.route("/api/players/v2", methods=["GET", "POST", "PUT", "PATCH"])
 @app.route("/api/players/v2/", methods=["GET", "POST", "PUT", "PATCH"])
 def players_v2_root() -> Any:
     payload = request_payload()
-    platform = shared.parse_platform(payload.get("p", payload.get("platform", payload.get("Platform", shared.DEFAULT_PLATFORM))))
-    platform_id = shared.safe_int(payload.get("id", payload.get("platformId", payload.get("PlatformId", 0))), 0)
-    player = shared.get_player_by_platform(platform, platform_id) if platform_id > 0 else None
+    explicit_player_id = resolve_local_player_id(payload, allow_generic_id=False)
+    player = shared.get_player_by_id(explicit_player_id) if explicit_player_id > 0 else None
+
+    if player is None:
+        platform = shared.parse_platform(payload.get("p", payload.get("platform", payload.get("Platform", shared.DEFAULT_PLATFORM))))
+        platform_id = _payload_platform_id(payload)
+        player = shared.get_player_by_platform(platform, platform_id) if platform_id > 0 else None
+
     if player is None and request.method != "GET":
         player = get_or_create_player_from_payload(payload)
     elif player is None:
         return jsonify({"error": "player not found"}), 404
+
     remember_local_player_id(shared.safe_int(player.get("Id"), 0))
-    return jsonify(profile_response_2016(player))
+    return jsonify(profile_response_compat(player))
 
 
 @app.route("/api/players/v2/updateReputation", methods=["POST"])
@@ -550,7 +615,7 @@ def players_v2_update_reputation() -> Any:
     current_reputation = shared.safe_int(player.get("Reputation"), 0)
     updated = shared.set_reputation(player_id, current_reputation - reputation_delta)
     remember_local_player_id(player_id)
-    return jsonify(profile_response_2016(updated))
+    return jsonify(profile_response_compat(updated))
 
 
 @app.route("/api/players/v2/verify", methods=["POST"])
@@ -594,7 +659,7 @@ def players_create() -> Any:
         payload=player_payload_defaults(payload, platform, platform_id),
     )
     remember_local_player_id(shared.safe_int(player.get("Id"), 0))
-    return jsonify(profile_response_2016(player)), 201
+    return jsonify(profile_response_compat(player)), 201
 
 
 @app.route("/api/players/v1/update/<int:player_id>", methods=["POST", "PUT", "PATCH"])
@@ -642,7 +707,14 @@ def players_v1(subpath: str = "") -> Any:
         platform_id = int(pieces[1])
         player = shared.get_player_by_platform(platform, platform_id)
     else:
-        player = shared.get_player_by_platform(platform, platform_id)
+        explicit_player_id = resolve_local_player_id(payload, allow_generic_id=False)
+        if explicit_player_id > 0 and platform_id <= 0:
+            player = shared.get_player_by_id(explicit_player_id)
+            if player is not None:
+                platform = shared.safe_int(player.get("Platform"), platform)
+                platform_id = shared.safe_int(player.get("PlatformId"), platform_id)
+        if player is None:
+            player = shared.get_player_by_platform(platform, platform_id)
 
     if request.method == "GET":
         allow_auto_create = os.environ.get("AUTO_CREATE_ON_GET", "true").strip().lower() in {"1", "true", "yes", "y"}
@@ -651,18 +723,18 @@ def players_v1(subpath: str = "") -> Any:
         if player is None:
             return jsonify({"error": "player not found"}), 404
         remember_local_player_id(shared.safe_int(player.get("Id"), 0))
-        return jsonify(profile_response_2016(player))
+        return jsonify(profile_response_compat(player))
 
     player = shared.create_or_update_player(platform=platform, platform_id=platform_id, payload=player_payload_defaults(payload, platform, platform_id))
     remember_local_player_id(shared.safe_int(player.get("Id"), 0))
     status_code = 201 if request.method == "POST" else 200
-    return jsonify(profile_response_2016(player)), status_code
+    return jsonify(profile_response_compat(player)), status_code
 
 
 @app.route("/api/players/v1/list", methods=["POST"])
 def players_list() -> Any:
     requested_ids = [pid for pid in dict.fromkeys(pid for pid in request_id_list() if pid > 0)]
-    actual_players = [profile_response_2016(player) for player in shared.list_players_by_ids(requested_ids)]
+    actual_players = [profile_response_compat(player) for player in shared.list_players_by_ids(requested_ids)]
     players_by_id = {shared.safe_int(player.get("Id"), 0): player for player in actual_players}
 
     # The 2016 nearby tab is driven by explicit Photon user IDs already known by the client.
@@ -676,7 +748,7 @@ def players_list() -> Any:
 @app.route("/api/players/v1/updateReputation/<int:player_id>", methods=["POST"])
 def players_update_reputation(player_id: int) -> Any:
     payload = request_payload()
-    return jsonify(shared.set_reputation(player_id, shared.safe_int(payload.get("reputation", payload.get("Reputation", 0)), 0)))
+    return jsonify(profile_response_compat(shared.set_reputation(player_id, shared.safe_int(payload.get("reputation", payload.get("Reputation", 0)), 0))))
 
 
 @app.route("/api/players/v1/objective/<int:player_id>", methods=["POST"])
@@ -735,6 +807,7 @@ def settings_v2(subpath: str = "") -> Any:
     payload = request_payload()
     player_id = resolve_local_player_id(payload, allow_generic_id=True)
     if request.method == "GET":
+        remember_local_player_id(player_id)
         return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
     return jsonify(_apply_settings_mutation(player_id, payload, subpath))
 
@@ -747,6 +820,7 @@ def settings_v1(player_id: int = 0) -> Any:
     if player_id <= 0:
         player_id = resolve_local_player_id(payload, allow_generic_id=True)
     if request.method == "GET":
+        remember_local_player_id(player_id)
         return Response(json.dumps(shared.get_settings(player_id)), mimetype="application/json")
     entries = payload.get("settings") or payload.get("Settings") or payload
     if isinstance(entries, list):
@@ -825,7 +899,7 @@ def versioncheck_v1() -> Any:
 @app.route("/api/tournament", methods=["GET"])
 @app.route("/api/tournament/", methods=["GET"])
 def tournament_status() -> Any:
-    return Response("", mimetype="application/json")
+    return jsonify({})
 
 
 @app.route("/api/tournament/forfeit", methods=["GET", "POST"])

@@ -55,7 +55,7 @@ async def notification_handler(websocket: Any) -> None:
     log_request("WS", path or "/api/notification/v1", {}, 101, "connect-attempt")
 
     normalized_path = path.split("?", 1)[0]
-    if normalized_path not in {"/api/notification/v1", "/api/notification/v2"}:
+    if normalized_path not in {"/api/notification", "/api/notification/v1", "/api/notification/v2"}:
         log_request('WS', normalized_path or '/unknown', {}, 404, 'wrong-ws-path')
         await websocket.close(code=1008, reason="wrong path")
         return
@@ -76,7 +76,10 @@ async def notification_handler(websocket: Any) -> None:
         if not isinstance(parsed, dict):
             await websocket.close(code=1003, reason="invalid handshake")
             return
-        player_id = safe_int(parsed.get("PlayerId", parsed.get("Id", 0)), 0)
+        player_id = safe_int(
+            parsed.get("PlayerId", parsed.get("playerId", parsed.get("ProfileId", parsed.get("profileId", parsed.get("Id", parsed.get("id", 0)))))),
+            0,
+        )
         if player_id <= 0:
             await websocket.close(code=1008, reason="missing player id")
             return
