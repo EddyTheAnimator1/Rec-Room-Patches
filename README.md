@@ -16,7 +16,7 @@ If you want to know how it works. Check out https://github.com/EddyTheAnimator1/
 # Usage
 1. Scroll down to the TABLE. Find a version and ENSURE there's a checkmark on the patch section.
 2. Copy the Manifest number.
-3. Open Release.exe, Press 1, Input steam username + password that OWNS rec room, enter manifest id.
+3. Open the latest .exe package, Press 1, Input steam username + password that OWNS rec room, enter manifest id.
 4. After it completes the downloading and patching. Decide if you want a shortcut (on your desktop) then press y. It will open the directory. Lauch Recroom_Release.exe !! And, that's it!
 
 ## Patch table + Downloads table
