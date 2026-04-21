@@ -869,7 +869,7 @@ def avatar_v2_gifts_create() -> Any:
     payload = request_payload()
     player_id = resolve_local_player_id(payload, allow_generic_id=True)
     remember_local_player_id(player_id)
-    return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0)))
+    return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0), shared.safe_int(payload.get("PackageType", payload.get("packageType", 0)), 0)))
 
 
 @app.route("/api/avatar/v2/gifts/consume", methods=["POST"])
@@ -998,7 +998,7 @@ def gifts_get(player_id: int) -> Any:
 @app.route("/api/avatar/v1/gifts/create/<int:player_id>/", methods=["POST"])
 def gifts_create(player_id: int) -> Any:
     payload = request_payload()
-    return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0)))
+    return jsonify(shared.create_gift_package(player_id, str(payload.get("AvatarItemDesc", payload.get("avatarItemDesc", "")) or ""), shared.safe_int(payload.get("Xp", payload.get("xp", 0)), 0), shared.safe_int(payload.get("PackageType", payload.get("packageType", 0)), 0)))
 
 
 @app.route("/api/avatar/v1/gifts/consume", methods=["POST"])
@@ -1268,6 +1268,21 @@ def relationships_action(action: str) -> Any:
 
     remember_local_player_id(local_player_id)
     return Response(json.dumps(shared.apply_relationship_action(action, local_player_id, other_player_id)), mimetype="application/json")
+
+
+
+@app.route("/api/Leaderboard/v1", methods=["GET", "POST"])
+@app.route("/api/Leaderboard/v1/", methods=["GET", "POST"])
+@app.route("/api/leaderboard/v1", methods=["GET", "POST"])
+@app.route("/api/leaderboard/v1/", methods=["GET", "POST"])
+def leaderboard_v1() -> Any:
+    payload = request_payload()
+    player_id = resolve_local_player_id(payload, allow_generic_id=True)
+    objective_type = shared.safe_int(payload.get("ObjectiveType", payload.get("objectiveType", 0)), 0)
+    sort_ascending = shared.parse_bool(payload.get("SortAscending", payload.get("sortAscending", False)), False)
+    limit = max(1, min(100, shared.safe_int(payload.get("Limit", payload.get("limit", 10)), 10)))
+    remember_local_player_id(player_id)
+    return Response(json.dumps(shared.get_leaderboard(objective_type, sort_ascending, limit, player_id)), mimetype="application/json")
 
 
 @app.route("/api/playerReputation/v1/heal", methods=["POST"])

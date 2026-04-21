@@ -32,6 +32,8 @@ DEFAULT_MOTD_TEXT = os.environ.get("DEFAULT_MOTD_TEXT", "Online on RecNet! Welco
 AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "recroom@gmail.com")
 AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "recnet87")
 GAME_SESSION_STALE_TIMEOUT_SECONDS = max(60, int(os.environ.get("GAME_SESSION_STALE_TIMEOUT_SECONDS", "180")))
+DEFAULT_GIFT_PACKAGE_TYPE = max(0, int(os.environ.get("DEFAULT_GIFT_PACKAGE_TYPE", "0")))
+LEADERBOARD_PERIOD_DAYS = max(1, int(os.environ.get("LEADERBOARD_PERIOD_DAYS", "7")))
 
 
 def utcnow_iso() -> str:
@@ -246,7 +248,8 @@ def init_db(force: bool = False) -> None:
                         id BIGSERIAL PRIMARY KEY,
                         player_id BIGINT NOT NULL,
                         avatar_item_desc TEXT NOT NULL DEFAULT '',
-                        xp INTEGER NOT NULL DEFAULT 0
+                        xp INTEGER NOT NULL DEFAULT 0,
+                        package_type INTEGER NOT NULL DEFAULT 0
                     );
 
                     CREATE TABLE IF NOT EXISTS kv_store (
@@ -314,6 +317,7 @@ def init_db(force: bool = False) -> None:
                     (DEFAULT_MOTD_TEXT,),
                 )
                 conn.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS developer INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE gift_packages ADD COLUMN IF NOT EXISTS package_type INTEGER NOT NULL DEFAULT 0")
                 conn.commit()
                 INIT_COMPLETE = True
             except Exception:
@@ -361,6 +365,140 @@ def parse_platform(value: Any) -> int:
     if raw == "oculus":
         return 1
     return DEFAULT_PLATFORM
+
+
+
+def build_settings_entry(key: Any, value: Any) -> dict[str, str]:
+    return {
+        "Key": str(key or ""),
+        "Value": str(value or ""),
+    }
+
+
+def build_avatar_payload(data: Mapping[str, Any] | dict[str, Any] | None = None) -> dict[str, str]:
+    source = dict(data or {})
+    return {
+        "OutfitSelections": str(source.get("OutfitSelections", source.get("outfit_selections", "")) or ""),
+        "HairColor": str(source.get("HairColor", source.get("hair_color", "")) or ""),
+        "SkinColor": str(source.get("SkinColor", source.get("skin_color", "")) or ""),
+    }
+
+
+def build_avatar_item_payload(data: Mapping[str, Any] | dict[str, Any] | None = None) -> dict[str, Any]:
+    source = dict(data or {})
+    return {
+        "AvatarItemDesc": str(source.get("AvatarItemDesc", source.get("avatar_item_desc", "")) or ""),
+        "UnlockedLevel": max(1, safe_int(source.get("UnlockedLevel", source.get("unlocked_level", 1)), 1)),
+    }
+
+
+def build_presence_payload(data: Mapping[str, Any] | dict[str, Any] | None = None) -> dict[str, Any]:
+    source = dict(data or {})
+    last_update_time = parse_dotnet_ticks(source.get("LastUpdateTime", source.get("last_update_time")))
+    return {
+        "PlayerId": safe_int(source.get("PlayerId", source.get("player_id", 0)), 0),
+        "IsOnline": parse_bool(source.get("IsOnline", source.get("is_online", False)), False),
+        "GameSessionId": str(source.get("GameSessionId", source.get("game_session_id", "")) or ""),
+        "AppVersion": str(source.get("AppVersion", source.get("app_version", "")) or ""),
+        "LastUpdateTime": last_update_time,
+        "Activity": str(source.get("Activity", source.get("activity", "DormRoom")) or "DormRoom"),
+        "Private": parse_bool(source.get("Private", source.get("private", False)), False),
+        "AvailableSpace": max(0, safe_int(source.get("AvailableSpace", source.get("available_space", 0)), 0)),
+        "GameInProgress": parse_bool(source.get("GameInProgress", source.get("game_in_progress", False)), False),
+    }
+
+
+def build_relationship_payload(other_player_id: Any, relationship_type: Any) -> dict[str, Any]:
+    return {
+        "PlayerID": safe_int(other_player_id, 0),
+        "RelationshipType": safe_int(relationship_type, 0),
+    }
+
+
+def build_message_payload(data: Mapping[str, Any] | dict[str, Any] | None = None, *, include_to_player_id: bool = False) -> dict[str, Any]:
+    source = dict(data or {})
+    payload = {
+        "Id": safe_int(source.get("Id", source.get("id", 0)), 0),
+        "FromPlayerId": safe_int(source.get("FromPlayerId", source.get("from_player_id", 0)), 0),
+        "SentTime": parse_dotnet_ticks(source.get("SentTime", source.get("sent_time"))),
+        "Type": safe_int(source.get("Type", source.get("type", 0)), 0),
+        "Data": str(source.get("Data", source.get("data", "")) or ""),
+    }
+    if include_to_player_id:
+        payload["ToPlayerId"] = safe_int(source.get("ToPlayerId", source.get("to_player_id", 0)), 0)
+    return payload
+
+
+def build_game_session_payload(data: Mapping[str, Any] | dict[str, Any] | None = None) -> dict[str, Any]:
+    source = dict(data or {})
+    player_ids: list[int] = []
+    raw_ids = source.get("PlayerIds", source.get("player_ids_json", source.get("player_ids", [])))
+    if isinstance(raw_ids, str):
+        try:
+            raw_ids = json.loads(raw_ids)
+        except Exception:
+            raw_ids = []
+    if isinstance(raw_ids, list):
+        for item in raw_ids:
+            player_id = safe_int(item, 0)
+            if player_id > 0 and player_id not in player_ids:
+                player_ids.append(player_id)
+    return {
+        "Id": str(source.get("Id", source.get("id", "")) or ""),
+        "AppVersion": str(source.get("AppVersion", source.get("app_version", "")) or ""),
+        "Activity": str(source.get("Activity", source.get("activity", "DormRoom")) or "DormRoom"),
+        "Private": parse_bool(source.get("Private", source.get("private", False)), False),
+        "AvailableSpace": max(0, safe_int(source.get("AvailableSpace", source.get("available_space", 0)), 0)),
+        "GameInProgress": parse_bool(source.get("GameInProgress", source.get("game_in_progress", False)), False),
+        "PlayerIds": player_ids,
+    }
+
+
+def build_gift_package_payload(data: Mapping[str, Any] | dict[str, Any] | None = None) -> dict[str, Any]:
+    source = dict(data or {})
+    return {
+        "Id": safe_int(source.get("Id", source.get("id", 0)), 0),
+        "AvatarItemDesc": str(source.get("AvatarItemDesc", source.get("avatar_item_desc", "")) or ""),
+        "Xp": max(0, safe_int(source.get("Xp", source.get("xp", 0)), 0)),
+        "PackageType": max(0, safe_int(source.get("PackageType", source.get("package_type", DEFAULT_GIFT_PACKAGE_TYPE)), DEFAULT_GIFT_PACKAGE_TYPE)),
+    }
+
+
+def build_leaderboard_entry_payload(player_id: Any, count: Any, order: Any) -> dict[str, Any]:
+    return {
+        "PlayerId": safe_int(player_id, 0),
+        "Count": safe_int(count, 0),
+        "Order": safe_int(order, 0),
+    }
+
+
+def _next_leaderboard_reset_ticks(now: datetime | None = None) -> int:
+    current = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+    period_days = max(1, safe_int(LEADERBOARD_PERIOD_DAYS, 7))
+    weekday_index = current.weekday()
+    days_until_reset = (period_days - (weekday_index % period_days)) % period_days
+    candidate = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    if days_until_reset == 0 and current >= candidate:
+        days_until_reset = period_days
+    from datetime import timedelta
+    next_reset = candidate + timedelta(days=days_until_reset)
+    return datetime_to_dotnet_ticks(next_reset)
+
+
+def build_leaderboard_payload(
+    global_overall: list[dict[str, Any]] | None = None,
+    global_periodic: list[dict[str, Any]] | None = None,
+    friends_overall: list[dict[str, Any]] | None = None,
+    friends_periodic: list[dict[str, Any]] | None = None,
+    next_reset_ticks: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "GlobalOverall": list(global_overall or []),
+        "GlobalPeriodic": list(global_periodic or []),
+        "FriendsOverall": list(friends_overall or []),
+        "FriendsPeriodic": list(friends_periodic or []),
+        "NextResetUTC": parse_dotnet_ticks(next_reset_ticks if next_reset_ticks is not None else _next_leaderboard_reset_ticks()),
+    }
 
 
 def stable_player_id(platform: int, platform_id: int) -> int:
@@ -684,7 +822,7 @@ def get_settings(player_id: int) -> list[dict[str, str]]:
     init_db()
     with closing(connect()) as conn:
         rows = conn.execute("SELECT key, value FROM settings WHERE player_id = ? ORDER BY key", (player_id,)).fetchall()
-    return [{"Key": str(row["key"]), "Value": str(row["value"])} for row in rows]
+    return [build_settings_entry(row["key"], row["value"]) for row in rows]
 
 
 def upsert_setting(player_id: int, key: str, value: str) -> None:
@@ -712,11 +850,7 @@ def get_avatar(player_id: int) -> dict[str, str]:
             conn.execute("INSERT OR IGNORE INTO avatars(player_id, outfit_selections, skin_color, hair_color) VALUES(?, '', '', '')", (player_id,))
             conn.commit()
             row = conn.execute("SELECT * FROM avatars WHERE player_id = ?", (player_id,)).fetchone()
-    return {
-        "OutfitSelections": str(row["outfit_selections"]) if row else "",
-        "SkinColor": str(row["skin_color"]) if row else "",
-        "HairColor": str(row["hair_color"]) if row else "",
-    }
+    return build_avatar_payload(row)
 
 
 def set_avatar(player_id: int, payload: dict[str, Any]) -> dict[str, str]:
@@ -762,7 +896,16 @@ def add_avatar_item(player_id: int, avatar_item_desc: str, unlocked_level: int =
             (player_id, avatar_item_desc, max(1, safe_int(unlocked_level, 1))),
         )
         conn.commit()
-    return {"AvatarItemDesc": avatar_item_desc, "UnlockedLevel": max(1, safe_int(unlocked_level, 1))}
+    return build_avatar_item_payload({"AvatarItemDesc": avatar_item_desc, "UnlockedLevel": max(1, safe_int(unlocked_level, 1))})
+
+
+def presence_is_online(last_update_time: Any, stale_timeout_seconds: int = GAME_SESSION_STALE_TIMEOUT_SECONDS) -> bool:
+    stale_timeout_seconds = max(60, safe_int(stale_timeout_seconds, GAME_SESSION_STALE_TIMEOUT_SECONDS))
+    last_update_ticks = parse_dotnet_ticks(last_update_time, 0)
+    if last_update_ticks <= 0:
+        return False
+    last_update_dt = datetime.fromtimestamp(max(0, (last_update_ticks - 621355968000000000) / 10_000_000), tz=timezone.utc)
+    return (datetime.now(timezone.utc) - last_update_dt).total_seconds() <= stale_timeout_seconds
 
 
 def get_presence(player_id: int) -> dict[str, Any] | None:
@@ -771,43 +914,38 @@ def get_presence(player_id: int) -> dict[str, Any] | None:
         row = conn.execute("SELECT * FROM presence WHERE player_id = ?", (player_id,)).fetchone()
     if row is None:
         return None
-    return {
-        "PlayerId": safe_int(row["player_id"], 0),
-        "GameSessionId": str(row["game_session_id"] or ""),
-        "AppVersion": str(row["app_version"] or ""),
-        "LastUpdateTime": parse_dotnet_ticks(row["last_update_time"]),
-        "Activity": str(row["activity"] or "DormRoom"),
-        "Private": bool(row["private"]),
-        "AvailableSpace": max(0, safe_int(row["available_space"], 0)),
-        "GameInProgress": bool(row["game_in_progress"]),
-    }
+    last_update_time = parse_dotnet_ticks(row["last_update_time"])
+    is_online = presence_is_online(last_update_time)
+    return build_presence_payload({
+        "PlayerId": row["player_id"],
+        "IsOnline": is_online,
+        "GameSessionId": row["game_session_id"],
+        "AppVersion": row["app_version"],
+        "LastUpdateTime": last_update_time,
+        "Activity": row["activity"],
+        "Private": row["private"],
+        "AvailableSpace": row["available_space"],
+        "GameInProgress": row["game_in_progress"],
+    })
 
 
 def set_presence(player_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-    current = get_presence(player_id) or {
+    current = get_presence(player_id) or build_presence_payload({"PlayerId": player_id})
+    value = build_presence_payload({
         "PlayerId": player_id,
-        "GameSessionId": "",
-        "AppVersion": "",
-        "LastUpdateTime": utcnow_ticks(),
-        "Activity": "DormRoom",
-        "Private": False,
-        "AvailableSpace": 0,
-        "GameInProgress": False,
-    }
-    value = {
-        "PlayerId": player_id,
-        "GameSessionId": str(payload.get("GameSessionId", payload.get("gameSessionId", current["GameSessionId"])) or ""),
-        "AppVersion": str(payload.get("AppVersion", payload.get("appVersion", current["AppVersion"])) or ""),
+        "IsOnline": True,
+        "GameSessionId": payload.get("GameSessionId", payload.get("gameSessionId", current["GameSessionId"])),
+        "AppVersion": payload.get("AppVersion", payload.get("appVersion", current["AppVersion"])),
         # Presence freshness must be stamped by the server on every heartbeat.
         # The client may omit LastUpdateTime or keep sending an older value, which
         # would make active-player counts drift low even while /api/presence/v2 is
         # still arriving regularly.
         "LastUpdateTime": utcnow_ticks(),
-        "Activity": str(payload.get("Activity", payload.get("activity", current["Activity"])) or "DormRoom"),
-        "Private": parse_bool(payload.get("Private", payload.get("private", current["Private"])), False),
-        "AvailableSpace": max(0, safe_int(payload.get("AvailableSpace", payload.get("availableSpace", current["AvailableSpace"])), 0)),
-        "GameInProgress": parse_bool(payload.get("GameInProgress", payload.get("gameInProgress", current["GameInProgress"])), False),
-    }
+        "Activity": payload.get("Activity", payload.get("activity", current["Activity"])),
+        "Private": payload.get("Private", payload.get("private", current["Private"])),
+        "AvailableSpace": payload.get("AvailableSpace", payload.get("availableSpace", current["AvailableSpace"])),
+        "GameInProgress": payload.get("GameInProgress", payload.get("gameInProgress", current["GameInProgress"])),
+    })
     with closing(connect()) as conn:
         conn.execute(
             """
@@ -848,7 +986,7 @@ def get_relationships(player_id: int) -> list[dict[str, Any]]:
             "SELECT other_player_id, relationship_type FROM relationships WHERE player_id = ? AND other_player_id <> ? AND relationship_type <> 0 ORDER BY other_player_id",
             (player_id, player_id),
         ).fetchall()
-    return [{"PlayerID": safe_int(row["other_player_id"], 0), "RelationshipType": safe_int(row["relationship_type"], 0)} for row in rows]
+    return [build_relationship_payload(row["other_player_id"], row["relationship_type"]) for row in rows]
 
 
 def set_relationship(player_id: int, other_player_id: int, relationship_type: int) -> dict[str, Any]:
@@ -869,7 +1007,7 @@ def set_relationship(player_id: int, other_player_id: int, relationship_type: in
                 (player_id, other_player_id, relationship_type),
             )
         conn.commit()
-    relation = {"PlayerID": other_player_id, "RelationshipType": safe_int(relationship_type, 0)}
+    relation = build_relationship_payload(other_player_id, relationship_type)
     enqueue_ws_event(player_id, 1, relation)
     return relation
 
@@ -939,14 +1077,14 @@ def create_message(from_player_id: int, to_player_id: int, msg_type: int, data: 
         inserted = cursor.fetchone()
         message_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
-    message = {
+    message = build_message_payload({
         "Id": message_id,
         "FromPlayerId": from_player_id,
         "ToPlayerId": to_player_id,
         "SentTime": sent_ticks,
         "Type": msg_type,
         "Data": str(data or ""),
-    }
+    }, include_to_player_id=True)
     enqueue_ws_event(to_player_id, 2, {k: v for k, v in message.items() if k != "ToPlayerId"})
     return message
 
@@ -959,13 +1097,13 @@ def get_messages_for_player(player_id: int) -> list[dict[str, Any]]:
             (player_id,),
         ).fetchall()
     return [
-        {
-            "Id": safe_int(row["id"], 0),
-            "FromPlayerId": safe_int(row["from_player_id"], 0),
-            "SentTime": parse_dotnet_ticks(row["sent_time"]),
-            "Type": safe_int(row["type"], 0),
-            "Data": str(row["data"] or ""),
-        }
+        build_message_payload({
+            "Id": row["id"],
+            "FromPlayerId": row["from_player_id"],
+            "SentTime": row["sent_time"],
+            "Type": row["type"],
+            "Data": row["data"],
+        })
         for row in rows
     ]
 
@@ -1058,7 +1196,6 @@ def record_player_report(reporter_player_id: int, reported_player_id: int, repor
 def _active_presence_rows(stale_timeout_seconds: int = GAME_SESSION_STALE_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
     init_db()
     stale_timeout_seconds = max(60, safe_int(stale_timeout_seconds, GAME_SESSION_STALE_TIMEOUT_SECONDS))
-    now = datetime.now(timezone.utc)
     with closing(connect()) as conn:
         rows = conn.execute(
             "SELECT player_id, game_session_id, app_version, last_update_time, activity, private, available_space, game_in_progress FROM presence ORDER BY player_id"
@@ -1067,8 +1204,7 @@ def _active_presence_rows(stale_timeout_seconds: int = GAME_SESSION_STALE_TIMEOU
     active_rows: list[dict[str, Any]] = []
     for row in rows:
         last_update_ticks = parse_dotnet_ticks(row["last_update_time"])
-        last_update_dt = datetime.fromtimestamp(max(0, (last_update_ticks - 621355968000000000) / 10_000_000), tz=timezone.utc)
-        if (now - last_update_dt).total_seconds() > stale_timeout_seconds:
+        if not presence_is_online(last_update_ticks, stale_timeout_seconds):
             continue
         active_rows.append(dict(row))
     return active_rows
@@ -1080,15 +1216,15 @@ def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:
         session_id = str(row.get("game_session_id") or "").strip()
         if not session_id:
             continue
-        session = sessions.setdefault(session_id, {
+        session = sessions.setdefault(session_id, build_game_session_payload({
             "Id": session_id,
-            "AppVersion": str(row.get("app_version") or ""),
-            "Activity": str(row.get("activity") or "DormRoom"),
-            "Private": bool(row.get("private")),
-            "AvailableSpace": max(0, safe_int(row.get("available_space"), 0)),
-            "GameInProgress": bool(row.get("game_in_progress")),
+            "AppVersion": row.get("app_version"),
+            "Activity": row.get("activity"),
+            "Private": row.get("private"),
+            "AvailableSpace": row.get("available_space"),
+            "GameInProgress": row.get("game_in_progress"),
             "PlayerIds": [],
-        })
+        }))
         if not session["AppVersion"] and row.get("app_version"):
             session["AppVersion"] = str(row.get("app_version") or "")
         if session["Activity"] == "DormRoom" and row.get("activity"):
@@ -1100,7 +1236,7 @@ def get_game_sessions(app_version: str = "") -> list[dict[str, Any]]:
         if player_id > 0 and player_id not in session["PlayerIds"]:
             session["PlayerIds"].append(player_id)
 
-    result = sorted(sessions.values(), key=lambda item: str(item["Id"]))
+    result = [build_game_session_payload(item) for item in sorted(sessions.values(), key=lambda item: str(item["Id"]))]
     if app_version:
         result = [item for item in result if str(item.get("AppVersion") or "") == str(app_version)]
     return result
@@ -1119,21 +1255,22 @@ def get_game_session(session_id: str) -> dict[str, Any] | None:
 def get_gift_packages(player_id: int) -> list[dict[str, Any]]:
     init_db()
     with closing(connect()) as conn:
-        rows = conn.execute("SELECT id, avatar_item_desc, xp FROM gift_packages WHERE player_id = ? ORDER BY id", (player_id,)).fetchall()
-    return [{"Id": safe_int(row["id"], 0), "AvatarItemDesc": str(row["avatar_item_desc"] or ""), "Xp": max(0, safe_int(row["xp"], 0))} for row in rows]
+        rows = conn.execute("SELECT id, avatar_item_desc, xp, package_type FROM gift_packages WHERE player_id = ? ORDER BY id", (player_id,)).fetchall()
+    return [build_gift_package_payload(row) for row in rows]
 
 
-def create_gift_package(player_id: int, avatar_item_desc: str, xp: int) -> dict[str, Any]:
+def create_gift_package(player_id: int, avatar_item_desc: str, xp: int, package_type: int = DEFAULT_GIFT_PACKAGE_TYPE) -> dict[str, Any]:
     init_db()
+    normalized_package_type = max(0, safe_int(package_type, DEFAULT_GIFT_PACKAGE_TYPE))
     with closing(connect()) as conn:
         cursor = conn.execute(
-            "INSERT INTO gift_packages(player_id, avatar_item_desc, xp) VALUES (?, ?, ?) RETURNING id",
-            (player_id, str(avatar_item_desc or ""), max(0, safe_int(xp, 0))),
+            "INSERT INTO gift_packages(player_id, avatar_item_desc, xp, package_type) VALUES (?, ?, ?, ?) RETURNING id",
+            (player_id, str(avatar_item_desc or ""), max(0, safe_int(xp, 0)), normalized_package_type),
         )
         inserted = cursor.fetchone()
         gift_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
-    return {"Id": gift_id, "AvatarItemDesc": str(avatar_item_desc or ""), "Xp": max(0, safe_int(xp, 0))}
+    return build_gift_package_payload({"Id": gift_id, "AvatarItemDesc": str(avatar_item_desc or ""), "Xp": max(0, safe_int(xp, 0)), "PackageType": normalized_package_type})
 
 
 def consume_gift_package(player_id: int, gift_id: int) -> bool:
@@ -1142,6 +1279,98 @@ def consume_gift_package(player_id: int, gift_id: int) -> bool:
         cursor = conn.execute("DELETE FROM gift_packages WHERE player_id = ? AND id = ?", (player_id, gift_id))
         conn.commit()
     return safe_int(cursor.rowcount, 0) > 0
+
+
+
+def _friend_ids_for_player(player_id: int) -> set[int]:
+    init_db()
+    safe_player_id = safe_int(player_id, 0)
+    if safe_player_id <= 0:
+        return set()
+    with closing(connect()) as conn:
+        rows = conn.execute(
+            "SELECT other_player_id FROM relationships WHERE player_id = ? AND relationship_type = 3",
+            (safe_player_id,),
+        ).fetchall()
+    return {safe_int(row["other_player_id"], 0) for row in rows if safe_int(row["other_player_id"], 0) > 0}
+
+
+def _score_rows_for_leaderboard() -> list[dict[str, Any]]:
+    init_db()
+    with closing(connect()) as conn:
+        return conn.execute(
+            "SELECT player_id, category, score, created_at FROM player_scores ORDER BY created_at, id"
+        ).fetchall()
+
+
+def _aggregate_leaderboard_entries(
+    objective_type: int,
+    sort_ascending: bool,
+    limit: int,
+    *,
+    viewer_player_id: int = 0,
+    periodic_only: bool = False,
+    friends_only: bool = False,
+) -> list[dict[str, Any]]:
+    from datetime import timedelta
+
+    rows = _score_rows_for_leaderboard()
+    if friends_only:
+        allowed_ids = _friend_ids_for_player(viewer_player_id)
+        if not allowed_ids:
+            return []
+    else:
+        allowed_ids = set()
+
+    now = datetime.now(timezone.utc)
+    period_start = now - timedelta(days=max(1, safe_int(LEADERBOARD_PERIOD_DAYS, 7)))
+    objective_candidates = {str(safe_int(objective_type, 0))}
+    if safe_int(objective_type, 0) > 0:
+        objective_candidates.add(f"objective:{safe_int(objective_type, 0)}")
+
+    exact_match_rows = [row for row in rows if str(row.get("category") or "") in objective_candidates]
+    filtered_rows = exact_match_rows if exact_match_rows else rows
+
+    totals: dict[int, float] = {}
+    for row in filtered_rows:
+        player_id = safe_int(row.get("player_id"), 0)
+        if player_id <= 0:
+            continue
+        if friends_only and player_id not in allowed_ids:
+            continue
+        created_at_raw = str(row.get("created_at") or "").strip()
+        if periodic_only and created_at_raw:
+            try:
+                created_at = datetime.fromisoformat(created_at_raw.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                else:
+                    created_at = created_at.astimezone(timezone.utc)
+                if created_at < period_start:
+                    continue
+            except Exception:
+                continue
+        totals[player_id] = totals.get(player_id, 0.0) + float(row.get("score") or 0.0)
+
+    ranked = sorted(
+        totals.items(),
+        key=lambda item: (item[1], item[0]) if sort_ascending else (-item[1], item[0]),
+    )
+    limited = ranked[: max(1, min(100, safe_int(limit, 10)))]
+    return [
+        build_leaderboard_entry_payload(player_id, round(score_value), index)
+        for index, (player_id, score_value) in enumerate(limited, start=1)
+    ]
+
+
+def get_leaderboard(objective_type: int, sort_ascending: bool = False, limit: int = 10, viewer_player_id: int = 0) -> dict[str, Any]:
+    return build_leaderboard_payload(
+        global_overall=_aggregate_leaderboard_entries(objective_type, sort_ascending, limit, viewer_player_id=viewer_player_id, periodic_only=False, friends_only=False),
+        global_periodic=_aggregate_leaderboard_entries(objective_type, sort_ascending, limit, viewer_player_id=viewer_player_id, periodic_only=True, friends_only=False),
+        friends_overall=_aggregate_leaderboard_entries(objective_type, sort_ascending, limit, viewer_player_id=viewer_player_id, periodic_only=False, friends_only=True),
+        friends_periodic=_aggregate_leaderboard_entries(objective_type, sort_ascending, limit, viewer_player_id=viewer_player_id, periodic_only=True, friends_only=True),
+        next_reset_ticks=_next_leaderboard_reset_ticks(),
+    )
 
 
 def get_motd() -> str:
