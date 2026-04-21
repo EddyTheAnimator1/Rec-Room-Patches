@@ -1159,7 +1159,6 @@ def messages_v2_send() -> Any:
     if to_player_id <= 0:
         return jsonify({"error": "target player missing"}), 400
     remember_local_player_id(from_player_id)
-    _ensure_message_related_players([from_player_id, to_player_id])
     message = shared.create_message(from_player_id, to_player_id, shared.safe_int(payload.get("Type", payload.get("type", 0)), 0), str(payload.get("Data", payload.get("data", "")) or ""))
     return Response(json.dumps({k: v for k, v in message.items() if k != "ToPlayerId"}), mimetype="application/json")
 
@@ -1198,7 +1197,6 @@ def messages_send() -> Any:
         return jsonify({"error": "sender not resolved"}), 400
     if to_player_id <= 0:
         return jsonify({"error": "target player missing"}), 400
-    _ensure_message_related_players([from_player_id, to_player_id])
     message = shared.create_message(
         from_player_id,
         to_player_id,

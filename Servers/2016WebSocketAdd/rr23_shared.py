@@ -282,6 +282,10 @@ def init_db(force: bool = False) -> None:
                         last_seen_at TEXT NOT NULL,
                         PRIMARY KEY (player_id, session_id)
                     );
+                    CREATE INDEX IF NOT EXISTS idx_websocket_events_player_id_id
+                        ON websocket_events(player_id, id);
+                    CREATE INDEX IF NOT EXISTS idx_messages_to_player_id_id
+                        ON messages(to_player_id, id);
 
                     CREATE TABLE IF NOT EXISTS player_reputation_events (
                         id BIGSERIAL PRIMARY KEY,
@@ -1403,6 +1407,16 @@ def enqueue_ws_event(player_id: int, notification_id: int, payload: Any) -> int:
         event_id = safe_int(inserted["id"] if inserted is not None else 0, 0)
         conn.commit()
     return event_id
+
+
+def get_latest_ws_event_id(player_id: int) -> int:
+    init_db()
+    with closing(connect()) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS latest_id FROM websocket_events WHERE player_id = ?",
+            (player_id,),
+        ).fetchone()
+    return safe_int(0 if row is None else row.get("latest_id", 0), 0)
 
 
 def list_ws_events_since(player_id: int, after_event_id: int) -> list[dict[str, Any]]:
