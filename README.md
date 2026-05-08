@@ -8,7 +8,7 @@ https://github.com/user-attachments/assets/92014a05-bd8b-4297-8eaf-b41dce0c675a
 This project is not affiliated with [Rec Room Inc.]([https://example.com](https://recroom.com/)). It is made by a solo developer and it isn't official.
 
 # Installation
-1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the latest Release.exe
+1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the RecRoompatches.exe
 2. Put the RecRoompatches.exe in a folder to stay organized (It downloads Depotdownloader)
 
 If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
