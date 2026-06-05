@@ -82,6 +82,39 @@ def _int_value(value: Any, default: int = 0) -> int:
         return default
 
 
+def _image_type(content: bytes) -> tuple[str, str] | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png", "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg", "image/jpeg"
+    return None
+
+
+def _multipart_field(body: bytes, content_type: str, field_name: str) -> bytes | None:
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        return None
+    boundary = b"--" + match.group(1).encode("utf-8")
+    for raw_part in body.split(boundary):
+        part = raw_part.strip()
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip()
+        header_blob, separator, payload = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        headers = header_blob.decode("utf-8", errors="ignore")
+        disposition_match = re.search(
+            r'content-disposition:.*name="' + re.escape(field_name) + r'"',
+            headers,
+            re.IGNORECASE,
+        )
+        if disposition_match:
+            return payload.rstrip(b"\r\n")
+    return None
+
+
 def _profile_header(request: Request) -> int | None:
     value = request.headers.get("x-rec-room-profile")
     if not value:
@@ -241,6 +274,66 @@ def _current_player(context: Any, request: Request) -> tuple[Any | None, dict[st
     except Exception:
         state = {}
     return row, state
+
+
+def _profile_image_response(context: Any, recnet_id: int) -> Response:
+    row = _row_by_recnet_id(context, recnet_id)
+    if row and row["profile_picture_asset_id"]:
+        with context.db.connect() as conn:
+            asset = conn.execute(
+                """
+                SELECT relative_path, mime_type, created_at
+                FROM data_assets
+                WHERE asset_id = ?
+                """,
+                (row["profile_picture_asset_id"],),
+            ).fetchone()
+        if asset:
+            image_path = context.data_dir / asset["relative_path"]
+            if image_path.is_file():
+                return Response(
+                    image_path.read_bytes(),
+                    media_type=asset["mime_type"],
+                    headers={"Last-Modified": "Fri, 23 Dec 2016 02:09:34 GMT"},
+                )
+    return Response(
+        _TRANSPARENT_PNG,
+        media_type="image/png",
+        headers={"Last-Modified": "Fri, 23 Dec 2016 02:09:33 GMT"},
+    )
+
+
+async def _store_profile_image(request: Request, context: Any) -> Response:
+    row, _ = _current_player(context, request)
+    if not row:
+        raise HTTPException(status_code=404, detail="Player not found")
+
+    body = await _body_bytes(request)
+    content_type = request.headers.get("content-type", "")
+    image = _multipart_field(body, content_type, "image")
+    if image is None and _image_type(body):
+        image = body
+    if not image:
+        raise HTTPException(status_code=400, detail="Missing profile image")
+
+    detected = _image_type(image)
+    if detected is None:
+        raise HTTPException(status_code=400, detail="Unsupported profile image format")
+    file_ext, mime_type = detected
+    asset = context.save_image_bytes(
+        owner_player_id=row["player_id"],
+        content=image,
+        file_ext=file_ext,
+        mime_type=mime_type,
+        purpose=f"{API_VERSION}.profile_image",
+        metadata={"recnet_id": _profile_header(request)},
+    )
+    with context.db.transaction() as conn:
+        conn.execute(
+            "UPDATE players SET profile_picture_asset_id = ?, updated_at = ? WHERE player_id = ?",
+            (asset["asset_id"], _now_iso(), row["player_id"]),
+        )
+    return Response(status_code=200)
 
 
 def _config_payload(context: Any) -> dict[str, Any]:
@@ -636,14 +729,10 @@ async def handle_http(route_path: str, request: Request, context: Any) -> Respon
 
     match = re.fullmatch(r"api/images/v1/profile/(\d+)", path)
     if match and method == "GET":
-        return Response(
-            _TRANSPARENT_PNG,
-            media_type="image/png",
-            headers={"Last-Modified": "Fri, 23 Dec 2016 02:09:33 GMT"},
-        )
+        return _profile_image_response(context, int(match.group(1)))
 
     if path == "api/images/v2/profile" and method == "POST":
-        return Response(status_code=200)
+        return await _store_profile_image(request, context)
 
     if path == "api/analytics/v1/session/event" and method == "POST":
         return Response(status_code=200)
