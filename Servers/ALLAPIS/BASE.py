@@ -466,7 +466,13 @@ class ServerContext:
     def _decode_setting_string(row: sqlite3.Row | None) -> str | None:
         if row is None:
             return None
-        value = json.loads(row["value_json"])
+        raw_value = row["value_json"]
+        if not isinstance(raw_value, str) or raw_value == "":
+            return None
+        try:
+            value = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return raw_value
         return value if isinstance(value, str) else None
 
     def set_shared_motd(self, message: str) -> None:
