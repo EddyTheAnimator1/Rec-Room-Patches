@@ -236,39 +236,39 @@ def _config_payload(context: Any) -> dict[str, Any]:
         },
         "DailyObjectives": [
             [
-                {"type": 1, "score": 1},
                 {"type": 100, "score": 1},
                 {"type": 201, "score": 1},
+                {"type": 300, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 300, "score": 1},
                 {"type": 401, "score": 1},
+                {"type": 500, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 500, "score": 1},
                 {"type": 802, "score": 1},
+                {"type": 200, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 200, "score": 1},
                 {"type": 302, "score": 1},
+                {"type": 400, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 400, "score": 1},
                 {"type": 603, "score": 1},
+                {"type": 700, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 700, "score": 1},
                 {"type": 101, "score": 1},
+                {"type": 800, "score": 1},
             ],
             [
-                {"type": 1, "score": 1},
                 {"type": 800, "score": 1},
                 {"type": 502, "score": 1},
+                {"type": 100, "score": 1},
             ],
         ],
         "ConfigTable": [
