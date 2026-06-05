@@ -260,6 +260,22 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        2,
+        """
+        INSERT INTO server_settings(key, value_json, created_at, updated_at)
+        SELECT
+            'motd',
+            value_json,
+            strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+            strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+        FROM server_settings
+        WHERE key LIKE '%.motd'
+          AND NOT EXISTS (SELECT 1 FROM server_settings WHERE key = 'motd')
+        ORDER BY created_at ASC
+        LIMIT 1;
+        """,
+    ),
 )
 
 
@@ -425,15 +441,41 @@ class ServerContext:
             value = os.getenv(key)
             if value is not None:
                 return value
-        setting_key = f"{api_version}.motd"
+
+        setting_keys = (f"{api_version}.motd", "motd")
         with self.db.connect() as conn:
-            row = conn.execute("SELECT value_json FROM server_settings WHERE key = ?", (setting_key,)).fetchone()
+            for setting_key in setting_keys:
+                row = conn.execute("SELECT value_json FROM server_settings WHERE key = ?", (setting_key,)).fetchone()
+                value = self._decode_setting_string(row)
+                if value is not None:
+                    return value
+
+            row = conn.execute(
+                """
+                SELECT value_json
+                FROM server_settings
+                WHERE key LIKE '%.motd'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            value = self._decode_setting_string(row)
+            return value if value is not None else ""
+
+    @staticmethod
+    def _decode_setting_string(row: sqlite3.Row | None) -> str | None:
         if row is None:
-            return ""
+            return None
         value = json.loads(row["value_json"])
-        return value if isinstance(value, str) else ""
+        return value if isinstance(value, str) else None
+
+    def set_shared_motd(self, message: str) -> None:
+        self._set_server_setting("motd", message)
 
     def set_motd(self, api_version: str, message: str) -> None:
+        self._set_server_setting(f"{api_version}.motd", message)
+
+    def _set_server_setting(self, setting_key: str, value: Any) -> None:
         now = utc_now()
         with self.db.transaction() as conn:
             conn.execute(
@@ -442,7 +484,7 @@ class ServerContext:
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
                 """,
-                (f"{api_version}.motd", json.dumps(message), now, now),
+                (setting_key, json.dumps(value), now, now),
             )
 
     def get_or_create_player(self, api_version: str, **kwargs: Any) -> dict[str, Any]:
