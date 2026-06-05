@@ -188,9 +188,25 @@ def _ensure_player(
     state["platform_id"] = str(platform_id)
     state.setdefault("reputation", 0)
     state.setdefault("avatar", {"OutfitSelections": "", "SkinColor": "", "HairColor": ""})
-    state.setdefault("settings", {})
+    _seed_new_player_preferences(state)
     _save_state(context, player["player_id"], state)
     return _profile_from_player(player, state)
+
+
+def _seed_new_player_preferences(state: dict[str, Any]) -> bool:
+    settings = state.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+        state["settings"] = settings
+    if state.get("new_player_preferences_seeded"):
+        return False
+    settings["Recroom.OOBE"] = "0"
+    settings.pop("OBJECTIVE_DATE", None)
+    for index in range(3):
+        settings.pop(f"OBJECTIVE_PROGRESS{index}", None)
+        settings.pop(f"OBJECTIVE_COMPLETED{index}", None)
+    state["new_player_preferences_seeded"] = True
+    return True
 
 
 def _profile_from_row(row: Any) -> dict[str, Any]:
@@ -311,8 +327,8 @@ def _gift_rows(context: Any, player_id: str) -> list[dict[str, Any]]:
         gifts.append(
             {
                 "Id": int(state.get("december_id") or 0),
-                "AvatarItemDesc": str(state.get("AvatarItemDesc") or ""),
-                "Xp": int(state.get("Xp") or 0),
+                "AvatarItemDesc": "",
+                "Xp": max(100, int(state.get("Xp") or 0)),
             }
         )
     return gifts
@@ -450,8 +466,9 @@ async def _handle_avatar(path: str, request: Request, context: Any) -> Response:
         state_json = {
             "api_version": API_VERSION,
             "december_id": gift_id,
-            "AvatarItemDesc": str(form.get("AvatarItemDesc") or ""),
-            "Xp": _int_value(form.get("Xp")),
+            "AvatarItemDesc": "",
+            "OriginalAvatarItemDesc": str(form.get("AvatarItemDesc") or ""),
+            "Xp": max(100, _int_value(form.get("Xp"))),
             "consumed": False,
         }
         with context.db.transaction() as conn:
@@ -506,9 +523,11 @@ async def _handle_avatar(path: str, request: Request, context: Any) -> Response:
 async def _handle_settings(path: str, request: Request, context: Any) -> Response:
     method = request.method.upper()
     row, state = _current_player(context, request)
-    settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
 
     if path in {"api/settings/v2", "api/settings/v2/"} and method == "GET":
+        if row and _seed_new_player_preferences(state):
+            _save_state(context, row["player_id"], state)
+        settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
         return JSONResponse(
             [{"Key": str(key), "Value": str(value)} for key, value in settings.items()]
         )
@@ -516,6 +535,7 @@ async def _handle_settings(path: str, request: Request, context: Any) -> Respons
     if path == "api/settings/v2/set" and method == "POST":
         payload = await _json_body(request, {})
         if row and isinstance(payload, dict):
+            settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
             settings[str(payload.get("Key") or "")] = str(payload.get("Value") or "")
             state["settings"] = settings
             _save_state(context, row["player_id"], state)
@@ -524,6 +544,7 @@ async def _handle_settings(path: str, request: Request, context: Any) -> Respons
     if path == "api/settings/v2/remove" and method == "POST":
         payload = await _json_body(request, {})
         if row and isinstance(payload, dict):
+            settings = state.get("settings") if isinstance(state.get("settings"), dict) else {}
             settings.pop(str(payload.get("Key") or ""), None)
             state["settings"] = settings
             _save_state(context, row["player_id"], state)
