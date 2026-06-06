@@ -736,6 +736,14 @@ def _storefront_update_payload(storefront_type: int, balance: int = 0) -> dict[s
     return payload
 
 
+def _storefront_catalog_payload() -> dict[str, Any]:
+    return {
+        "StoreItems": [],
+        "StartAt": "2018-01-12T00:00:00Z",
+        "EndAt": "2099-01-01T00:00:00Z",
+    }
+
+
 def _saved_image_names(context: Any, row: Any | None, state: dict[str, Any]) -> list[str]:
     names = _state_string_list(state, "saved_image_names")
     if not row:
@@ -1131,7 +1139,7 @@ async def _handle_objectives(path: str, request: Request, context: Any) -> Respo
     method = request.method.upper()
 
     if path == "api/objectives/v1/myprogress" and method == "GET":
-        return JSONResponse([])
+        return JSONResponse({"Objectives": [], "ObjectiveGroups": []})
 
     if path in {"api/objectives/v1/cleargroup", "api/objectives/v1/updateobjective", "api/objectives/v1/completegroup"} and method == "POST":
         return _empty_ok()
@@ -1143,7 +1151,7 @@ async def _handle_challenge(path: str, request: Request, context: Any) -> Respon
     method = request.method.upper()
 
     if path == "api/challenge/v1/getCurrent" and method == "GET":
-        return JSONResponse([])
+        return JSONResponse({"Success": False, "Message": ""})
 
     if path == "api/challenge/v1/updateProgress" and method == "POST":
         return _empty_ok()
@@ -1159,7 +1167,7 @@ async def _handle_presence(path: str, request: Request, context: Any) -> Respons
 
     match = re.fullmatch(r"api/presence/v1/(\d+)", path)
     if match and method == "GET":
-        return JSONResponse({"PlayerId": _int_value(match.group(1)), "Status": 0})
+        return JSONResponse({"PlayerId": _int_value(match.group(1)), "IsOnline": False, "GameSession": None})
 
     raise HTTPException(status_code=501, detail="Presence API route confirmed but not implemented.")
 
@@ -1181,7 +1189,7 @@ async def _handle_misc_success_or_empty(path: str, request: Request, context: An
         return JSONResponse(_storefront_update_payload(_storefront_type_from_path(path, payload)))
 
     if re.fullmatch(r"api/storefronts/v1/\d+", path) and method == "GET":
-        return JSONResponse([])
+        return JSONResponse(_storefront_catalog_payload())
 
     if path == "api/storefronts/v1/buy" and method == "POST":
         payload = await _json_body(request, {})
