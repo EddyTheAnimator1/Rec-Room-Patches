@@ -24,78 +24,88 @@ _DEFAULT_OUTFIT_SELECTIONS = ""
 _DEFAULT_SKIN_COLOR = ""
 _DEFAULT_HAIR_COLOR = ""
 # 20180112 parses ActivityLevelId through the client ActivityRuntimeConfig.
-# Use the DLL-era ActivityLevel enum IDs here. Scene names such as "Dorm Room",
-# "Lounge", and "Paintball_Homestead" are not stable ActivityLevelId values.
-_DORM_ACTIVITY_LEVEL_ID = "DORM_ROOM"
-_KNOWN_ACTIVITY_LEVEL_IDS = {
-    "DORM_ROOM",
-    "THE_LOUNGE",
-    "DORM_PHOTO_STUDIO",
-    "PAINTBALL",
-    "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "THE_RISE_OF_JUMBOTRON",
-    "CURSE_OF_THE_CRIMSON_CAULDRON",
-    "THE_ISLE_OF_LOST_SKULLS",
-    "CHARADES",
-    "DISC_GOLF",
-    "DODGEBALL",
-    "PADDLEBALL",
-    "SOCCER",
+# These are the serialized ActivityLevel.Id GUIDs embedded in resources.assets.
+_DORM_ACTIVITY_LEVEL_ID = "76d98498-60a1-430c-ab76-b54a29b7a163"
+_ACTIVITY_LEVEL_DISPLAY_NAMES = {
+    _DORM_ACTIVITY_LEVEL_ID: "Dorm Room",
+    "cbad71af-0831-44d8-b8ef-69edafa841f6": "Rec Center",
+    "4078dfed-24bb-4db7-863f-578ba48d726b": "Charades",
+    "f6f7256c-e438-4299-b99e-d20bef8cf7e0": "Lake",
+    "d9378c9f-80bc-46fb-ad1e-1bed8a674f55": "Propulsion",
+    "3d474b26-26f7-45e9-9a36-9b02847d5e6f": "Dodgeball",
+    "a067557f-ca32-43e6-b6e5-daaec60b4f5a": "The Lounge",
+    "d89f74fa-d51e-477a-a425-025a891dd499": "Paddleball",
+    "e122fe98-e7db-49e8-a1b1-105424b6e1f0": "River",
+    "a785267d-c579-42ea-be43-fec1992d1ca7": "Homestead",
+    "ff4c6427-7079-4f59-b22a-69b089420827": "Quarry",
+    "380d18b5-de9c-49f3-80f7-f4a95c1de161": "Clear Cut",
+    "58763055-2dfb-4814-80b8-16fac5c85709": "Spillway",
+    "91e16e35-f48f-4700-ab8a-a1b79e50e51b": "Quest For The Golden Trophy",
+    "acc06e66-c2d0-4361-b0cd-46246a4c455c": "The Rise Of JumboTron",
+    "949fa41f-4347-45c0-b7ac-489129174045": "Curse of the Crimson Cauldron",
+    "7e01cfe0-820a-406f-b1b3-0a5bf575235c": "The Isle of Lost Skulls",
+    "6d5eea4b-f069-4ed0-9916-0e2f07df0d03": "Soccer",
+    "42699ed2-0c1b-4f3d-93a2-ce01dfce7a79": "Art Testing",
+    "03a2f8aa-1cdc-4b11-8783-87aaa3713bad": "Art Testing Perf",
+    "7ef6a766-0e3d-4671-bc6f-69c0e081e94b": "Dorm Photo Studio",
+    "9932f88f-3929-43a0-a012-a40b5128e346": "Performance Hall",
+    "f5fbd9c9-e853-4036-9d48-5f68e861af04": "Room Calibration",
+    "0a864c86-5a71-4e18-8041-8124e4dc9d98": "Park",
+    "239e676c-f12f-489f-bf3a-d4c383d692c3": "Warehouse",
+    "a75f7547-79eb-47c6-8986-6767abcb4f92": "Registration",
 }
+_KNOWN_ACTIVITY_LEVEL_IDS = set(_ACTIVITY_LEVEL_DISPLAY_NAMES)
+_KNOWN_ACTIVITY_LEVEL_IDS_CASEFOLD = {item.casefold(): item for item in _KNOWN_ACTIVITY_LEVEL_IDS}
 _ACTIVITY_LEVEL_ALIASES = {
     "": _DORM_ACTIVITY_LEVEL_ID,
     "dorm": _DORM_ACTIVITY_LEVEL_ID,
     "dormroom": _DORM_ACTIVITY_LEVEL_ID,
     "dormroomscene": _DORM_ACTIVITY_LEVEL_ID,
-    "dorm_room": _DORM_ACTIVITY_LEVEL_ID,
-    "dorm room": _DORM_ACTIVITY_LEVEL_ID,
-    "reccenter": "THE_LOUNGE",
-    "recroom": "THE_LOUNGE",
-    "rec_room": "THE_LOUNGE",
-    "rec center": "THE_LOUNGE",
-    "lounge": "THE_LOUNGE",
-    "the_lounge": "THE_LOUNGE",
-    "the lounge": "THE_LOUNGE",
-    "paintball": "PAINTBALL",
-    "paintballhomestead": "PAINTBALL",
-    "paintball_homestead": "PAINTBALL",
-    "homestead": "PAINTBALL",
-    "paintballdam": "PAINTBALL",
-    "paintball_dam": "PAINTBALL",
-    "dam": "PAINTBALL",
-    "paintballriver": "PAINTBALL",
-    "paintball_river": "PAINTBALL",
-    "river": "PAINTBALL",
-    "paintballclearcut": "PAINTBALL",
-    "paintball_clearcut": "PAINTBALL",
-    "clearcut": "PAINTBALL",
-    "paintballquarry": "PAINTBALL",
-    "paintball_quarry": "PAINTBALL",
-    "quarry": "PAINTBALL",
-    "capturetheflag": "PAINTBALL",
-    "paintballcapturetheflag": "PAINTBALL",
-    "questforthegoldentrophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "quest_for_the_golden_trophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "goldentrophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "golden trophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "questgoblina": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "quest_goblin_a": "QUEST_FOR_THE_GOLDEN_TROPHY",
-    "jumbotron": "THE_RISE_OF_JUMBOTRON",
-    "theriseofjumbotron": "THE_RISE_OF_JUMBOTRON",
-    "the_rise_of_jumbotron": "THE_RISE_OF_JUMBOTRON",
-    "crimsoncauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
-    "curseofthecrimsoncauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
-    "curse_of_the_crimson_cauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
-    "isleoflostskulls": "THE_ISLE_OF_LOST_SKULLS",
-    "the_isle_of_lost_skulls": "THE_ISLE_OF_LOST_SKULLS",
-    "charades": "CHARADES",
-    "disc_golf": "DISC_GOLF",
-    "discgolf": "DISC_GOLF",
-    "discgolflake": "DISC_GOLF",
-    "discgolf_lake": "DISC_GOLF",
-    "dodgeball": "DODGEBALL",
-    "paddleball": "PADDLEBALL",
-    "soccer": "SOCCER",
+    "reccenter": "cbad71af-0831-44d8-b8ef-69edafa841f6",
+    "recroom": "cbad71af-0831-44d8-b8ef-69edafa841f6",
+    "lounge": "a067557f-ca32-43e6-b6e5-daaec60b4f5a",
+    "thelounge": "a067557f-ca32-43e6-b6e5-daaec60b4f5a",
+    "charades": "4078dfed-24bb-4db7-863f-578ba48d726b",
+    "discgolf": "f6f7256c-e438-4299-b99e-d20bef8cf7e0",
+    "discgolflake": "f6f7256c-e438-4299-b99e-d20bef8cf7e0",
+    "lake": "f6f7256c-e438-4299-b99e-d20bef8cf7e0",
+    "propulsion": "d9378c9f-80bc-46fb-ad1e-1bed8a674f55",
+    "dodgeball": "3d474b26-26f7-45e9-9a36-9b02847d5e6f",
+    "paddleball": "d89f74fa-d51e-477a-a425-025a891dd499",
+    "paintball": "e122fe98-e7db-49e8-a1b1-105424b6e1f0",
+    "paintballriver": "e122fe98-e7db-49e8-a1b1-105424b6e1f0",
+    "river": "e122fe98-e7db-49e8-a1b1-105424b6e1f0",
+    "paintballhomestead": "a785267d-c579-42ea-be43-fec1992d1ca7",
+    "homestead": "a785267d-c579-42ea-be43-fec1992d1ca7",
+    "paintballquarry": "ff4c6427-7079-4f59-b22a-69b089420827",
+    "quarry": "ff4c6427-7079-4f59-b22a-69b089420827",
+    "paintballclearcut": "380d18b5-de9c-49f3-80f7-f4a95c1de161",
+    "clearcut": "380d18b5-de9c-49f3-80f7-f4a95c1de161",
+    "paintballdam": "58763055-2dfb-4814-80b8-16fac5c85709",
+    "dam": "58763055-2dfb-4814-80b8-16fac5c85709",
+    "spillway": "58763055-2dfb-4814-80b8-16fac5c85709",
+    "capturetheflag": "e122fe98-e7db-49e8-a1b1-105424b6e1f0",
+    "paintballcapturetheflag": "e122fe98-e7db-49e8-a1b1-105424b6e1f0",
+    "quest": "91e16e35-f48f-4700-ab8a-a1b79e50e51b",
+    "questforthegoldentrophy": "91e16e35-f48f-4700-ab8a-a1b79e50e51b",
+    "goldentrophy": "91e16e35-f48f-4700-ab8a-a1b79e50e51b",
+    "questgoblina": "91e16e35-f48f-4700-ab8a-a1b79e50e51b",
+    "jumbotron": "acc06e66-c2d0-4361-b0cd-46246a4c455c",
+    "theriseofjumbotron": "acc06e66-c2d0-4361-b0cd-46246a4c455c",
+    "crimsoncauldron": "949fa41f-4347-45c0-b7ac-489129174045",
+    "curseofthecrimsoncauldron": "949fa41f-4347-45c0-b7ac-489129174045",
+    "isleoflostskulls": "7e01cfe0-820a-406f-b1b3-0a5bf575235c",
+    "theisleoflostskulls": "7e01cfe0-820a-406f-b1b3-0a5bf575235c",
+    "soccer": "6d5eea4b-f069-4ed0-9916-0e2f07df0d03",
+    "arttesting": "42699ed2-0c1b-4f3d-93a2-ce01dfce7a79",
+    "arttestingperf": "03a2f8aa-1cdc-4b11-8783-87aaa3713bad",
+    "dormphotostudio": "7ef6a766-0e3d-4671-bc6f-69c0e081e94b",
+    "performancehall": "9932f88f-3929-43a0-a012-a40b5128e346",
+    "roomcalibration": "f5fbd9c9-e853-4036-9d48-5f68e861af04",
+    "park": "0a864c86-5a71-4e18-8041-8124e4dc9d98",
+    "lasertag": "239e676c-f12f-489f-bf3a-d4c383d692c3",
+    "warehouse": "239e676c-f12f-489f-bf3a-d4c383d692c3",
+    "registration": "a75f7547-79eb-47c6-8986-6767abcb4f92",
 }
 _CHARADES_WORDS = [
     {"EN_US": "Basketball", "Difficulty": 0},
@@ -995,10 +1005,28 @@ async def _remove_image_reference(request: Request, context: Any, state_key: str
 
 def _normalise_activity_level_id(value: Any) -> str:
     text = str(value or "").strip()
-    if text in _KNOWN_ACTIVITY_LEVEL_IDS:
-        return text
+    if not text:
+        return _DORM_ACTIVITY_LEVEL_ID
+    known = _KNOWN_ACTIVITY_LEVEL_IDS_CASEFOLD.get(text.casefold())
+    if known:
+        return known
     key = re.sub(r"[^a-z0-9]+", "", text.casefold())
     return _ACTIVITY_LEVEL_ALIASES.get(key, _DORM_ACTIVITY_LEVEL_ID)
+
+
+def _activity_levels_from_payload(payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return [_DORM_ACTIVITY_LEVEL_ID]
+    for key in ("ActivityLevelIds", "activityLevelIds"):
+        values = [
+            _normalise_activity_level_id(item)
+            for item in _list_values(payload.get(key))
+            if item is not None
+        ]
+        values = [item for item in values if item in _KNOWN_ACTIVITY_LEVEL_IDS]
+        if values:
+            return values
+    return [_activity_level_from_payload(payload)]
 
 
 def _activity_level_from_payload(payload: Any) -> str:
@@ -1025,16 +1053,28 @@ def _charades_words_payload() -> list[dict[str, Any]]:
     return words
 
 
+def _game_session_id_for(player_id: int | None, activity_level_id: str) -> int:
+    player_part = max(0, _int_value(player_id))
+    level_part = int(activity_level_id[:8], 16)
+    return ((player_part * 1_000_003) + level_part) % 2_147_483_647 or 1
+
+
+def _game_session_room_id_for(player_id: int | None, activity_level_id: str) -> str:
+    player_part = max(0, _int_value(player_id))
+    return f"offline-{player_part}-{activity_level_id[:8]}"
+
+
 def _game_session_payload(player_id: int | None = None, activity_level_id: str | None = None) -> dict[str, Any]:
     activity_level_id = _normalise_activity_level_id(activity_level_id)
+    name = _ACTIVITY_LEVEL_DISPLAY_NAMES.get(activity_level_id, "Dorm Room")
     return {
-        "GameSessionId": 1,
+        "GameSessionId": _game_session_id_for(player_id, activity_level_id),
         "RegionId": "offline",
-        "RoomId": "offline",
+        "RoomId": _game_session_room_id_for(player_id, activity_level_id),
         "EventId": None,
         "RecRoomId": None,
         "CreatorPlayerId": player_id,
-        "Name": "Dorm Room",
+        "Name": name,
         "ActivityLevelId": activity_level_id,
         "ActivityLevelIds": [activity_level_id],
         "Private": True,
@@ -1046,11 +1086,12 @@ def _game_session_payload(player_id: int | None = None, activity_level_id: str |
 
 
 def _game_session_response(request: Request, payload: Any = None) -> dict[str, Any]:
+    activity_level_id = _activity_levels_from_payload(payload)[0]
     return {
         "Result": 0,
         "GameSession": _game_session_payload(
             _profile_header(request),
-            _activity_level_from_payload(payload),
+            activity_level_id,
         ),
     }
 
@@ -1461,6 +1502,14 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
         return JSONResponse(response_payload)
 
     if path in {"api/gamesessions/v2/reportjoinresult", "api/gamesessions/v2/block"} and method == "POST":
+        payload = await _json_body(request, {})
+        _trace_recnet(
+            context,
+            "gamesession_report",
+            path=path,
+            method=method,
+            request_payload=payload,
+        )
         return _empty_ok()
 
     raise HTTPException(status_code=501, detail="Game sessions API route confirmed but not implemented.")
