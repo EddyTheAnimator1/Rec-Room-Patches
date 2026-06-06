@@ -61,14 +61,14 @@ _ACTIVITY_LEVEL_ALIASES = {
     "soccer": "Soccer",
 }
 _CHARADES_WORDS = [
-    {"Word": "Basketball", "Category": "Thing", "Difficulty": 0},
-    {"Word": "Robot", "Category": "Thing", "Difficulty": 0},
-    {"Word": "Airplane", "Category": "Thing", "Difficulty": 0},
-    {"Word": "Pirate", "Category": "Person", "Difficulty": 0},
-    {"Word": "Dragon", "Category": "Thing", "Difficulty": 1},
-    {"Word": "Guitar", "Category": "Thing", "Difficulty": 0},
-    {"Word": "Juggling", "Category": "Action", "Difficulty": 1},
-    {"Word": "Treasure Chest", "Category": "Thing", "Difficulty": 1},
+    {"EN_US": "Basketball", "Difficulty": 0},
+    {"EN_US": "Robot", "Difficulty": 0},
+    {"EN_US": "Airplane", "Difficulty": 0},
+    {"EN_US": "Pirate", "Difficulty": 0},
+    {"EN_US": "Dragon", "Difficulty": 1},
+    {"EN_US": "Guitar", "Difficulty": 0},
+    {"EN_US": "Juggling", "Difficulty": 1},
+    {"EN_US": "Treasure Chest", "Difficulty": 1},
 ]
 
 _KNOWN_UNIMPLEMENTED_PREFIXES: tuple[str, ...] = ()
@@ -947,7 +947,18 @@ def _activity_level_from_payload(payload: Any) -> str:
 
 
 def _charades_words_payload() -> list[dict[str, Any]]:
-    return [dict(item) for item in _CHARADES_WORDS]
+    words: list[dict[str, Any]] = []
+    for item in _CHARADES_WORDS:
+        text = str(item.get("EN_US") or "").strip()
+        if not text:
+            continue
+        words.append(
+            {
+                "EN_US": text,
+                "Difficulty": _int_value(item.get("Difficulty"), 0),
+            }
+        )
+    return words
 
 
 def _game_session_payload(player_id: int | None = None, activity_level_id: str | None = None) -> dict[str, Any]:
