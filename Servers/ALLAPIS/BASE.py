@@ -22,7 +22,9 @@ from starlette import status
 
 
 API_VERSION_RE = re.compile(r"^[A-Za-z0-9_]+$")
-ALLOWED_DATA_EXTENSIONS = {".json", ".png", ".jpg", ".jpeg"}
+IMAGE_DATA_DIR_NAME = "IMAGES"
+ALLOWED_DATA_ROOT_EXTENSIONS = {".json"}
+ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 SQLITE_SIDECAR_RE = re.compile(r"^database\.sqlite3(?:-(?:journal|wal|shm))?$")
 DEFAULT_LOCAL_PORT = 7979
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
@@ -104,31 +106,45 @@ def load_settings() -> Settings:
     )
 
 
-def ensure_runtime_directories(settings: Settings) -> None:
+def ensure_runtime_directories(settings: Settings) -> dict[str, str]:
     settings.api_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / IMAGE_DATA_DIR_NAME).mkdir(parents=True, exist_ok=True)
+    legacy_image_moves = migrate_legacy_root_images(settings.data_dir)
     enforce_data_directory_policy(settings.data_dir)
+    return legacy_image_moves
 
 
 def is_allowed_data_file(path: Path, data_dir: Path) -> bool:
     resolved = path.resolve()
     data_root = data_dir.resolve()
     try:
-        resolved.relative_to(data_root)
+        relative = resolved.relative_to(data_root)
     except ValueError:
         return False
     if not resolved.is_file():
         return False
     name = resolved.name
-    if SQLITE_SIDECAR_RE.match(name):
+    if len(relative.parts) == 1 and SQLITE_SIDECAR_RE.match(name):
         return True
-    return resolved.suffix.lower() in ALLOWED_DATA_EXTENSIONS
+    if len(relative.parts) == 1:
+        return resolved.suffix.lower() in ALLOWED_DATA_ROOT_EXTENSIONS
+    if len(relative.parts) == 2 and relative.parts[0] == IMAGE_DATA_DIR_NAME:
+        return resolved.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+    return False
 
 
 def enforce_data_directory_policy(data_dir: Path) -> None:
     for child in data_dir.iterdir():
         if child.is_dir():
-            raise ConfigurationError(f"DATA may not contain subdirectories: {child.name}")
+            if child.name != IMAGE_DATA_DIR_NAME:
+                raise ConfigurationError(f"DATA may not contain subdirectories except {IMAGE_DATA_DIR_NAME}: {child.name}")
+            for nested in child.rglob("*"):
+                if nested.is_dir():
+                    raise ConfigurationError(f"DATA/{IMAGE_DATA_DIR_NAME} may not contain subdirectories: {nested.name}")
+                if nested.is_file() and not is_allowed_data_file(nested, data_dir):
+                    raise ConfigurationError(f"Unsupported file in DATA/{IMAGE_DATA_DIR_NAME}: {nested.name}")
+            continue
         if child.is_file() and not is_allowed_data_file(child, data_dir):
             raise ConfigurationError(f"Unsupported file in DATA: {child.name}")
 
@@ -138,7 +154,7 @@ def validate_data_write_path(data_dir: Path, filename: str) -> Path:
         raise ValueError("DATA filename must not include path separators.")
     path = (data_dir / filename).resolve()
     if not is_allowed_data_filename(path.name):
-        raise ValueError("DATA only accepts .json, .png, .jpg, .jpeg, and database.sqlite3 files.")
+        raise ValueError("DATA root only accepts .json and database.sqlite3 files.")
     if data_dir.resolve() not in path.parents:
         raise ValueError("DATA write path escaped the DATA directory.")
     return path
@@ -147,7 +163,61 @@ def validate_data_write_path(data_dir: Path, filename: str) -> Path:
 def is_allowed_data_filename(filename: str) -> bool:
     if SQLITE_SIDECAR_RE.match(filename):
         return True
-    return Path(filename).suffix.lower() in ALLOWED_DATA_EXTENSIONS
+    return Path(filename).suffix.lower() in ALLOWED_DATA_ROOT_EXTENSIONS
+
+
+def validate_image_write_path(data_dir: Path, filename: str) -> Path:
+    if Path(filename).name != filename:
+        raise ValueError("Image filename must not include path separators.")
+    if Path(filename).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+        raise ValueError("DATA/IMAGES only accepts .png, .jpg, and .jpeg files.")
+    image_dir = (data_dir / IMAGE_DATA_DIR_NAME).resolve()
+    image_dir.mkdir(parents=True, exist_ok=True)
+    path = (image_dir / filename).resolve()
+    if image_dir not in path.parents:
+        raise ValueError("Image write path escaped DATA/IMAGES.")
+    return path
+
+
+def migrate_legacy_root_images(data_dir: Path) -> dict[str, str]:
+    image_dir = data_dir / IMAGE_DATA_DIR_NAME
+    image_dir.mkdir(parents=True, exist_ok=True)
+    moved: dict[str, str] = {}
+    for child in data_dir.iterdir():
+        if not child.is_file() or child.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+            continue
+        target = image_dir / child.name
+        if target.exists():
+            target = image_dir / f"{child.stem}-{uuid.uuid4().hex}{child.suffix.lower()}"
+        child.replace(target)
+        moved[child.name] = f"{IMAGE_DATA_DIR_NAME}/{target.name}"
+    return moved
+
+
+def migrate_legacy_data_asset_records(db: Database, legacy_image_moves: dict[str, str]) -> None:
+    updates = dict(legacy_image_moves)
+    with db.connect() as conn:
+        rows = conn.execute("SELECT relative_path FROM data_assets").fetchall()
+    for row in rows:
+        relative_path = row["relative_path"]
+        if "/" not in relative_path and "\\" not in relative_path and Path(relative_path).suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
+            updates.setdefault(relative_path, f"{IMAGE_DATA_DIR_NAME}/{relative_path}")
+    if not updates:
+        return
+    with db.transaction() as conn:
+        for old_path, new_path in updates.items():
+            conn.execute(
+                """
+                UPDATE data_assets
+                SET relative_path = ?
+                WHERE relative_path = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM data_assets AS existing
+                      WHERE existing.relative_path = ?
+                  )
+                """,
+                (new_path, old_path, new_path),
+            )
 
 
 def utc_now() -> str:
@@ -515,8 +585,9 @@ class ServerContext:
 
         asset_id = str(uuid.uuid4())
         filename = f"{asset_id}{ext}"
-        path = validate_data_write_path(self.data_dir, filename)
+        path = validate_image_write_path(self.data_dir, filename)
         path.write_bytes(content)
+        relative_path = f"{IMAGE_DATA_DIR_NAME}/{filename}"
 
         now = utc_now()
         with self.db.transaction() as conn:
@@ -531,7 +602,7 @@ class ServerContext:
                 (
                     asset_id,
                     owner_player_id,
-                    filename,
+                    relative_path,
                     mime_type,
                     ext,
                     purpose,
@@ -541,7 +612,7 @@ class ServerContext:
             )
         return {
             "asset_id": asset_id,
-            "relative_path": filename,
+            "relative_path": relative_path,
             "mime_type": mime_type,
             "file_ext": ext,
             "purpose": purpose,
@@ -590,9 +661,10 @@ def load_version_module(settings: Settings, api_version: str) -> Any:
 
 def create_app() -> FastAPI:
     settings = load_settings()
-    ensure_runtime_directories(settings)
+    legacy_image_moves = ensure_runtime_directories(settings)
     db = Database(settings.db_path)
     initialize_database(db)
+    migrate_legacy_data_asset_records(db, legacy_image_moves)
     context = ServerContext(settings, db)
     limiter = RateLimiter(limit=120 if settings.is_railway else 600, window_seconds=60)
 
