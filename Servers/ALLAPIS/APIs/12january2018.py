@@ -21,6 +21,55 @@ _DEFAULT_AMPLITUDE_KEY = "f1779b982f1c09aed3adb3cca563cbc2"
 _DEFAULT_OUTFIT_SELECTIONS = ""
 _DEFAULT_SKIN_COLOR = ""
 _DEFAULT_HAIR_COLOR = ""
+_DORM_ACTIVITY_LEVEL_ID = "DormRoom"
+_KNOWN_ACTIVITY_LEVEL_IDS = {
+    "DormRoom",
+    "RecCenter",
+    "Paintball",
+    "PaintballCaptureTheFlag",
+    "QuestForTheGoldenTrophy",
+    "Charades",
+    "DiscGolf",
+    "Dodgeball",
+    "Paddleball",
+    "Bowling",
+    "Soccer",
+}
+_ACTIVITY_LEVEL_ALIASES = {
+    "": _DORM_ACTIVITY_LEVEL_ID,
+    "dorm": _DORM_ACTIVITY_LEVEL_ID,
+    "dormroom": _DORM_ACTIVITY_LEVEL_ID,
+    "dorm_room": _DORM_ACTIVITY_LEVEL_ID,
+    "dorm room": _DORM_ACTIVITY_LEVEL_ID,
+    "recroom": "RecCenter",
+    "rec_room": "RecCenter",
+    "rec room": "RecCenter",
+    "reccenter": "RecCenter",
+    "rec_center": "RecCenter",
+    "rec center": "RecCenter",
+    "paintball": "Paintball",
+    "capturetheflag": "PaintballCaptureTheFlag",
+    "paintballcapturetheflag": "PaintballCaptureTheFlag",
+    "questforthegoldentrophy": "QuestForTheGoldenTrophy",
+    "goldentrophy": "QuestForTheGoldenTrophy",
+    "charades": "Charades",
+    "disc_golf": "DiscGolf",
+    "discgolf": "DiscGolf",
+    "dodgeball": "Dodgeball",
+    "paddleball": "Paddleball",
+    "bowling": "Bowling",
+    "soccer": "Soccer",
+}
+_CHARADES_WORDS = [
+    {"Word": "Basketball", "Category": "Thing", "Difficulty": 0},
+    {"Word": "Robot", "Category": "Thing", "Difficulty": 0},
+    {"Word": "Airplane", "Category": "Thing", "Difficulty": 0},
+    {"Word": "Pirate", "Category": "Person", "Difficulty": 0},
+    {"Word": "Dragon", "Category": "Thing", "Difficulty": 1},
+    {"Word": "Guitar", "Category": "Thing", "Difficulty": 0},
+    {"Word": "Juggling", "Category": "Action", "Difficulty": 1},
+    {"Word": "Treasure Chest", "Category": "Thing", "Difficulty": 1},
+]
 
 _KNOWN_UNIMPLEMENTED_PREFIXES: tuple[str, ...] = ()
 
@@ -880,16 +929,38 @@ async def _remove_image_reference(request: Request, context: Any, state_key: str
         _save_state(context, row["player_id"], state)
 
 
-def _game_session_payload(player_id: int | None = None) -> dict[str, Any]:
+def _normalise_activity_level_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in _KNOWN_ACTIVITY_LEVEL_IDS:
+        return text
+    key = re.sub(r"[^a-z0-9]+", "", text.casefold())
+    return _ACTIVITY_LEVEL_ALIASES.get(key, _DORM_ACTIVITY_LEVEL_ID)
+
+
+def _activity_level_from_payload(payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key in ("ActivityLevelId", "activityLevelId", "Activity", "activity", "Level", "level"):
+            activity = payload.get(key)
+            if activity is not None:
+                return _normalise_activity_level_id(activity)
+    return _DORM_ACTIVITY_LEVEL_ID
+
+
+def _charades_words_payload() -> list[dict[str, Any]]:
+    return [dict(item) for item in _CHARADES_WORDS]
+
+
+def _game_session_payload(player_id: int | None = None, activity_level_id: str | None = None) -> dict[str, Any]:
+    activity_level_id = _normalise_activity_level_id(activity_level_id)
     return {
         "GameSessionId": 1,
         "RegionId": "offline",
-        "RoomId": "offline",
+        "RoomId": 1,
         "EventId": None,
         "RecRoomId": None,
         "CreatorPlayerId": player_id,
         "Name": "Dorm Room",
-        "ActivityLevelId": "DORM_ROOM",
+        "ActivityLevelId": activity_level_id,
         "Private": True,
         "Sandbox": False,
         "GameInProgress": False,
@@ -898,10 +969,13 @@ def _game_session_payload(player_id: int | None = None) -> dict[str, Any]:
     }
 
 
-def _game_session_response(request: Request) -> dict[str, Any]:
+def _game_session_response(request: Request, payload: Any = None) -> dict[str, Any]:
     return {
         "Result": 0,
-        "GameSession": _game_session_payload(_profile_header(request)),
+        "GameSession": _game_session_payload(
+            _profile_header(request),
+            _activity_level_from_payload(payload),
+        ),
     }
 
 
@@ -925,7 +999,7 @@ def _room_payload(state: dict[str, Any] | None = None, player_id: int | None = N
         "Description": str(state.get("room_description") or ""),
         "CreatorPlayerId": creator_id,
         "DataBlobName": str(state.get("room_data_blob_name") or ""),
-        "ActivityLevelId": str(state.get("room_activity_level_id") or "DORM_ROOM"),
+        "ActivityLevelId": _normalise_activity_level_id(state.get("room_activity_level_id")),
         "IsSandbox": bool(state.get("room_is_sandbox", False)),
         "MaxPlayers": _int_value(state.get("room_max_players"), 1),
         "FeaturedOrder": _int_value(state.get("room_featured_order"), 0),
@@ -1297,7 +1371,8 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
         }
         and method == "POST"
     ):
-        return JSONResponse(_game_session_response(request))
+        payload = await _json_body(request, {})
+        return JSONResponse(_game_session_response(request, payload))
 
     if path in {"api/gamesessions/v2/reportjoinresult", "api/gamesessions/v2/block"} and method == "POST":
         return _empty_ok()
@@ -1332,7 +1407,7 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
         if row and isinstance(payload, dict):
             state["room_id"] = _room_id_for(state, player_id)
             state["room_creator_id"] = player_id or 0
-            state["room_activity_level_id"] = str(payload.get("ActivityLevelId") or "DORM_ROOM")
+            state["room_activity_level_id"] = _normalise_activity_level_id(payload.get("ActivityLevelId"))
             state["room_name"] = str(payload.get("Name") or "Dorm Room")
             state["room_description"] = str(payload.get("Description") or "")
             state["room_accessibility"] = _int_value(payload.get("Accessibility"), 0)
@@ -1423,6 +1498,9 @@ async def handle_http(route_path: str, request: Request, context: Any) -> Respon
     if path == "api/config/v1/amplitude" and method == "GET":
         return JSONResponse({"AmplitudeKey": _DEFAULT_AMPLITUDE_KEY})
 
+    if "charades" in path.casefold() and "word" in path.casefold() and method == "GET":
+        return JSONResponse(_charades_words_payload())
+
     if path.startswith("api/platformlogin/"):
         return await _handle_platformlogin(path, request, context)
 
@@ -1497,9 +1575,10 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
 
     await websocket.accept()
     try:
-        await websocket.receive_text()
         await websocket.send_text(json.dumps({"SessionId": _now_ticks()}))
         while True:
-            await websocket.receive_text()
+            message = await websocket.receive_text()
+            if message.strip().casefold() in {"ping", "heartbeat"}:
+                await websocket.send_text(json.dumps({"Type": "Heartbeat", "SentAt": _now_ticks()}))
     except WebSocketDisconnect:
         return
