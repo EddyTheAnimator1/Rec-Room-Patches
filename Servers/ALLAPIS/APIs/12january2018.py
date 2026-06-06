@@ -18,6 +18,9 @@ from fastapi.responses import JSONResponse, Response
 
 API_VERSION = "12january2018"
 _DEFAULT_AMPLITUDE_KEY = "f1779b982f1c09aed3adb3cca563cbc2"
+_DEFAULT_OUTFIT_SELECTIONS = ""
+_DEFAULT_SKIN_COLOR = ""
+_DEFAULT_HAIR_COLOR = ""
 
 _KNOWN_UNIMPLEMENTED_PREFIXES: tuple[str, ...] = ()
 
@@ -82,6 +85,39 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _image_type(content: bytes) -> tuple[str, str] | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png", "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg", "image/jpeg"
+    return None
+
+
+def _multipart_field(body: bytes, content_type: str, field_name: str) -> bytes | None:
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        return None
+    boundary = b"--" + match.group(1).encode("utf-8")
+    for raw_part in body.split(boundary):
+        part = raw_part.strip()
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip()
+        header_blob, separator, payload = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        headers = header_blob.decode("utf-8", errors="ignore")
+        disposition_match = re.search(
+            r'content-disposition:.*name="' + re.escape(field_name) + r'"',
+            headers,
+            re.IGNORECASE,
+        )
+        if disposition_match:
+            return payload.rstrip(b"\r\n")
+    return None
+
+
 def _list_values(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -114,7 +150,7 @@ def _profile_header(request: Request) -> int | None:
 
 
 def _load_state(context: Any, player_id: str) -> dict[str, Any]:
-    with context.db.connect() as conn:
+    with context.db.connection() as conn:
         row = conn.execute(
             "SELECT state_json FROM player_version_state WHERE player_id = ? AND api_version = ?",
             (player_id, API_VERSION),
@@ -143,7 +179,7 @@ def _save_state(context: Any, player_id: str, state: dict[str, Any]) -> None:
 
 
 def _row_by_recnet_id(context: Any, recnet_id: int) -> Any | None:
-    with context.db.connect() as conn:
+    with context.db.connection() as conn:
         return conn.execute(
             """
             SELECT p.*, pvs.state_json
@@ -157,7 +193,7 @@ def _row_by_recnet_id(context: Any, recnet_id: int) -> Any | None:
 
 
 def _row_by_platform(context: Any, platform: int, platform_id: str) -> Any | None:
-    with context.db.connect() as conn:
+    with context.db.connection() as conn:
         return conn.execute(
             """
             SELECT p.*, pvs.state_json
@@ -200,6 +236,20 @@ def _seed_new_player_preferences(state: dict[str, Any]) -> bool:
     if not state.get("new_player_preferences_seeded"):
         state["new_player_preferences_seeded"] = True
         changed = True
+    return changed
+
+
+def _seed_avatar_defaults(state: dict[str, Any]) -> bool:
+    changed = False
+    defaults = {
+        "outfit_selections": _DEFAULT_OUTFIT_SELECTIONS,
+        "skin_color": _DEFAULT_SKIN_COLOR,
+        "hair_color": _DEFAULT_HAIR_COLOR,
+    }
+    for key, value in defaults.items():
+        if key not in state or state[key] is None:
+            state[key] = value
+            changed = True
     return changed
 
 
@@ -302,6 +352,7 @@ def _ensure_player(
     state.setdefault("login_token", f"local-{API_VERSION}-{recnet_id}")
     state.setdefault("analytics_session_id", _now_ticks())
     _seed_new_player_preferences(state)
+    _seed_avatar_defaults(state)
     _save_state(context, player["player_id"], state)
     return _profile_from_player(player, state)
 
@@ -452,7 +503,7 @@ async def _handle_settings(path: str, request: Request, context: Any) -> Respons
 
 
 def _player_rows(context: Any) -> list[Any]:
-    with context.db.connect() as conn:
+    with context.db.connection() as conn:
         return conn.execute(
             """
             SELECT p.*, pvs.state_json
@@ -627,15 +678,198 @@ def _forbidden(message: str) -> JSONResponse:
 
 def _avatar_payload(state: dict[str, Any]) -> dict[str, Any]:
     return {
-        "Id": int(state.get("recnet_id") or 0),
-        "AvatarItemDesc": str(state.get("avatar_item_desc") or ""),
-        "OutfitSelections": str(state.get("outfit_selections") or ""),
+        "OutfitSelections": str(state.get("outfit_selections") if state.get("outfit_selections") is not None else _DEFAULT_OUTFIT_SELECTIONS),
+        "SkinColor": str(state.get("skin_color") if state.get("skin_color") is not None else _DEFAULT_SKIN_COLOR),
+        "HairColor": str(state.get("hair_color") if state.get("hair_color") is not None else _DEFAULT_HAIR_COLOR),
+    }
+
+
+def _saved_outfit_payload(raw: Any, slot: int = 0) -> dict[str, Any]:
+    item = raw if isinstance(raw, dict) else {}
+    return {
+        "Slot": str(_int_value(item.get("Slot"), slot)),
+        "PreviewImageName": str(item.get("PreviewImageName") or ""),
+        "OutfitSelections": str(item.get("OutfitSelections") if item.get("OutfitSelections") is not None else _DEFAULT_OUTFIT_SELECTIONS),
+        "SkinColor": str(item.get("SkinColor") if item.get("SkinColor") is not None else _DEFAULT_SKIN_COLOR),
+        "HairColor": str(item.get("HairColor") if item.get("HairColor") is not None else _DEFAULT_HAIR_COLOR),
+    }
+
+
+def _avatar_item_payload(raw: Any) -> dict[str, Any]:
+    item = raw if isinstance(raw, dict) else {}
+    return {
+        "AvatarItemDesc": str(item.get("AvatarItemDesc") or ""),
+        "UnlockedLevel": _int_value(item.get("UnlockedLevel"), 0),
     }
 
 
 def _state_list(state: dict[str, Any], key: str) -> list[Any]:
     value = state.get(key)
     return value if isinstance(value, list) else []
+
+
+def _state_string_list(state: dict[str, Any], key: str) -> list[str]:
+    values: list[str] = []
+    for value in _state_list(state, key):
+        text = str(value or "")
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _storefront_type_from_path(path: str, payload: Any = None) -> int:
+    match = re.fullmatch(r"api/storefronts/v1/(?:balance/)?(\d+)", path)
+    if match:
+        return _int_value(match.group(1))
+    if isinstance(payload, dict):
+        return _int_value(payload.get("StorefrontType"))
+    return 0
+
+
+def _storefront_balance_payload(storefront_type: int, balance: int = 0) -> dict[str, Any]:
+    return {"Balance": int(balance), "StorefrontType": int(storefront_type)}
+
+
+def _storefront_update_payload(storefront_type: int, balance: int = 0) -> dict[str, Any]:
+    payload = _storefront_balance_payload(storefront_type, balance)
+    payload["BalanceUpdates"] = []
+    return payload
+
+
+def _saved_image_names(context: Any, row: Any | None, state: dict[str, Any]) -> list[str]:
+    names = _state_string_list(state, "saved_image_names")
+    if not row:
+        return names
+    with context.db.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT asset_id
+            FROM data_assets
+            WHERE owner_player_id = ?
+              AND purpose = ?
+            ORDER BY created_at ASC
+            """,
+            (row["player_id"], f"{API_VERSION}.saved_image"),
+        ).fetchall()
+    for asset in rows:
+        name = str(asset["asset_id"])
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def _image_asset_row(context: Any, image_name: str) -> Any | None:
+    if not image_name:
+        return None
+    with context.db.connection() as conn:
+        return conn.execute(
+            """
+            SELECT asset_id, relative_path, mime_type
+            FROM data_assets
+            WHERE asset_id = ?
+            """,
+            (image_name,),
+        ).fetchone()
+
+
+def _stored_image_response(context: Any, image_name: str) -> Response:
+    asset = _image_asset_row(context, image_name)
+    if not asset:
+        return Response(status_code=404)
+    image_path = context.data_dir / asset["relative_path"]
+    if not image_path.is_file():
+        return Response(status_code=404)
+    return Response(image_path.read_bytes(), media_type=asset["mime_type"])
+
+
+async def _store_image_upload(
+    path: str,
+    request: Request,
+    context: Any,
+    *,
+    purpose: str,
+    state_key: str | None,
+) -> str:
+    row, state = _current_player(context, request)
+    body = await _body_bytes(request)
+    content_type = request.headers.get("content-type", "")
+    image = _multipart_field(body, content_type, "image")
+    if image is None and _image_type(body):
+        image = body
+    if not image:
+        raise HTTPException(status_code=400, detail="Missing image upload.")
+
+    detected = _image_type(image)
+    if detected is None:
+        raise HTTPException(status_code=400, detail="Unsupported image upload format.")
+    file_ext, mime_type = detected
+    asset = context.save_image_bytes(
+        owner_player_id=row["player_id"] if row else None,
+        content=image,
+        file_ext=file_ext,
+        mime_type=mime_type,
+        purpose=f"{API_VERSION}.{purpose}",
+        metadata={
+            "route": path,
+            "recnet_id": _profile_header(request),
+            "gameSessionId": request.query_params.get("gameSessionId"),
+            "oldImageName": request.query_params.get("oldImageName"),
+        },
+    )
+    image_name = str(asset["asset_id"])
+    if row:
+        if state_key:
+            names = _state_string_list(state, state_key)
+            old_name = str(request.query_params.get("oldImageName") or "")
+            if old_name:
+                names = [name for name in names if name != old_name]
+            if image_name not in names:
+                names.append(image_name)
+            state[state_key] = names
+        if purpose == "profile_image":
+            state["profile_image_name"] = image_name
+            with context.db.transaction() as conn:
+                conn.execute(
+                    "UPDATE players SET profile_picture_asset_id = ?, updated_at = ? WHERE player_id = ?",
+                    (asset["asset_id"], _now_iso(), row["player_id"]),
+                )
+        _save_state(context, row["player_id"], state)
+    return image_name
+
+
+async def _remove_image_reference(request: Request, context: Any, state_key: str, purpose: str) -> None:
+    row, state = _current_player(context, request)
+    payload = await _json_body(request, {})
+    image_name = str(payload.get("ImageName") or "") if isinstance(payload, dict) else ""
+    if row and image_name:
+        state[state_key] = [name for name in _state_string_list(state, state_key) if name != image_name]
+        with context.db.connection() as conn:
+            asset = conn.execute(
+                """
+                SELECT relative_path
+                FROM data_assets
+                WHERE asset_id = ?
+                  AND owner_player_id = ?
+                  AND purpose = ?
+                """,
+                (image_name, row["player_id"], f"{API_VERSION}.{purpose}"),
+            ).fetchone()
+        if asset:
+            image_path = (context.data_dir / asset["relative_path"]).resolve()
+            data_dir = context.data_dir.resolve()
+            if data_dir in image_path.parents and image_path.is_file():
+                image_path.unlink()
+            with context.db.transaction() as conn:
+                conn.execute(
+                    """
+                    DELETE FROM data_assets
+                    WHERE asset_id = ?
+                      AND owner_player_id = ?
+                      AND purpose = ?
+                    """,
+                    (image_name, row["player_id"], f"{API_VERSION}.{purpose}"),
+                )
+        _save_state(context, row["player_id"], state)
 
 
 def _game_session_payload(player_id: int | None = None) -> dict[str, Any]:
@@ -807,33 +1041,40 @@ async def _handle_avatar(path: str, request: Request, context: Any) -> Response:
     row, state = _current_player(context, request)
 
     if path == "api/avatar/v2" and method == "GET":
+        if row and _seed_avatar_defaults(state):
+            _save_state(context, row["player_id"], state)
         return JSONResponse(_avatar_payload(state))
 
     if path == "api/avatar/v2/set" and method == "POST":
         payload = await _json_body(request, {})
         if row and isinstance(payload, dict):
-            state["avatar_item_desc"] = str(payload.get("AvatarItemDesc") or payload.get("avatarItemDesc") or "")
             state["outfit_selections"] = str(payload.get("OutfitSelections") or payload.get("outfitSelections") or "")
+            state["skin_color"] = str(payload.get("SkinColor") or payload.get("skinColor") or "")
+            state["hair_color"] = str(payload.get("HairColor") or payload.get("hairColor") or "")
             _save_state(context, row["player_id"], state)
         return _empty_ok()
 
     if path == "api/avatar/v1/saved" and method == "GET":
-        return JSONResponse(_state_list(state, "saved_outfits"))
+        return JSONResponse(
+            [_saved_outfit_payload(item, index) for index, item in enumerate(_state_list(state, "saved_outfits"))]
+        )
 
     if path == "api/avatar/v1/saved/set" and method == "POST":
         payload = await _json_body(request, {})
         if row:
             outfits = _state_list(state, "saved_outfits")
             if isinstance(payload, dict):
-                key = payload.get("Slot") or payload.get("Name") or payload.get("OutfitSlot") or len(outfits)
-                outfits = [item for item in outfits if item.get("Slot") != key] if all(isinstance(item, dict) for item in outfits) else []
-                payload["Slot"] = key
-                outfits.append(payload)
+                key = _int_value(payload.get("Slot"), len(outfits))
+                outfits = [item for item in outfits if not isinstance(item, dict) or _int_value(item.get("Slot")) != key]
+                outfits.append(_saved_outfit_payload(payload, key))
                 state["saved_outfits"] = outfits
                 _save_state(context, row["player_id"], state)
         return _empty_ok()
 
-    if path in {"api/avatar/v2/gifts", "api/avatar/v3/items"} and method == "GET":
+    if path == "api/avatar/v3/items" and method == "GET":
+        return JSONResponse([_avatar_item_payload(item) for item in _state_list(state, "avatar_items")])
+
+    if path == "api/avatar/v2/gifts" and method == "GET":
         return JSONResponse([])
 
     if path in {"api/avatar/v1/gifts/requestDrop", "api/avatar/v2/gifts/generate"} and method == "POST":
@@ -933,32 +1174,72 @@ async def _handle_misc_success_or_empty(path: str, request: Request, context: An
         return JSONResponse(_success_payload())
 
     if path.startswith("api/storefronts/v1/balance") and method == "GET":
-        return JSONResponse({"Balance": 0})
+        return JSONResponse(_storefront_balance_payload(_storefront_type_from_path(path)))
+
+    if path == "api/storefronts/v1/balance" and method == "POST":
+        payload = await _json_body(request, {})
+        return JSONResponse(_storefront_update_payload(_storefront_type_from_path(path, payload)))
 
     if re.fullmatch(r"api/storefronts/v1/\d+", path) and method == "GET":
         return JSONResponse([])
 
     if path == "api/storefronts/v1/buy" and method == "POST":
-        return JSONResponse(_success_payload())
+        payload = await _json_body(request, {})
+        return JSONResponse(_storefront_update_payload(_storefront_type_from_path(path, payload)))
 
     if path == "api/images/v1/listsaved" and method == "GET":
-        return JSONResponse([])
+        row, state = _current_player(context, request)
+        return JSONResponse({"Images": _saved_image_names(context, row, state)})
+
+    if path in {"api/images/v2/uploadsaved", "api/images/v1/uploadsavedsingle"} and method == "POST":
+        image_name = await _store_image_upload(
+            path,
+            request,
+            context,
+            purpose="saved_image",
+            state_key="saved_image_names",
+        )
+        return JSONResponse({"ImageName": image_name})
+
+    if path in {"api/images/v4/uploadtransient", "api/images/v1/uploadtransientsingle"} and method == "POST":
+        image_name = await _store_image_upload(
+            path,
+            request,
+            context,
+            purpose="transient_image",
+            state_key="transient_image_names",
+        )
+        return JSONResponse({"ImageName": image_name})
+
+    if path == "api/images/v3/profile" and method == "POST":
+        await _store_image_upload(
+            path,
+            request,
+            context,
+            purpose="profile_image",
+            state_key=None,
+        )
+        return _empty_ok()
+
+    if path == "api/images/v1/deletesaved" and method == "POST":
+        await _remove_image_reference(request, context, "saved_image_names", "saved_image")
+        return _empty_ok()
+
+    if path == "api/images/v2/deletetransient" and method == "POST":
+        await _remove_image_reference(request, context, "transient_image_names", "transient_image")
+        return _empty_ok()
 
     if (
         path
         in {
-            "api/images/v1/deletesaved",
-            "api/images/v2/deletetransient",
-            "api/images/v2/uploadsaved",
-            "api/images/v1/uploadsavedsingle",
             "api/images/v1/sendlink",
         }
         and method == "POST"
     ):
-        return JSONResponse(_success_payload())
+        return _empty_ok()
 
     if path.startswith("api/images/v1/named") and method == "GET":
-        return Response(status_code=404)
+        return _stored_image_response(context, str(request.query_params.get("img") or ""))
 
     raise HTTPException(status_code=501, detail="Route family confirmed but not implemented.")
 

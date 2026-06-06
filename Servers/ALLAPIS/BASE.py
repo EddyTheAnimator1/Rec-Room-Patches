@@ -196,7 +196,7 @@ def migrate_legacy_root_images(data_dir: Path) -> dict[str, str]:
 
 def migrate_legacy_data_asset_records(db: Database, legacy_image_moves: dict[str, str]) -> None:
     updates = dict(legacy_image_moves)
-    with db.connect() as conn:
+    with db.connection() as conn:
         rows = conn.execute("SELECT relative_path FROM data_assets").fetchall()
     for row in rows:
         relative_path = row["relative_path"]
@@ -234,6 +234,14 @@ class Database:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
+
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        conn = self.connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -513,7 +521,7 @@ class ServerContext:
                 return value
 
         setting_keys = (f"{api_version}.motd", "motd")
-        with self.db.connect() as conn:
+        with self.db.connection() as conn:
             for setting_key in setting_keys:
                 row = conn.execute("SELECT value_json FROM server_settings WHERE key = ?", (setting_key,)).fetchone()
                 value = self._decode_setting_string(row)
