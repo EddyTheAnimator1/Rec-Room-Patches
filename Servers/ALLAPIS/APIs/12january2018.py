@@ -6,9 +6,11 @@ Confirmed from first-party non-Photon client code in Assembly-CSharp.dll.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -22,75 +24,78 @@ _DEFAULT_OUTFIT_SELECTIONS = ""
 _DEFAULT_SKIN_COLOR = ""
 _DEFAULT_HAIR_COLOR = ""
 # 20180112 parses ActivityLevelId through the client ActivityRuntimeConfig.
-# These are ActivityLevel.Id values from that client era, not modern Rec Room API names.
-_DORM_ACTIVITY_LEVEL_ID = "Dorm Room"
+# Use the DLL-era ActivityLevel enum IDs here. Scene names such as "Dorm Room",
+# "Lounge", and "Paintball_Homestead" are not stable ActivityLevelId values.
+_DORM_ACTIVITY_LEVEL_ID = "DORM_ROOM"
 _KNOWN_ACTIVITY_LEVEL_IDS = {
-    "Dorm Room",
-    "Lounge",
-    "Paintball_Homestead",
-    "Paintball_Dam",
-    "Paintball_River",
-    "Paintball_ClearCut",
-    "Paintball_Quarry",
-    "Quest_Goblin_A",
-    "Quest_Goblin_B",
-    "Quest_Goblin_C",
-    "Quest_Goblin_S",
-    "Quest_SciFi_A",
-    "Quest_SciFi_B",
-    "Quest_SciFi_C",
-    "Quest_SciFi_S",
-    "Quest_Cauldron_A",
-    "Quest_Cauldron_B",
-    "Quest_Cauldron_C",
-    "Quest_Cauldron_S",
-    "Charades",
-    "Discgolf_Lake",
-    "Dodgeball",
-    "Paddleball",
-    "Soccer",
+    "DORM_ROOM",
+    "THE_LOUNGE",
+    "DORM_PHOTO_STUDIO",
+    "PAINTBALL",
+    "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "THE_RISE_OF_JUMBOTRON",
+    "CURSE_OF_THE_CRIMSON_CAULDRON",
+    "THE_ISLE_OF_LOST_SKULLS",
+    "CHARADES",
+    "DISC_GOLF",
+    "DODGEBALL",
+    "PADDLEBALL",
+    "SOCCER",
 }
 _ACTIVITY_LEVEL_ALIASES = {
     "": _DORM_ACTIVITY_LEVEL_ID,
     "dorm": _DORM_ACTIVITY_LEVEL_ID,
     "dormroom": _DORM_ACTIVITY_LEVEL_ID,
-    "recroom": "Lounge",
-    "reccenter": "Lounge",
-    "lounge": "Lounge",
-    "paintball": "Paintball_Homestead",
-    "paintballhomestead": "Paintball_Homestead",
-    "homestead": "Paintball_Homestead",
-    "paintballdam": "Paintball_Dam",
-    "dam": "Paintball_Dam",
-    "paintballriver": "Paintball_River",
-    "river": "Paintball_River",
-    "paintballclearcut": "Paintball_ClearCut",
-    "clearcut": "Paintball_ClearCut",
-    "paintballquarry": "Paintball_Quarry",
-    "quarry": "Paintball_Quarry",
-    "capturetheflag": "Paintball_Homestead",
-    "paintballcapturetheflag": "Paintball_Homestead",
-    "questforthegoldentrophy": "Quest_Goblin_A",
-    "goldentrophy": "Quest_Goblin_A",
-    "questgoblina": "Quest_Goblin_A",
-    "questgoblinb": "Quest_Goblin_B",
-    "questgoblinc": "Quest_Goblin_C",
-    "questgoblins": "Quest_Goblin_S",
-    "questscifia": "Quest_SciFi_A",
-    "questscifib": "Quest_SciFi_B",
-    "questscific": "Quest_SciFi_C",
-    "questscifis": "Quest_SciFi_S",
-    "jumbotron": "Quest_SciFi_A",
-    "questcauldrona": "Quest_Cauldron_A",
-    "questcauldronb": "Quest_Cauldron_B",
-    "questcauldronc": "Quest_Cauldron_C",
-    "questcauldrons": "Quest_Cauldron_S",
-    "charades": "Charades",
-    "discgolf": "Discgolf_Lake",
-    "discgolflake": "Discgolf_Lake",
-    "dodgeball": "Dodgeball",
-    "paddleball": "Paddleball",
-    "soccer": "Soccer",
+    "dormroomscene": _DORM_ACTIVITY_LEVEL_ID,
+    "dorm_room": _DORM_ACTIVITY_LEVEL_ID,
+    "dorm room": _DORM_ACTIVITY_LEVEL_ID,
+    "reccenter": "THE_LOUNGE",
+    "recroom": "THE_LOUNGE",
+    "rec_room": "THE_LOUNGE",
+    "rec center": "THE_LOUNGE",
+    "lounge": "THE_LOUNGE",
+    "the_lounge": "THE_LOUNGE",
+    "the lounge": "THE_LOUNGE",
+    "paintball": "PAINTBALL",
+    "paintballhomestead": "PAINTBALL",
+    "paintball_homestead": "PAINTBALL",
+    "homestead": "PAINTBALL",
+    "paintballdam": "PAINTBALL",
+    "paintball_dam": "PAINTBALL",
+    "dam": "PAINTBALL",
+    "paintballriver": "PAINTBALL",
+    "paintball_river": "PAINTBALL",
+    "river": "PAINTBALL",
+    "paintballclearcut": "PAINTBALL",
+    "paintball_clearcut": "PAINTBALL",
+    "clearcut": "PAINTBALL",
+    "paintballquarry": "PAINTBALL",
+    "paintball_quarry": "PAINTBALL",
+    "quarry": "PAINTBALL",
+    "capturetheflag": "PAINTBALL",
+    "paintballcapturetheflag": "PAINTBALL",
+    "questforthegoldentrophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "quest_for_the_golden_trophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "goldentrophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "golden trophy": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "questgoblina": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "quest_goblin_a": "QUEST_FOR_THE_GOLDEN_TROPHY",
+    "jumbotron": "THE_RISE_OF_JUMBOTRON",
+    "theriseofjumbotron": "THE_RISE_OF_JUMBOTRON",
+    "the_rise_of_jumbotron": "THE_RISE_OF_JUMBOTRON",
+    "crimsoncauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
+    "curseofthecrimsoncauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
+    "curse_of_the_crimson_cauldron": "CURSE_OF_THE_CRIMSON_CAULDRON",
+    "isleoflostskulls": "THE_ISLE_OF_LOST_SKULLS",
+    "the_isle_of_lost_skulls": "THE_ISLE_OF_LOST_SKULLS",
+    "charades": "CHARADES",
+    "disc_golf": "DISC_GOLF",
+    "discgolf": "DISC_GOLF",
+    "discgolflake": "DISC_GOLF",
+    "discgolf_lake": "DISC_GOLF",
+    "dodgeball": "DODGEBALL",
+    "paddleball": "PADDLEBALL",
+    "soccer": "SOCCER",
 }
 _CHARADES_WORDS = [
     {"EN_US": "Basketball", "Difficulty": 0},
@@ -164,6 +169,29 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     if not text:
         return default
     return text in {"1", "true", "yes", "on"}
+
+
+def _trace_enabled() -> bool:
+    return str(os.environ.get("RECNET_TRACE") or "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _trace_recnet(context: Any, event: str, **fields: Any) -> None:
+    if not _trace_enabled():
+        return
+    try:
+        data_dir = Path(getattr(context, "data_dir", "DATA"))
+        trace_dir = data_dir / "DEBUG"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "at": _now_iso(),
+            "api_version": API_VERSION,
+            "event": event,
+            **fields,
+        }
+        with (trace_dir / "20180112_recnet_trace.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except Exception:
+        return
 
 
 def _image_type(content: bytes) -> tuple[str, str] | None:
@@ -477,6 +505,10 @@ def _config_payload(context: Any) -> dict[str, Any]:
             "PreferFullRoomsFrequency": 0.7,
             "PreferEmptyRoomsFrequency": 0.3,
         },
+        # 20180112 keeps a runtime allow-list of ActivityLevelId values.
+        # Without this, the game session can deserialize yet still be rejected
+        # with "RecNet game session contains unknown activity level ID".
+        "ActivityLevelIds": sorted(_KNOWN_ACTIVITY_LEVEL_IDS),
         "LevelProgressionMaps": [
             {"Level": 1, "RequiredXp": 1000},
             {"Level": 2, "RequiredXp": 2000},
@@ -1004,6 +1036,7 @@ def _game_session_payload(player_id: int | None = None, activity_level_id: str |
         "CreatorPlayerId": player_id,
         "Name": "Dorm Room",
         "ActivityLevelId": activity_level_id,
+        "ActivityLevelIds": [activity_level_id],
         "Private": True,
         "Sandbox": False,
         "GameInProgress": False,
@@ -1415,7 +1448,17 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
         and method == "POST"
     ):
         payload = await _json_body(request, {})
-        return JSONResponse(_game_session_response(request, payload))
+        response_payload = _game_session_response(request, payload)
+        _trace_recnet(
+            context,
+            "gamesession_response",
+            path=path,
+            method=method,
+            request_payload=payload,
+            response_payload=response_payload,
+            selected_activity_level_id=response_payload.get("GameSession", {}).get("ActivityLevelId"),
+        )
+        return JSONResponse(response_payload)
 
     if path in {"api/gamesessions/v2/reportjoinresult", "api/gamesessions/v2/block"} and method == "POST":
         return _empty_ok()
@@ -1536,7 +1579,15 @@ async def handle_http(route_path: str, request: Request, context: Any) -> Respon
         return Response(status_code=200)
 
     if path == "api/config/v2" and method == "GET":
-        return JSONResponse(_config_payload(context))
+        payload = _config_payload(context)
+        _trace_recnet(
+            context,
+            "config_response",
+            path=path,
+            method=method,
+            activity_level_ids=payload.get("ActivityLevelIds"),
+        )
+        return JSONResponse(payload)
 
     if path == "api/config/v1/amplitude" and method == "GET":
         return JSONResponse({"AmplitudeKey": _DEFAULT_AMPLITUDE_KEY})
