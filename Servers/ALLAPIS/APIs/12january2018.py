@@ -258,14 +258,25 @@ def _list_values(value: Any) -> list[Any]:
     return [value]
 
 
+def _profile_id_from_headers(headers: Any) -> int | None:
+    value = headers.get("x-rec-room-profile")
+    profile_id = _int_value(value)
+    if profile_id > 0:
+        return profile_id
+
+    authorization = str(headers.get("authorization") or "").strip()
+    if authorization.casefold().startswith("bearer "):
+        authorization = authorization[7:].strip()
+    token_prefix = f"local-{API_VERSION}-"
+    if authorization.casefold().startswith(token_prefix.casefold()):
+        profile_id = _int_value(authorization[len(token_prefix) :])
+        if profile_id > 0:
+            return profile_id
+    return None
+
+
 def _profile_header(request: Request) -> int | None:
-    value = request.headers.get("x-rec-room-profile")
-    if not value:
-        return None
-    try:
-        return int(value)
-    except Exception:
-        return None
+    return _profile_id_from_headers(request.headers)
 
 
 def _load_state(context: Any, player_id: str) -> dict[str, Any]:
@@ -1091,12 +1102,16 @@ def _game_session_payload(player_id: int | None = None, activity_level_id: str |
     }
 
 
-def _game_session_response(request: Request, payload: Any = None) -> dict[str, Any]:
+def _game_session_response(
+    request: Request, payload: Any = None, player_id: int | None = None
+) -> dict[str, Any]:
     activity_level_id = _activity_levels_from_payload(payload)[0]
+    if player_id is None:
+        player_id = _profile_header(request)
     return {
         "Result": 0,
         "GameSession": _game_session_payload(
-            _profile_header(request),
+            player_id,
             activity_level_id,
         ),
     }
@@ -1119,10 +1134,47 @@ def _presence_ids_from_payload(payload: Any, fallback_player_id: int | None = No
     return ids
 
 
+def _game_session_player_id(request: Request, payload: Any) -> int | None:
+    player_id = _profile_header(request)
+    if player_id and player_id > 0:
+        return player_id
+    if not isinstance(payload, dict):
+        return None
+    for key in ("ExpectedPlayerIds", "expectedPlayerIds"):
+        for item in _list_values(payload.get(key)):
+            player_id = _int_value(item)
+            if player_id > 0:
+                return player_id
+    return None
+
+
+def _remember_presence_game_session(
+    context: Any,
+    row: Any | None,
+    state: dict[str, Any],
+    game_session: Any,
+) -> bool:
+    if not row or not isinstance(game_session, dict):
+        return False
+    state["presence_game_session"] = game_session
+    known_sessions = state.get("known_game_sessions")
+    if not isinstance(known_sessions, dict):
+        known_sessions = {}
+    session_id = _int_value(game_session.get("GameSessionId"))
+    if session_id:
+        known_sessions[str(session_id)] = game_session
+    if len(known_sessions) > 20:
+        known_sessions = dict(list(known_sessions.items())[-20:])
+    state["known_game_sessions"] = known_sessions
+    _save_state(context, row["player_id"], state)
+    return True
+
+
 def _offline_dorm_presence_session(player_id: int | None = None) -> dict[str, Any]:
     session = _game_session_payload(player_id, _DORM_ACTIVITY_LEVEL_ID)
     session["GameSessionId"] = -1
     session["RoomId"] = "offline"
+    session["CreatorPlayerId"] = None
     session["IsFull"] = True
     return session
 
@@ -1551,17 +1603,23 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
         and method == "POST"
     ):
         payload = await _json_body(request, {})
-        response_payload = _game_session_response(request, payload)
-        row, state = _current_player(context, request)
-        if row:
-            state["presence_game_session"] = response_payload.get("GameSession")
-            _save_state(context, row["player_id"], state)
+        player_id = _game_session_player_id(request, payload)
+        response_payload = _game_session_response(request, payload, player_id)
+        row, state = _state_for_recnet_id(context, player_id)
+        stored_presence = _remember_presence_game_session(
+            context,
+            row,
+            state,
+            response_payload.get("GameSession"),
+        )
         _trace_recnet(
             context,
             "gamesession_response",
             path=path,
             method=method,
             request_payload=payload,
+            player_id=player_id,
+            stored_presence=stored_presence,
             response_payload=response_payload,
             selected_activity_level_id=response_payload.get("GameSession", {}).get("ActivityLevelId"),
         )
@@ -1569,12 +1627,37 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
 
     if path in {"api/gamesessions/v2/reportjoinresult", "api/gamesessions/v2/block"} and method == "POST":
         payload = await _json_body(request, {})
+        player_id = _profile_header(request)
+        row, state = _state_for_recnet_id(context, player_id)
+        restored_presence = False
+        if row and path == "api/gamesessions/v2/reportjoinresult" and isinstance(payload, dict):
+            result = str(payload.get("Result") if payload.get("Result") is not None else "0").strip().casefold()
+            if result in {"0", "success"}:
+                session_id = str(_int_value(payload.get("GameSessionId")))
+                known_sessions = state.get("known_game_sessions")
+                if not isinstance(known_sessions, dict):
+                    known_sessions = {}
+                game_session = known_sessions.get(session_id)
+                if not isinstance(game_session, dict):
+                    game_session = state.get("presence_game_session")
+                    if not isinstance(game_session, dict) or _int_value(
+                        game_session.get("GameSessionId")
+                    ) != _int_value(payload.get("GameSessionId")):
+                        game_session = None
+                if isinstance(game_session, dict):
+                    if payload.get("RegionId") is not None:
+                        game_session["RegionId"] = str(payload.get("RegionId") or "")
+                    if payload.get("RoomId") is not None:
+                        game_session["RoomId"] = str(payload.get("RoomId") or "")
+                    restored_presence = _remember_presence_game_session(context, row, state, game_session)
         _trace_recnet(
             context,
             "gamesession_report",
             path=path,
             method=method,
             request_payload=payload,
+            player_id=player_id,
+            restored_presence=restored_presence,
         )
         return _empty_ok()
 
@@ -1783,17 +1866,25 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
         return
 
     await websocket.accept()
-    player_id = _int_value(websocket.headers.get("x-rec-room-profile")) or None
+    player_id = _profile_id_from_headers(websocket.headers)
 
     async def send_presence_heartbeat() -> None:
         if not player_id:
             return
         row, state = _state_for_recnet_id(context, player_id)
+        presence = _presence_payload(player_id, state if row else {})
+        _trace_recnet(
+            context,
+            "presence_heartbeat_response",
+            player_id=player_id,
+            has_state=bool(row),
+            game_session=presence.get("GameSession"),
+        )
         await websocket.send_text(
             json.dumps(
                 {
                     "Id": 4,
-                    "Msg": _presence_payload(player_id, state if row else {}),
+                    "Msg": presence,
                 }
             )
         )
