@@ -237,6 +237,29 @@ def _multipart_field(body: bytes, content_type: str, field_name: str) -> bytes |
     return None
 
 
+def _multipart_first_file(body: bytes, content_type: str) -> bytes | None:
+    match = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not match:
+        return None
+    boundary = b"--" + match.group(1).encode("utf-8")
+    for raw_part in body.split(boundary):
+        part = raw_part.strip()
+        if not part or part == b"--":
+            continue
+        if part.endswith(b"--"):
+            part = part[:-2].rstrip()
+        header_blob, separator, payload = part.partition(b"\r\n\r\n")
+        if not separator:
+            continue
+        headers = header_blob.decode("utf-8", errors="ignore")
+        if "content-disposition:" not in headers.casefold():
+            continue
+        clean_payload = payload.rstrip(b"\r\n")
+        if _image_type(clean_payload):
+            return clean_payload
+    return None
+
+
 def _list_values(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -602,6 +625,13 @@ async def _handle_platformlogin(path: str, request: Request, context: Any) -> Re
         if not name:
             name = f"Player{platform_id or 'Local'}"
         profile = _ensure_player(context, platform, platform_id, str(name))
+        row, _ = _state_for_recnet_id(context, int(profile["Id"]))
+        if row:
+            context.remember_request_identities(row["player_id"], request, API_VERSION)
+            context.record_player_identities(
+                row["player_id"],
+                [("account_id", f"platform:{platform}:{platform_id}")],
+            )
         return JSONResponse(_login_response(profile, context))
 
     raise HTTPException(status_code=404, detail="Unknown platform login route")
@@ -677,12 +707,27 @@ def _update_player_display_name(context: Any, row: Any, state: dict[str, Any], n
     if not clean_name:
         raise HTTPException(status_code=400, detail="Display name is required.")
     stamp = _now_iso()
+    desired_username = _safe_username(clean_name, str(row["username"] or "Player"))
     with context.db.transaction() as conn:
+        username_row = conn.execute(
+            "SELECT player_id FROM players WHERE username = ? AND player_id <> ?",
+            (desired_username, row["player_id"]),
+        ).fetchone()
+        username = row["username"] if username_row else desired_username
         conn.execute(
-            "UPDATE players SET display_name = ?, updated_at = ? WHERE player_id = ? AND is_coach = 0",
-            (clean_name[:64], stamp, row["player_id"]),
+            """
+            UPDATE players
+            SET username = ?, display_name = ?, updated_at = ?
+            WHERE player_id = ? AND is_coach = 0
+            """,
+            (username, clean_name[:64], stamp, row["player_id"]),
         )
     updated = _row_by_recnet_id(context, int(state.get("recnet_id") or 0))
+    if updated:
+        context.record_player_identities(
+            updated["player_id"],
+            [("username_lower", updated["username"]), ("username_lower", updated["display_name"])],
+        )
     return _profile_from_row(updated) if updated else _profile_from_player(row, state)
 
 
@@ -942,6 +987,8 @@ async def _store_image_upload(
     body = await _body_bytes(request)
     content_type = request.headers.get("content-type", "")
     image = _multipart_field(body, content_type, "image")
+    if image is None:
+        image = _multipart_first_file(body, content_type)
     if image is None and _image_type(body):
         image = body
     if not image:
@@ -1238,6 +1285,101 @@ def _room_result(state: dict[str, Any] | None = None, player_id: int | None = No
     return {"Result": 0, "Room": _room_payload(state, player_id)}
 
 
+def _room_row_payload(row: Any, player_id: int | None = None) -> dict[str, Any]:
+    try:
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except Exception:
+        metadata = {}
+    payload = _room_payload(metadata, player_id)
+    payload["RoomId"] = _int_value(row["room_id"], payload["RoomId"])
+    payload["Name"] = str(row["name"] or payload["Name"])
+    payload["CreatorPlayerId"] = _int_value(metadata.get("room_creator_id"), payload["CreatorPlayerId"])
+    payload["IsOfficial"] = bool(row["is_official"])
+    return payload
+
+
+def _room_row_by_id(context: Any, room_id: int) -> Any | None:
+    if room_id <= 0:
+        return None
+    with context.db.connection() as conn:
+        return conn.execute("SELECT * FROM rooms WHERE room_id = ?", (str(room_id),)).fetchone()
+
+
+def _room_rows_for_owner(context: Any, owner_player_id: str) -> list[Any]:
+    with context.db.connection() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM rooms
+            WHERE owner_player_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (owner_player_id,),
+        ).fetchall()
+
+
+def _upsert_room_record(context: Any, row: Any, state: dict[str, Any], player_id: int | None) -> None:
+    room_id = str(_room_id_for(state, player_id))
+    stamp = _now_iso()
+    metadata = dict(state)
+    with context.db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO rooms(
+                room_id, owner_player_id, creator_player_id, name, is_official,
+                is_coach_only_edit, created_by_system, metadata_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 0, 0, 0, ?, ?, ?)
+            ON CONFLICT(room_id) DO UPDATE SET
+                name = excluded.name,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                room_id,
+                row["player_id"],
+                row["player_id"],
+                str(state.get("room_name") or "Dorm Room"),
+                json.dumps(metadata, sort_keys=True),
+                str(state.get("room_created_at") or stamp),
+                stamp,
+            ),
+        )
+
+
+def _save_room_data_blob(
+    context: Any,
+    row: Any,
+    room_id: int,
+    content: bytes,
+    image_names: list[str],
+) -> str:
+    blob_name = f"room-{room_id}-{int(time.time())}-{os.urandom(4).hex()}"
+    stamp = _now_iso()
+    with context.db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO room_data_blobs(
+                blob_name, room_id, owner_player_id, data, image_list_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (blob_name, str(room_id), row["player_id"], content, json.dumps(image_names), stamp, stamp),
+        )
+    return blob_name
+
+
+def _room_data_response(context: Any, blob_name: str) -> Response:
+    with context.db.connection() as conn:
+        row = conn.execute(
+            "SELECT data FROM room_data_blobs WHERE blob_name = ?",
+            (blob_name,),
+        ).fetchone()
+    if not row:
+        return Response(status_code=404)
+    return Response(bytes(row["data"]), media_type="application/octet-stream")
+
+
 def _requested_room_id(path: str, payload: Any) -> int:
     if isinstance(payload, dict):
         room_id = _int_value(payload.get("RoomId"))
@@ -1247,11 +1389,26 @@ def _requested_room_id(path: str, payload: Any) -> int:
     return _int_value(match.group(1)) if match else 0
 
 
-def _can_mutate_player_room(path: str, payload: Any, state: dict[str, Any], player_id: int | None) -> bool:
+def _can_mutate_player_room(
+    context: Any,
+    row: Any,
+    path: str,
+    payload: Any,
+    state: dict[str, Any],
+    player_id: int | None,
+) -> bool:
     if not player_id:
         return False
     requested_room_id = _requested_room_id(path, payload)
-    return requested_room_id <= 0 or requested_room_id == _room_id_for(state, player_id)
+    if requested_room_id <= 0:
+        requested_room_id = _room_id_for(state, player_id)
+    room_row = _room_row_by_id(context, requested_room_id)
+    if room_row:
+        if bool(room_row["is_official"]) or bool(room_row["is_coach_only_edit"]):
+            return bool(row["is_coach"])
+        if room_row["owner_player_id"] != row["player_id"]:
+            return bool(row["is_coach"])
+    return requested_room_id == _room_id_for(state, player_id) or bool(row["is_coach"])
 
 
 def _relationship_payload(player_id: int, *, relationship_type: int = 0, muted: int = 0, ignored: int = 0) -> dict[str, Any]:
@@ -1552,7 +1709,10 @@ async def _handle_misc_success_or_empty(path: str, request: Request, context: An
         return _empty_ok()
 
     if path.startswith("api/images/v1/named") and method == "GET":
-        return _stored_image_response(context, str(request.query_params.get("img") or ""))
+        image_name = str(request.query_params.get("img") or "")
+        if not image_name and path.startswith("api/images/v1/named/"):
+            image_name = path.rsplit("/", 1)[-1]
+        return _stored_image_response(context, image_name)
 
     raise HTTPException(status_code=501, detail="Route family confirmed but not implemented.")
 
@@ -1670,12 +1830,19 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
     player_id = _profile_header(request)
 
     if path == "api/rooms/v1/myrooms" and method == "GET":
+        if row:
+            rooms = [_room_row_payload(room, player_id) for room in _room_rows_for_owner(context, row["player_id"])]
+            if rooms:
+                return JSONResponse(rooms)
         return JSONResponse([_room_payload(state, player_id)])
 
     if re.fullmatch(r"api/rooms/v1/details/\d+", path) and method == "GET":
         return JSONResponse({"PlayerCount": 1 if player_id else 0})
 
     if re.fullmatch(r"api/rooms/v1/\d+", path) and method == "GET":
+        room_row = _room_row_by_id(context, _int_value(path.rsplit("/", 1)[-1]))
+        if room_row:
+            return JSONResponse(_room_row_payload(room_row, player_id))
         return JSONResponse(_room_payload(state, player_id))
 
     if path.startswith("api/rooms/v1/name/") and method == "GET":
@@ -1700,11 +1867,12 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
             state["room_created_at"] = state.get("room_created_at") or _now_iso()
             state["room_modified_at"] = _now_iso()
             _save_state(context, row["player_id"], state)
+            _upsert_room_record(context, row, state, player_id)
         return JSONResponse(_room_result(state, player_id))
 
     if path.startswith("api/rooms/v1/modify/") and method == "POST":
         payload = await _json_body(request, {})
-        if not row or not _can_mutate_player_room(path, payload, state, player_id):
+        if not row or not _can_mutate_player_room(context, row, path, payload, state, player_id):
             return _forbidden("You can only edit rooms owned by the current player.")
         if row and isinstance(payload, dict):
             if "Name" in payload:
@@ -1718,6 +1886,7 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
             state["room_id"] = _room_id_for(state, player_id)
             state["room_modified_at"] = _now_iso()
             _save_state(context, row["player_id"], state)
+            _upsert_room_record(context, row, state, player_id)
         return JSONResponse(_room_result(state, player_id))
 
     if path in {
@@ -1727,7 +1896,7 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
         "api/rooms/v1/removehost",
     } and method == "POST":
         payload = await _json_body(request, {})
-        if not row or not _can_mutate_player_room(path, payload, state, player_id):
+        if not row or not _can_mutate_player_room(context, row, path, payload, state, player_id):
             return _forbidden("You can only edit permissions on rooms owned by the current player.")
         target_id = _int_value(payload.get("PlayerId") if isinstance(payload, dict) else None)
         if row and target_id > 0:
@@ -1740,16 +1909,41 @@ async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
             state[list_key] = values
             state["room_modified_at"] = _now_iso()
             _save_state(context, row["player_id"], state)
+            _upsert_room_record(context, row, state, player_id)
         return JSONResponse({"Result": 0})
 
     if path == "api/rooms/v1/saveData" or re.fullmatch(r"api/rooms/v1/saveData/\d+", path):
         if method == "POST":
-            if not row or not _can_mutate_player_room(path, {}, state, player_id):
+            body = await _body_bytes(request)
+            content_type = request.headers.get("content-type", "")
+            room_id = _requested_room_id(path, {})
+            if room_id <= 0:
+                room_id = _room_id_for(state, player_id)
+            if not row or not _can_mutate_player_room(context, row, path, {"RoomId": room_id}, state, player_id):
                 return _forbidden("You can only save data for rooms owned by the current player.")
             if row:
+                data = _multipart_field(body, content_type, "data")
+                if data is None:
+                    data = body
+                image_names: list[str] = []
+                img_list_raw = _multipart_field(body, content_type, "imgList")
+                if img_list_raw:
+                    try:
+                        parsed = json.loads(img_list_raw.decode("utf-8"))
+                        image_names = [
+                            str(item)
+                            for item in _list_values(parsed.get("roomImageList") if isinstance(parsed, dict) else parsed)
+                            if str(item)
+                        ]
+                    except Exception:
+                        image_names = []
+                blob_name = _save_room_data_blob(context, row, room_id, data or b"", image_names)
+                state["room_id"] = room_id
+                state["room_data_blob_name"] = blob_name
                 state["room_data_modified_at"] = _now_iso()
                 _save_state(context, row["player_id"], state)
-            return JSONResponse({"DataBlobName": ""})
+                _upsert_room_record(context, row, state, player_id)
+            return JSONResponse({"DataBlobName": str(state.get("room_data_blob_name") or "")})
 
     if path == "api/rooms/v1/cheer" and method == "POST":
         payload = await _json_body(request, {})
@@ -1792,6 +1986,9 @@ async def handle_http(route_path: str, request: Request, context: Any) -> Respon
 
     if "charades" in path.casefold() and "word" in path.casefold() and method == "GET":
         return JSONResponse(_charades_words_payload())
+
+    if path.startswith("room/") and method == "GET":
+        return _room_data_response(context, path.split("/", 1)[1])
 
     if path.startswith("api/platformlogin/"):
         return await _handle_platformlogin(path, request, context)

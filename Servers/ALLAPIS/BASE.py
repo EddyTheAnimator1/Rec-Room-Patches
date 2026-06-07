@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import mimetypes
@@ -30,6 +31,7 @@ DEFAULT_LOCAL_PORT = 7979
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
+ADMIN_KEY_ENV_NAMES = ("RECROOM_ADMIN_KEY", "RR_ADMIN_KEY")
 
 
 class ConfigurationError(RuntimeError):
@@ -45,6 +47,7 @@ class Settings:
     is_railway: bool
     port: int
     host: str
+    ban_hash_pepper: str
 
 
 def _is_railway_environment() -> bool:
@@ -93,6 +96,13 @@ def _read_port(default: int = DEFAULT_LOCAL_PORT) -> int:
 def load_settings() -> Settings:
     root_dir = Path(__file__).resolve().parent
     is_railway = _is_railway_environment()
+    ban_hash_pepper = os.getenv("RECROOM_BAN_HASH_PEPPER") or os.getenv("BAN_HASH_PEPPER")
+    if is_railway and not ban_hash_pepper:
+        raise ConfigurationError(
+            "Railway/container mode requires RECROOM_BAN_HASH_PEPPER or BAN_HASH_PEPPER for ban identity hashing."
+        )
+    if not ban_hash_pepper:
+        ban_hash_pepper = "local-development-ban-pepper"
     api_dir = root_dir / "APIs"
     data_dir = _resolve_data_dir(root_dir, is_railway)
     return Settings(
@@ -103,6 +113,7 @@ def load_settings() -> Settings:
         is_railway=is_railway,
         port=_read_port(),
         host=os.getenv("HOST", "0.0.0.0"),
+        ban_hash_pepper=ban_hash_pepper,
     )
 
 
@@ -354,6 +365,73 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         LIMIT 1;
         """,
     ),
+    (
+        3,
+        """
+        ALTER TABLE players ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE players ADD COLUMN banned_at TEXT NULL;
+        ALTER TABLE players ADD COLUMN ban_reason TEXT NULL;
+
+        CREATE TABLE IF NOT EXISTS player_identities (
+            player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            identity_type TEXT NOT NULL,
+            identity_hash TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (identity_type, identity_hash, player_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_player_identities_lookup
+            ON player_identities(identity_type, identity_hash);
+
+        CREATE TABLE IF NOT EXISTS bans (
+            id TEXT PRIMARY KEY,
+            player_id TEXT NULL REFERENCES players(player_id) ON DELETE SET NULL,
+            identity_type TEXT NOT NULL,
+            identity_hash TEXT NOT NULL,
+            reason TEXT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bans_lookup
+            ON bans(identity_type, identity_hash, active);
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        4,
+        """
+        ALTER TABLE rooms ADD COLUMN creator_player_id TEXT REFERENCES players(player_id) ON DELETE SET NULL;
+        ALTER TABLE rooms ADD COLUMN is_coach_only_edit INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE rooms ADD COLUMN created_by_system INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS room_data_blobs (
+            blob_name TEXT PRIMARY KEY,
+            room_id TEXT NOT NULL,
+            owner_player_id TEXT REFERENCES players(player_id) ON DELETE SET NULL,
+            data BLOB NOT NULL,
+            image_list_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_room_data_blobs_room
+            ON room_data_blobs(room_id, updated_at);
+        """,
+    ),
 )
 
 
@@ -374,6 +452,15 @@ def initialize_database(db: Database) -> None:
                     (version, utc_now()),
                 )
     ensure_coach_profile(db)
+    cleanup_existing_banned_players(db)
+
+
+def cleanup_existing_banned_players(db: Database) -> None:
+    context = ServerContext(load_settings(), db)
+    with db.connection() as conn:
+        rows = conn.execute("SELECT player_id FROM players WHERE is_banned = 1").fetchall()
+    for row in rows:
+        context.enforce_ban_cleanup(row["player_id"])
 
 
 def row_to_canonical_player(row: sqlite3.Row) -> dict[str, Any]:
@@ -388,6 +475,9 @@ def row_to_canonical_player(row: sqlite3.Row) -> dict[str, Any]:
         "canonical_xp": int(row["canonical_xp"]),
         "profile_picture_asset_id": row["profile_picture_asset_id"],
         "is_coach": bool(row["is_coach"]),
+        "is_banned": bool(row["is_banned"]),
+        "banned_at": row["banned_at"],
+        "ban_reason": row["ban_reason"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -424,6 +514,45 @@ def ensure_coach_profile(db: Database) -> dict[str, Any]:
             )
             row = conn.execute("SELECT * FROM players WHERE player_id = ?", (COACH_PLAYER_ID,)).fetchone()
     return row_to_canonical_player(row)
+
+
+def normalize_identity_value(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def hash_ban_identity(pepper: str, identity_type: str, value: Any) -> str:
+    normalized = normalize_identity_value(value)
+    if not normalized:
+        return ""
+    payload = f"{identity_type}:{normalized}".encode("utf-8")
+    return hashlib.sha256(pepper.encode("utf-8") + b":" + payload).hexdigest()
+
+
+def configured_admin_key() -> str | None:
+    for name in ADMIN_KEY_ENV_NAMES:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def admin_key_from_request(request: Request) -> str:
+    value = str(request.headers.get("x-rec-room-admin-key") or "").strip()
+    if value:
+        return value
+    authorization = str(request.headers.get("authorization") or "").strip()
+    if authorization.casefold().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def require_admin_key(request: Request) -> None:
+    expected = configured_admin_key()
+    if not expected or len(expected) < 64:
+        raise HTTPException(status_code=503, detail="Admin API key is not configured.")
+    provided = admin_key_from_request(request)
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Forbidden.")
 
 
 def get_or_create_player(
@@ -572,7 +701,342 @@ class ServerContext:
             )
 
     def get_or_create_player(self, api_version: str, **kwargs: Any) -> dict[str, Any]:
-        return get_or_create_player(self.db, api_version=api_version, **kwargs)
+        username = kwargs.get("username")
+        display_name = kwargs.get("display_name")
+        identity_key = kwargs.get("identity_key")
+        self.assert_identities_not_banned(
+            [
+                ("username_lower", username),
+                ("username_lower", display_name),
+                ("account_id", identity_key),
+            ]
+        )
+        player = get_or_create_player(self.db, api_version=api_version, **kwargs)
+        identities = [
+            ("account_id", player["player_id"]),
+            ("username_lower", player["username"]),
+            ("username_lower", player["display_name"]),
+            ("account_id", identity_key),
+        ]
+        self.record_player_identities(player["player_id"], identities)
+        self.assert_player_not_banned(player["player_id"])
+        return player
+
+    def identity_hash(self, identity_type: str, value: Any) -> str:
+        return hash_ban_identity(self.settings.ban_hash_pepper, identity_type, value)
+
+    def request_ip_value(self, request_or_websocket: Any) -> str:
+        headers = getattr(request_or_websocket, "headers", {})
+        forwarded_for = str(headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+        if forwarded_for:
+            return forwarded_for
+        client = getattr(request_or_websocket, "client", None)
+        return str(getattr(client, "host", "") or "")
+
+    def request_identity_pairs(self, request_or_websocket: Any, api_version: str) -> list[tuple[str, Any]]:
+        headers = getattr(request_or_websocket, "headers", {})
+        pairs: list[tuple[str, Any]] = [("ip_hash", self.request_ip_value(request_or_websocket))]
+        profile_id = str(headers.get("x-rec-room-profile") or "").strip()
+        if profile_id:
+            pairs.append(("account_id", f"{api_version}:recnet:{profile_id}"))
+        authorization = str(headers.get("authorization") or "").strip()
+        if authorization.casefold().startswith("bearer "):
+            authorization = authorization[7:].strip()
+        if authorization:
+            pairs.append(("account_id", authorization))
+            token_prefix = f"local-{api_version}-"
+            if authorization.casefold().startswith(token_prefix.casefold()):
+                recnet_id = authorization[len(token_prefix) :].strip()
+                if recnet_id:
+                    pairs.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
+        return pairs
+
+    def record_player_identities(self, player_id: str, identities: list[tuple[str, Any]]) -> None:
+        now = utc_now()
+        with self.db.transaction() as conn:
+            for identity_type, value in identities:
+                identity_hash = self.identity_hash(identity_type, value)
+                if not identity_hash:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO player_identities(
+                        player_id, identity_type, identity_hash, first_seen_at, last_seen_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(identity_type, identity_hash, player_id)
+                    DO UPDATE SET last_seen_at = excluded.last_seen_at
+                    """,
+                    (player_id, identity_type, identity_hash, now, now),
+                )
+
+    def remember_request_identities(self, player_id: str, request_or_websocket: Any, api_version: str) -> None:
+        self.record_player_identities(player_id, self.request_identity_pairs(request_or_websocket, api_version))
+
+    def active_ban_for_identities(self, identities: list[tuple[str, Any]]) -> sqlite3.Row | None:
+        with self.db.connection() as conn:
+            for identity_type, value in identities:
+                identity_hash = self.identity_hash(identity_type, value)
+                if not identity_hash:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT *
+                    FROM bans
+                    WHERE identity_type = ?
+                      AND identity_hash = ?
+                      AND active = 1
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (identity_type, identity_hash),
+                ).fetchone()
+                if row:
+                    return row
+        return None
+
+    def assert_identities_not_banned(self, identities: list[tuple[str, Any]]) -> None:
+        ban = self.active_ban_for_identities(identities)
+        if ban:
+            raise HTTPException(status_code=403, detail=ban["reason"] or "This account is banned.")
+
+    def assert_request_not_banned(self, request_or_websocket: Any, api_version: str) -> None:
+        identities = self.request_identity_pairs(request_or_websocket, api_version)
+        self.assert_identities_not_banned(identities)
+        player = self.player_from_request(request_or_websocket, api_version)
+        if player:
+            self.remember_request_identities(player["player_id"], request_or_websocket, api_version)
+            self.assert_player_not_banned(player["player_id"])
+
+    def player_from_request(self, request_or_websocket: Any, api_version: str) -> sqlite3.Row | None:
+        headers = getattr(request_or_websocket, "headers", {})
+        recnet_id = str(headers.get("x-rec-room-profile") or "").strip()
+        authorization = str(headers.get("authorization") or "").strip()
+        if authorization.casefold().startswith("bearer "):
+            authorization = authorization[7:].strip()
+        token_prefix = f"local-{api_version}-"
+        if not recnet_id and authorization.casefold().startswith(token_prefix.casefold()):
+            recnet_id = authorization[len(token_prefix) :].strip()
+        if not recnet_id:
+            return None
+        try:
+            recnet_id_value = int(recnet_id)
+        except ValueError:
+            return None
+        with self.db.connection() as conn:
+            return conn.execute(
+                """
+                SELECT p.*, pvs.state_json
+                FROM players p
+                JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                WHERE pvs.api_version = ?
+                  AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                """,
+                (api_version, recnet_id_value),
+            ).fetchone()
+
+    def assert_player_not_banned(self, player_id: str) -> None:
+        with self.db.connection() as conn:
+            row = conn.execute("SELECT * FROM players WHERE player_id = ?", (player_id,)).fetchone()
+        if row and bool(row["is_banned"]):
+            self.enforce_ban_cleanup(player_id)
+            raise HTTPException(status_code=403, detail=row["ban_reason"] or "This account is banned.")
+
+    def enforce_ban_cleanup(self, player_id: str) -> None:
+        with self.db.connection() as conn:
+            player = conn.execute(
+                "SELECT username, display_name, profile_picture_asset_id, ban_reason FROM players WHERE player_id = ?",
+                (player_id,),
+            ).fetchone()
+            asset_id = player["profile_picture_asset_id"] if player else None
+            identities = conn.execute(
+                "SELECT identity_type, identity_hash FROM player_identities WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+            assets = conn.execute(
+                """
+                SELECT asset_id, relative_path
+                FROM data_assets
+                WHERE owner_player_id = ?
+                  AND (purpose LIKE '%.profile_image' OR asset_id = ?)
+                """,
+                (player_id, asset_id),
+            ).fetchall()
+        self.record_player_identities(
+            player_id,
+            [
+                ("account_id", player_id),
+                ("username_lower", player["username"] if player else ""),
+                ("username_lower", player["display_name"] if player else ""),
+            ],
+        )
+        data_dir = self.data_dir.resolve()
+        for asset in assets:
+            image_path = (self.data_dir / asset["relative_path"]).resolve()
+            if data_dir in image_path.parents and image_path.is_file():
+                image_path.unlink()
+        with self.db.transaction() as conn:
+            conn.execute("DELETE FROM sessions WHERE player_id = ?", (player_id,))
+            conn.execute(
+                """
+                DELETE FROM data_assets
+                WHERE owner_player_id = ?
+                  AND (purpose LIKE '%.profile_image' OR asset_id = ?)
+                """,
+                (player_id, asset_id),
+            )
+            conn.execute(
+                """
+                UPDATE players
+                SET profile_picture_asset_id = NULL,
+                    updated_at = ?
+                WHERE player_id = ?
+                """,
+                (utc_now(), player_id),
+            )
+            now = utc_now()
+            refreshed_identities = conn.execute(
+                "SELECT identity_type, identity_hash FROM player_identities WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+            for identity in list(identities) + list(refreshed_identities):
+                conn.execute(
+                    """
+                    INSERT INTO bans(id, player_id, identity_type, identity_hash, reason, active, created_at, updated_at)
+                    SELECT ?, ?, ?, ?, ?, 1, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM bans
+                        WHERE identity_type = ?
+                          AND identity_hash = ?
+                          AND active = 1
+                    )
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        player_id,
+                        identity["identity_type"],
+                        identity["identity_hash"],
+                        player["ban_reason"] if player else None,
+                        now,
+                        now,
+                        identity["identity_type"],
+                        identity["identity_hash"],
+                    ),
+                )
+            rows = conn.execute(
+                "SELECT api_version, state_json FROM player_version_state WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    state = json.loads(row["state_json"])
+                except Exception:
+                    state = {}
+                for key in ("profile_image_name", "ProfileImageName"):
+                    state.pop(key, None)
+                conn.execute(
+                    """
+                    UPDATE player_version_state
+                    SET state_json = ?, updated_at = ?
+                    WHERE player_id = ? AND api_version = ?
+                    """,
+                    (json.dumps(state, sort_keys=True), utc_now(), player_id, row["api_version"]),
+                )
+
+    def create_player_ban(
+        self,
+        player_id: str,
+        *,
+        reason: str | None = None,
+        extra_identities: list[tuple[str, Any]] | None = None,
+    ) -> None:
+        now = utc_now()
+        identities = list(extra_identities or [])
+        with self.db.connection() as conn:
+            row = conn.execute("SELECT username, display_name FROM players WHERE player_id = ?", (player_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT identity_type, identity_hash FROM player_identities WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+        if row:
+            identities.extend(
+                [
+                    ("account_id", player_id),
+                    ("username_lower", row["username"]),
+                    ("username_lower", row["display_name"]),
+                ]
+            )
+        self.record_player_identities(player_id, identities)
+        with self.db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE players
+                SET is_banned = 1, banned_at = COALESCE(banned_at, ?), ban_reason = ?, updated_at = ?
+                WHERE player_id = ? AND is_coach = 0
+                """,
+                (now, reason, now, player_id),
+            )
+            for identity_type, value in identities:
+                identity_hash = self.identity_hash(identity_type, value)
+                if identity_hash:
+                    conn.execute(
+                        """
+                        INSERT INTO bans(id, player_id, identity_type, identity_hash, reason, active, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                        """,
+                        (str(uuid.uuid4()), player_id, identity_type, identity_hash, reason, now, now),
+                    )
+            for row in existing:
+                conn.execute(
+                    """
+                    INSERT INTO bans(id, player_id, identity_type, identity_hash, reason, active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), player_id, row["identity_type"], row["identity_hash"], reason, now, now),
+                )
+        self.enforce_ban_cleanup(player_id)
+
+    def create_identity_ban(
+        self,
+        identities: list[tuple[str, Any]],
+        *,
+        reason: str | None = None,
+        player_id: str | None = None,
+    ) -> int:
+        now = utc_now()
+        inserted = 0
+        with self.db.transaction() as conn:
+            for identity_type, value in identities:
+                identity_hash = self.identity_hash(identity_type, value)
+                if not identity_hash:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT INTO bans(id, player_id, identity_type, identity_hash, reason, active, created_at, updated_at)
+                    SELECT ?, ?, ?, ?, ?, 1, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM bans
+                        WHERE identity_type = ?
+                          AND identity_hash = ?
+                          AND active = 1
+                    )
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        player_id,
+                        identity_type,
+                        identity_hash,
+                        reason,
+                        now,
+                        now,
+                        identity_type,
+                        identity_hash,
+                    ),
+                )
+                inserted += cursor.rowcount
+        return inserted
 
     def save_image_bytes(
         self,
@@ -699,12 +1163,155 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
         return await call_next(request)
 
+    @app.post("/admin/ban")
+    async def admin_ban(request: Request) -> JSONResponse:
+        require_admin_key(request)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Admin ban payload must be JSON.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Admin ban payload must be a JSON object.")
+
+        api_version = str(payload.get("api_version") or payload.get("apiVersion") or "12january2018").strip()
+        if not API_VERSION_RE.fullmatch(api_version):
+            raise HTTPException(status_code=400, detail="Invalid api_version.")
+        reason = str(payload.get("reason") or payload.get("Reason") or "Banned by server operator.").strip()
+
+        username = str(payload.get("username") or payload.get("Username") or "").strip()
+        display_name = str(
+            payload.get("display_name") or payload.get("displayName") or payload.get("DisplayName") or ""
+        ).strip()
+        canonical_player_id = str(
+            payload.get("canonical_player_id")
+            or payload.get("canonicalPlayerId")
+            or payload.get("player_uuid")
+            or ""
+        ).strip()
+        player_id_value = str(payload.get("player_id") or payload.get("playerId") or payload.get("PlayerId") or "").strip()
+        if not canonical_player_id and re.fullmatch(r"[0-9a-fA-F-]{32,36}", player_id_value):
+            canonical_player_id = player_id_value
+            player_id_value = ""
+        recnet_id = str(payload.get("recnet_id") or payload.get("recNetId") or payload.get("recnetId") or "").strip()
+        if not recnet_id and player_id_value:
+            recnet_id = player_id_value
+        platform = str(payload.get("platform") or payload.get("Platform") or "").strip()
+        platform_id = str(payload.get("platform_id") or payload.get("platformId") or payload.get("PlatformId") or "").strip()
+        account_id = str(payload.get("account_id") or payload.get("accountId") or "").strip()
+        ip = str(payload.get("ip") or payload.get("ipAddress") or payload.get("ip_address") or "").strip()
+        hardware_id = str(
+            payload.get("hardware_id") or payload.get("hardwareId") or payload.get("device_id") or payload.get("deviceId") or ""
+        ).strip()
+
+        identities: list[tuple[str, Any]] = []
+        if username:
+            identities.append(("username_lower", username))
+        if display_name:
+            identities.append(("username_lower", display_name))
+        if canonical_player_id:
+            identities.append(("account_id", canonical_player_id))
+        if account_id:
+            identities.append(("account_id", account_id))
+        if recnet_id:
+            identities.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
+            identities.append(("account_id", f"local-{api_version}-{recnet_id}"))
+        if platform_id:
+            platform_key = f"platform:{platform or 0}:{platform_id}"
+            identities.append(("account_id", platform_key))
+        if ip:
+            identities.append(("ip_hash", ip))
+        if hardware_id:
+            identities.append(("hardware_id_hash", hardware_id))
+
+        if not identities and not canonical_player_id:
+            raise HTTPException(status_code=400, detail="Provide at least one player or identity field to ban.")
+        if any(normalize_identity_value(value) == "coach" for identity_type, value in identities if identity_type == "username_lower"):
+            raise HTTPException(status_code=403, detail="Coach cannot be banned.")
+
+        matched: dict[str, sqlite3.Row] = {}
+        with db.connection() as conn:
+            if canonical_player_id:
+                row = conn.execute("SELECT * FROM players WHERE player_id = ?", (canonical_player_id,)).fetchone()
+                if row:
+                    matched[row["player_id"]] = row
+            if username or display_name:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM players
+                    WHERE (? <> '' AND lower(username) = lower(?))
+                       OR (? <> '' AND lower(display_name) = lower(?))
+                    """,
+                    (username, username, display_name, display_name),
+                ).fetchall()
+                for row in rows:
+                    matched[row["player_id"]] = row
+            if recnet_id:
+                try:
+                    recnet_id_int = int(recnet_id)
+                except ValueError:
+                    recnet_id_int = 0
+                if recnet_id_int > 0:
+                    rows = conn.execute(
+                        """
+                        SELECT p.*
+                        FROM players p
+                        JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                        WHERE pvs.api_version = ?
+                          AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                        """,
+                        (api_version, recnet_id_int),
+                    ).fetchall()
+                    for row in rows:
+                        matched[row["player_id"]] = row
+            if platform_id:
+                rows = conn.execute(
+                    """
+                    SELECT p.*
+                    FROM players p
+                    JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                    WHERE pvs.api_version = ?
+                      AND json_extract(pvs.state_json, '$.platform_id') = ?
+                    """,
+                    (api_version, platform_id),
+                ).fetchall()
+                for row in rows:
+                    matched[row["player_id"]] = row
+
+        if any(bool(row["is_coach"]) for row in matched.values()):
+            raise HTTPException(status_code=403, detail="Coach cannot be banned.")
+
+        banned_players: list[dict[str, Any]] = []
+        for player in matched.values():
+            context.create_player_ban(player["player_id"], reason=reason, extra_identities=identities)
+            banned_players.append(
+                {
+                    "player_id": player["player_id"],
+                    "username": player["username"],
+                    "display_name": player["display_name"],
+                }
+            )
+
+        identity_bans_added = context.create_identity_ban(identities, reason=reason)
+        if not banned_players and identity_bans_added <= 0:
+            raise HTTPException(status_code=409, detail="No new player or identity ban was created.")
+
+        return JSONResponse(
+            {
+                "Success": True,
+                "Message": "Ban applied.",
+                "BannedPlayers": banned_players,
+                "IdentityBansAdded": identity_bans_added,
+            }
+        )
+
     @app.api_route(
         "/{api_version}/{route_path:path}",
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     )
     async def dispatch_http(api_version: str, route_path: str, request: Request) -> Response:
         module = load_version_module(settings, api_version)
+        context.assert_request_not_banned(request, api_version)
         handler = getattr(module, "handle_http", None)
         if handler is None:
             raise HTTPException(status_code=501, detail="HTTP API is not implemented for this version.")
@@ -725,6 +1332,7 @@ def create_app() -> FastAPI:
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Rate limit exceeded.")
         try:
             module = load_version_module(settings, api_version)
+            context.assert_request_not_banned(websocket, api_version)
         except HTTPException as exc:
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=str(exc.detail)) from exc
         handler = getattr(module, "handle_websocket", None)
