@@ -1300,12 +1300,16 @@ def _game_session_response(
     activity_level_id = _activity_levels_from_payload(payload)[0]
     if player_id is None:
         player_id = _profile_header(request, context)
-    return {
-        "Result": 0,
-        "GameSession": _game_session_payload(
+    if activity_level_id == _DORM_ACTIVITY_LEVEL_ID:
+        game_session = _offline_dorm_presence_session(player_id)
+    else:
+        game_session = _game_session_payload(
             player_id,
             activity_level_id,
-        ),
+        )
+    return {
+        "Result": 0,
+        "GameSession": game_session,
     }
 
 
@@ -2282,21 +2286,8 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
         )
 
     try:
-        initial_message = await receive_client_text(timeout=1)
-        initial_command = ""
-        if initial_message:
-            initial_command, initial_parsed = parse_client_message(initial_message)
-            _trace_recnet(
-                context,
-                "notification_client_handshake",
-                player_id=player_id,
-                command=initial_command,
-                parsed=isinstance(initial_parsed, dict),
-            )
         await websocket.send_text(json.dumps({"SessionId": _now_ticks()}))
         _trace_recnet(context, "notification_server_handshake", player_id=player_id)
-        if initial_command in {"ping", "heartbeat"}:
-            await send_presence_heartbeat()
         while True:
             message = await receive_client_text(timeout=15)
             if message is None:
