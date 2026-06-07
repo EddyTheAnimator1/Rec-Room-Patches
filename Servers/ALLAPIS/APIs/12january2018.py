@@ -2210,8 +2210,58 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
     await websocket.accept()
     player_id = _profile_id_from_request(context, websocket)
 
+    def bind_player_from_message(parsed: Any) -> None:
+        nonlocal player_id
+        if not isinstance(parsed, dict):
+            return
+        for key in ("PlayerId", "playerId", "ProfileId", "profileId"):
+            candidate = _int_value(parsed.get(key))
+            if candidate > 0:
+                player_id = candidate
+                return
+        login_lock_token = str(parsed.get("LoginLockToken") or "").strip()
+        candidate = _profile_id_from_auth_token(context, login_lock_token)
+        if candidate:
+            player_id = candidate
+
+    def parse_client_message(message: str) -> tuple[str, Any]:
+        parsed = None
+        try:
+            parsed = json.loads(message)
+        except Exception:
+            parsed = None
+        bind_player_from_message(parsed)
+        command = message.strip().casefold()
+        if isinstance(parsed, dict):
+            raw_command = parsed.get("api") or parsed.get("type") or parsed.get("Type") or ""
+            command = str(raw_command).strip().casefold()
+        return command, parsed
+
+    async def receive_client_text(timeout: float | None = None) -> str | None:
+        try:
+            if timeout is None:
+                message = await websocket.receive()
+            else:
+                message = await asyncio.wait_for(websocket.receive(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        if message.get("type") == "websocket.disconnect":
+            raise WebSocketDisconnect(message.get("code", 1000))
+        if message.get("type") != "websocket.receive":
+            return None
+        if message.get("text") is not None:
+            return str(message.get("text") or "")
+        data = message.get("bytes")
+        if data is None:
+            return None
+        try:
+            return bytes(data).decode("utf-8")
+        except Exception:
+            return bytes(data).decode("utf-8", errors="ignore")
+
     async def send_presence_heartbeat() -> None:
         if not player_id:
+            _trace_recnet(context, "presence_heartbeat_skipped", reason="missing_player_id")
             return
         row, state = _state_for_recnet_id(context, player_id)
         presence = _presence_payload(player_id, state if row else {})
@@ -2232,22 +2282,33 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
         )
 
     try:
+        initial_message = await receive_client_text(timeout=1)
+        initial_command = ""
+        if initial_message:
+            initial_command, initial_parsed = parse_client_message(initial_message)
+            _trace_recnet(
+                context,
+                "notification_client_handshake",
+                player_id=player_id,
+                command=initial_command,
+                parsed=isinstance(initial_parsed, dict),
+            )
         await websocket.send_text(json.dumps({"SessionId": _now_ticks()}))
+        _trace_recnet(context, "notification_server_handshake", player_id=player_id)
+        if initial_command in {"ping", "heartbeat"}:
+            await send_presence_heartbeat()
         while True:
-            try:
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=15)
-            except asyncio.TimeoutError:
+            message = await receive_client_text(timeout=15)
+            if message is None:
                 continue
-            command = message.strip().casefold()
-            parsed = None
-            try:
-                parsed = json.loads(message)
-            except Exception:
-                parsed = None
-            if isinstance(parsed, dict):
-                if parsed.get("PlayerId") is not None:
-                    player_id = _int_value(parsed.get("PlayerId")) or player_id
-                command = str(parsed.get("api") or parsed.get("type") or parsed.get("Type") or "").strip().casefold()
+            command, parsed = parse_client_message(message)
+            _trace_recnet(
+                context,
+                "notification_client_message",
+                player_id=player_id,
+                command=command,
+                parsed=isinstance(parsed, dict),
+            )
             if command in {"ping", "heartbeat"}:
                 await send_presence_heartbeat()
     except WebSocketDisconnect:
