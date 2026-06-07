@@ -5,9 +5,11 @@ Confirmed from first-party non-Photon client code in Assembly-CSharp.dll.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +136,10 @@ def _safe_username(value: str | None, fallback: str) -> str:
     value = re.sub(r"\s+", "_", value)
     value = re.sub(r"[^A-Za-z0-9_.-]", "", value)
     return value[:32] or fallback
+
+
+def _random_test_username() -> str:
+    return f"TestUser{secrets.randbelow(900000) + 100000}"
 
 
 def _is_reserved_coach_name(value: Any) -> bool:
@@ -287,9 +293,7 @@ def _profile_id_from_headers(headers: Any) -> int | None:
     if profile_id > 0:
         return profile_id
 
-    authorization = str(headers.get("authorization") or "").strip()
-    if authorization.casefold().startswith("bearer "):
-        authorization = authorization[7:].strip()
+    authorization = _authorization_token(headers)
     token_prefix = f"local-{API_VERSION}-"
     if authorization.casefold().startswith(token_prefix.casefold()):
         profile_id = _int_value(authorization[len(token_prefix) :])
@@ -298,7 +302,44 @@ def _profile_id_from_headers(headers: Any) -> int | None:
     return None
 
 
-def _profile_header(request: Request) -> int | None:
+def _authorization_token(headers: Any) -> str:
+    authorization = str(headers.get("authorization") or "").strip()
+    if authorization.casefold().startswith("bearer "):
+        authorization = authorization[7:].strip()
+    return authorization
+
+
+def _profile_id_from_auth_token(context: Any, token: str) -> int | None:
+    if not token:
+        return None
+    with context.db.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT json_extract(state_json, '$.recnet_id') AS recnet_id
+            FROM player_version_state
+            WHERE api_version = ?
+              AND json_extract(state_json, '$.login_token') = ?
+            LIMIT 1
+            """,
+            (API_VERSION, token),
+        ).fetchone()
+    if not row:
+        return None
+    profile_id = _int_value(row["recnet_id"])
+    return profile_id if profile_id > 0 else None
+
+
+def _profile_id_from_request(context: Any, request_or_websocket: Any) -> int | None:
+    headers = getattr(request_or_websocket, "headers", {})
+    profile_id = _profile_id_from_headers(headers)
+    if profile_id:
+        return profile_id
+    return _profile_id_from_auth_token(context, _authorization_token(headers))
+
+
+def _profile_header(request: Request, context: Any | None = None) -> int | None:
+    if context is not None:
+        return _profile_id_from_request(context, request)
     return _profile_id_from_headers(request.headers)
 
 
@@ -444,6 +485,7 @@ def _profile_from_player(player: Any, state: dict[str, Any]) -> dict[str, Any]:
         "Developer": _developer_flag(player),
         "CanReceiveInvites": True,
         "ProfileImageName": str(state.get("profile_image_name") or ""),
+        "Bio": str(state.get("bio") or ""),
         "JuniorProfile": False,
         "ForceJuniorImages": False,
         "PendingJunior": False,
@@ -473,7 +515,7 @@ def _ensure_player(
     name: str | None,
 ) -> dict[str, Any]:
     identity_key = f"platform:{platform}:{platform_id}"
-    fallback_name = f"Player{platform_id or 'Local'}"
+    fallback_name = _random_test_username()
     normal_name = None if _is_reserved_coach_name(name) else name
     username = _safe_username(normal_name, fallback_name)
     display_name = (str(normal_name).strip() if normal_name else username) or username
@@ -511,7 +553,7 @@ def _ensure_player(
 
 
 def _current_player(context: Any, request: Request) -> tuple[Any | None, dict[str, Any]]:
-    recnet_id = _profile_header(request)
+    recnet_id = _profile_header(request, context)
     if recnet_id is None:
         return None, {}
     return _state_for_recnet_id(context, recnet_id)
@@ -621,9 +663,9 @@ async def _handle_platformlogin(path: str, request: Request, context: Any) -> Re
             payload = {}
         platform = _int_value(payload.get("Platform"))
         platform_id = str(payload.get("PlatformId") or payload.get("PlayerId") or "")
-        name = payload.get("Username") or payload.get("DisplayName") or payload.get("Email")
+        name = payload.get("Username") or payload.get("DisplayName")
         if not name:
-            name = f"Player{platform_id or 'Local'}"
+            name = _random_test_username()
         profile = _ensure_player(context, platform, platform_id, str(name))
         row, _ = _state_for_recnet_id(context, int(profile["Id"]))
         if row:
@@ -731,6 +773,34 @@ def _update_player_display_name(context: Any, row: Any, state: dict[str, Any], n
     return _profile_from_row(updated) if updated else _profile_from_player(row, state)
 
 
+def _update_player_username(context: Any, row: Any, state: dict[str, Any], name: str) -> dict[str, Any]:
+    if _is_reserved_coach_name(name):
+        raise HTTPException(status_code=403, detail="Coach identity is reserved.")
+    username = _safe_username(name, str(row["username"] or _random_test_username()))
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    stamp = _now_iso()
+    with context.db.transaction() as conn:
+        username_row = conn.execute(
+            "SELECT player_id FROM players WHERE username = ? AND player_id <> ?",
+            (username, row["player_id"]),
+        ).fetchone()
+        if username_row:
+            raise HTTPException(status_code=409, detail="Username is already taken.")
+        conn.execute(
+            """
+            UPDATE players
+            SET username = ?, updated_at = ?
+            WHERE player_id = ? AND is_coach = 0
+            """,
+            (username, stamp, row["player_id"]),
+        )
+    updated = _row_by_recnet_id(context, int(state.get("recnet_id") or 0))
+    if updated:
+        context.record_player_identities(updated["player_id"], [("username_lower", updated["username"])])
+    return _profile_from_row(updated) if updated else _profile_from_player(row, state)
+
+
 async def _handle_players(path: str, request: Request, context: Any) -> Response:
     method = request.method.upper()
 
@@ -793,8 +863,29 @@ async def _handle_players(path: str, request: Request, context: Any) -> Response
             return _forbidden("Display-name changes require a logged-in player.")
         payload = await _json_body(request, {})
         name = payload.get("Name") if isinstance(payload, dict) else None
-        _update_player_display_name(context, row, state, str(name or ""))
-        return JSONResponse(_success_payload())
+        profile = _update_player_display_name(context, row, state, str(name or ""))
+        return JSONResponse({**_success_payload(), "Profile": profile, "Player": profile})
+
+    if path in {"api/players/v1/username", "api/players/v2/username"} and method == "POST":
+        row, state = _current_player(context, request)
+        if not row:
+            return _forbidden("Username changes require a logged-in player.")
+        payload = await _json_body(request, {})
+        name = payload.get("Username") or payload.get("Name") if isinstance(payload, dict) else None
+        profile = _update_player_username(context, row, state, str(name or ""))
+        return JSONResponse({**_success_payload(), "Profile": profile, "Player": profile})
+
+    if path in {"api/players/v1/bio", "api/players/v2/bio"} and method == "POST":
+        row, state = _current_player(context, request)
+        if not row:
+            return _forbidden("Bio changes require a logged-in player.")
+        payload = await _json_body(request, {})
+        bio = payload.get("Bio") or payload.get("bio") or payload.get("Text") or payload.get("text") if isinstance(payload, dict) else ""
+        state["bio"] = str(bio or "")[:512]
+        _save_state(context, row["player_id"], state)
+        updated = _row_by_recnet_id(context, int(state.get("recnet_id") or 0))
+        profile = _profile_from_row(updated) if updated else _profile_from_player(row, state)
+        return JSONResponse({**_success_payload(), "Profile": profile, "Player": profile})
 
     if path == "api/players/v1/birthday" and method == "POST":
         row, state = _current_player(context, request)
@@ -830,7 +921,7 @@ async def _handle_players(path: str, request: Request, context: Any) -> Response
     if path == "api/players/v1/objectives" and method == "POST":
         row, state = _current_player(context, request)
         if not row:
-            return _forbidden("Objective uploads require a logged-in player.")
+            return _empty_ok()
         payload = await _json_body(request, [])
         state["last_objective_upload"] = payload if isinstance(payload, list) else [payload]
         state["last_objective_upload_at"] = _now_iso()
@@ -1006,7 +1097,7 @@ async def _store_image_upload(
         purpose=f"{API_VERSION}.{purpose}",
         metadata={
             "route": path,
-            "recnet_id": _profile_header(request),
+            "recnet_id": _profile_header(request, context),
             "gameSessionId": request.query_params.get("gameSessionId"),
             "oldImageName": request.query_params.get("oldImageName"),
         },
@@ -1150,11 +1241,11 @@ def _game_session_payload(player_id: int | None = None, activity_level_id: str |
 
 
 def _game_session_response(
-    request: Request, payload: Any = None, player_id: int | None = None
+    context: Any, request: Request, payload: Any = None, player_id: int | None = None
 ) -> dict[str, Any]:
     activity_level_id = _activity_levels_from_payload(payload)[0]
     if player_id is None:
-        player_id = _profile_header(request)
+        player_id = _profile_header(request, context)
     return {
         "Result": 0,
         "GameSession": _game_session_payload(
@@ -1181,8 +1272,8 @@ def _presence_ids_from_payload(payload: Any, fallback_player_id: int | None = No
     return ids
 
 
-def _game_session_player_id(request: Request, payload: Any) -> int | None:
-    player_id = _profile_header(request)
+def _game_session_player_id(context: Any, request: Request, payload: Any) -> int | None:
+    player_id = _profile_header(request, context)
     if player_id and player_id > 0:
         return player_id
     if not isinstance(payload, dict):
@@ -1604,7 +1695,7 @@ async def _handle_challenge(path: str, request: Request, context: Any) -> Respon
 
 async def _handle_presence(path: str, request: Request, context: Any) -> Response:
     method = request.method.upper()
-    player_id = _profile_header(request)
+    player_id = _profile_header(request, context)
     row, state = _current_player(context, request)
 
     if path == "api/presence/v2/list" and method == "POST":
@@ -1763,8 +1854,8 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
         and method == "POST"
     ):
         payload = await _json_body(request, {})
-        player_id = _game_session_player_id(request, payload)
-        response_payload = _game_session_response(request, payload, player_id)
+        player_id = _game_session_player_id(context, request, payload)
+        response_payload = _game_session_response(context, request, payload, player_id)
         row, state = _state_for_recnet_id(context, player_id)
         stored_presence = _remember_presence_game_session(
             context,
@@ -1787,7 +1878,7 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
 
     if path in {"api/gamesessions/v2/reportjoinresult", "api/gamesessions/v2/block"} and method == "POST":
         payload = await _json_body(request, {})
-        player_id = _profile_header(request)
+        player_id = _profile_header(request, context)
         row, state = _state_for_recnet_id(context, player_id)
         restored_presence = False
         if row and path == "api/gamesessions/v2/reportjoinresult" and isinstance(payload, dict):
@@ -1827,7 +1918,7 @@ async def _handle_gamesessions(path: str, request: Request, context: Any) -> Res
 async def _handle_rooms(path: str, request: Request, context: Any) -> Response:
     method = request.method.upper()
     row, state = _current_player(context, request)
-    player_id = _profile_header(request)
+    player_id = _profile_header(request, context)
 
     if path == "api/rooms/v1/myrooms" and method == "GET":
         if row:
@@ -2063,7 +2154,7 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
         return
 
     await websocket.accept()
-    player_id = _profile_id_from_headers(websocket.headers)
+    player_id = _profile_id_from_request(context, websocket)
 
     async def send_presence_heartbeat() -> None:
         if not player_id:
@@ -2088,8 +2179,13 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
 
     try:
         await websocket.send_text(json.dumps({"SessionId": _now_ticks()}))
+        await send_presence_heartbeat()
         while True:
-            message = await websocket.receive_text()
+            try:
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=15)
+            except asyncio.TimeoutError:
+                await send_presence_heartbeat()
+                continue
             command = message.strip().casefold()
             parsed = None
             try:

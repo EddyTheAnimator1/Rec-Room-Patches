@@ -749,6 +749,18 @@ class ServerContext:
                 recnet_id = authorization[len(token_prefix) :].strip()
                 if recnet_id:
                     pairs.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
+        player = self.player_from_request(request_or_websocket, api_version)
+        if player:
+            pairs.append(("account_id", player["player_id"]))
+            pairs.append(("username_lower", player["username"]))
+            pairs.append(("username_lower", player["display_name"]))
+            try:
+                state = json.loads(player["state_json"])
+            except Exception:
+                state = {}
+            recnet_id = state.get("recnet_id")
+            if recnet_id:
+                pairs.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
         return pairs
 
     def record_player_identities(self, player_id: str, identities: list[tuple[str, Any]]) -> None:
@@ -817,23 +829,37 @@ class ServerContext:
         token_prefix = f"local-{api_version}-"
         if not recnet_id and authorization.casefold().startswith(token_prefix.casefold()):
             recnet_id = authorization[len(token_prefix) :].strip()
-        if not recnet_id:
-            return None
-        try:
-            recnet_id_value = int(recnet_id)
-        except ValueError:
-            return None
         with self.db.connection() as conn:
-            return conn.execute(
-                """
-                SELECT p.*, pvs.state_json
-                FROM players p
-                JOIN player_version_state pvs ON p.player_id = pvs.player_id
-                WHERE pvs.api_version = ?
-                  AND json_extract(pvs.state_json, '$.recnet_id') = ?
-                """,
-                (api_version, recnet_id_value),
-            ).fetchone()
+            if recnet_id:
+                try:
+                    recnet_id_value = int(recnet_id)
+                except ValueError:
+                    recnet_id_value = 0
+                if recnet_id_value > 0:
+                    row = conn.execute(
+                        """
+                        SELECT p.*, pvs.state_json
+                        FROM players p
+                        JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                        WHERE pvs.api_version = ?
+                          AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                        """,
+                        (api_version, recnet_id_value),
+                    ).fetchone()
+                    if row:
+                        return row
+            if authorization:
+                return conn.execute(
+                    """
+                    SELECT p.*, pvs.state_json
+                    FROM players p
+                    JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                    WHERE pvs.api_version = ?
+                      AND json_extract(pvs.state_json, '$.login_token') = ?
+                    """,
+                    (api_version, authorization),
+                ).fetchone()
+        return None
 
     def assert_player_not_banned(self, player_id: str) -> None:
         with self.db.connection() as conn:
@@ -1037,6 +1063,67 @@ class ServerContext:
                 )
                 inserted += cursor.rowcount
         return inserted
+
+    def unban_player(self, player_id: str) -> None:
+        now = utc_now()
+        with self.db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE players
+                SET is_banned = 0,
+                    banned_at = NULL,
+                    ban_reason = NULL,
+                    updated_at = ?
+                WHERE player_id = ?
+                """,
+                (now, player_id),
+            )
+            conn.execute(
+                """
+                UPDATE bans
+                SET active = 0,
+                    updated_at = ?
+                WHERE player_id = ?
+                """,
+                (now, player_id),
+            )
+            identity_rows = conn.execute(
+                "SELECT identity_type, identity_hash FROM player_identities WHERE player_id = ?",
+                (player_id,),
+            ).fetchall()
+            for row in identity_rows:
+                conn.execute(
+                    """
+                    UPDATE bans
+                    SET active = 0,
+                        updated_at = ?
+                    WHERE identity_type = ?
+                      AND identity_hash = ?
+                    """,
+                    (now, row["identity_type"], row["identity_hash"]),
+                )
+
+    def unban_identities(self, identities: list[tuple[str, Any]]) -> int:
+        now = utc_now()
+        updated = 0
+        with self.db.transaction() as conn:
+            for identity_type, value in identities:
+                identity_hash = self.identity_hash(identity_type, value)
+                if not identity_hash:
+                    continue
+                cursor = conn.execute(
+                    """
+                    UPDATE bans
+                    SET active = 0,
+                        updated_at = ?
+                    WHERE identity_type = ?
+                      AND identity_hash = ?
+                      AND active = 1
+                    """,
+                    (now, identity_type, identity_hash),
+                )
+                updated += cursor.rowcount
+        return updated
 
     def save_image_bytes(
         self,
@@ -1302,6 +1389,138 @@ def create_app() -> FastAPI:
                 "Message": "Ban applied.",
                 "BannedPlayers": banned_players,
                 "IdentityBansAdded": identity_bans_added,
+            }
+        )
+
+    @app.post("/admin/unban")
+    async def admin_unban(request: Request) -> JSONResponse:
+        require_admin_key(request)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Admin unban payload must be JSON.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Admin unban payload must be a JSON object.")
+
+        api_version = str(payload.get("api_version") or payload.get("apiVersion") or "12january2018").strip()
+        if not API_VERSION_RE.fullmatch(api_version):
+            raise HTTPException(status_code=400, detail="Invalid api_version.")
+
+        username = str(payload.get("username") or payload.get("Username") or "").strip()
+        display_name = str(
+            payload.get("display_name") or payload.get("displayName") or payload.get("DisplayName") or ""
+        ).strip()
+        canonical_player_id = str(
+            payload.get("canonical_player_id")
+            or payload.get("canonicalPlayerId")
+            or payload.get("player_uuid")
+            or ""
+        ).strip()
+        player_id_value = str(payload.get("player_id") or payload.get("playerId") or payload.get("PlayerId") or "").strip()
+        if not canonical_player_id and re.fullmatch(r"[0-9a-fA-F-]{32,36}", player_id_value):
+            canonical_player_id = player_id_value
+            player_id_value = ""
+        recnet_id = str(payload.get("recnet_id") or payload.get("recNetId") or payload.get("recnetId") or "").strip()
+        if not recnet_id and player_id_value:
+            recnet_id = player_id_value
+        platform = str(payload.get("platform") or payload.get("Platform") or "").strip()
+        platform_id = str(payload.get("platform_id") or payload.get("platformId") or payload.get("PlatformId") or "").strip()
+        account_id = str(payload.get("account_id") or payload.get("accountId") or "").strip()
+        ip = str(payload.get("ip") or payload.get("ipAddress") or payload.get("ip_address") or "").strip()
+        hardware_id = str(
+            payload.get("hardware_id") or payload.get("hardwareId") or payload.get("device_id") or payload.get("deviceId") or ""
+        ).strip()
+
+        identities: list[tuple[str, Any]] = []
+        if username:
+            identities.append(("username_lower", username))
+        if display_name:
+            identities.append(("username_lower", display_name))
+        if canonical_player_id:
+            identities.append(("account_id", canonical_player_id))
+        if account_id:
+            identities.append(("account_id", account_id))
+        if recnet_id:
+            identities.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
+            identities.append(("account_id", f"local-{api_version}-{recnet_id}"))
+        if platform_id:
+            identities.append(("account_id", f"platform:{platform or 0}:{platform_id}"))
+        if ip:
+            identities.append(("ip_hash", ip))
+        if hardware_id:
+            identities.append(("hardware_id_hash", hardware_id))
+
+        if not identities and not canonical_player_id:
+            raise HTTPException(status_code=400, detail="Provide at least one player or identity field to unban.")
+
+        matched: dict[str, sqlite3.Row] = {}
+        with db.connection() as conn:
+            if canonical_player_id:
+                row = conn.execute("SELECT * FROM players WHERE player_id = ?", (canonical_player_id,)).fetchone()
+                if row:
+                    matched[row["player_id"]] = row
+            if username or display_name:
+                rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM players
+                    WHERE (? <> '' AND lower(username) = lower(?))
+                       OR (? <> '' AND lower(display_name) = lower(?))
+                    """,
+                    (username, username, display_name, display_name),
+                ).fetchall()
+                for row in rows:
+                    matched[row["player_id"]] = row
+            if recnet_id:
+                try:
+                    recnet_id_int = int(recnet_id)
+                except ValueError:
+                    recnet_id_int = 0
+                if recnet_id_int > 0:
+                    rows = conn.execute(
+                        """
+                        SELECT p.*
+                        FROM players p
+                        JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                        WHERE pvs.api_version = ?
+                          AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                        """,
+                        (api_version, recnet_id_int),
+                    ).fetchall()
+                    for row in rows:
+                        matched[row["player_id"]] = row
+            if platform_id:
+                rows = conn.execute(
+                    """
+                    SELECT p.*
+                    FROM players p
+                    JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                    WHERE pvs.api_version = ?
+                      AND json_extract(pvs.state_json, '$.platform_id') = ?
+                    """,
+                    (api_version, platform_id),
+                ).fetchall()
+                for row in rows:
+                    matched[row["player_id"]] = row
+
+        unbanned_players: list[dict[str, Any]] = []
+        for player in matched.values():
+            context.unban_player(player["player_id"])
+            unbanned_players.append(
+                {
+                    "player_id": player["player_id"],
+                    "username": player["username"],
+                    "display_name": player["display_name"],
+                }
+            )
+
+        identity_bans_deactivated = context.unban_identities(identities)
+        return JSONResponse(
+            {
+                "Success": True,
+                "Message": "Unban applied.",
+                "UnbannedPlayers": unbanned_players,
+                "IdentityBansDeactivated": identity_bans_deactivated,
             }
         )
 
