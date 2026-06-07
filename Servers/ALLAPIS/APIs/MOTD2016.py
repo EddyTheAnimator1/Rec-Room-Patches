@@ -1,10 +1,18 @@
+"""Shared MOTD API for 2016 Rec Room builds.
+
+Patched clients call:
+  GET /MOTD2016/motd
+
+Response is plain text consumed by IntroActivityManager via WWW.text.
+"""
+
 from __future__ import annotations
 
 from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import PlainTextResponse, Response
 
 
-API_VERSION = "8july2016"
+API_VERSION = "MOTD2016"
 
 
 def serialize_motd_for_client(message: str) -> str:
