@@ -455,6 +455,55 @@ def _profile_from_row(row: Any) -> dict[str, Any]:
     return _profile_from_player(row, state)
 
 
+def _legacy_generated_player_name(value: Any, platform_id: str | None = None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if platform_id and text == f"Player{platform_id}":
+        return True
+    return bool(re.fullmatch(r"Player\d{8,}", text))
+
+
+def _migrate_legacy_generated_name(context: Any, row: Any | None, platform_id: str | None = None) -> Any | None:
+    if not row or bool(row["is_coach"]):
+        return row
+    if not (
+        _legacy_generated_player_name(row["username"], platform_id)
+        or _legacy_generated_player_name(row["display_name"], platform_id)
+    ):
+        return row
+    stamp = _now_iso()
+    for _ in range(10):
+        username = _random_test_username()
+        with context.db.transaction() as conn:
+            existing = conn.execute(
+                "SELECT player_id FROM players WHERE username = ? AND player_id <> ?",
+                (username, row["player_id"]),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                """
+                UPDATE players
+                SET username = ?, display_name = ?, updated_at = ?
+                WHERE player_id = ? AND is_coach = 0
+                """,
+                (username, username, stamp, row["player_id"]),
+            )
+        try:
+            state = json.loads(row["state_json"])
+        except Exception:
+            state = {}
+        updated = _row_by_recnet_id(context, _int_value(state.get("recnet_id")))
+        if updated:
+            context.record_player_identities(
+                updated["player_id"],
+                [("username_lower", updated["username"]), ("username_lower", updated["display_name"])],
+            )
+            return updated
+    return row
+
+
 def _developer_flag(player: Any) -> bool:
     if bool(player["is_coach"]):
         return True
@@ -549,6 +598,10 @@ def _ensure_player(
     _seed_new_player_preferences(state)
     _seed_avatar_defaults(state)
     _save_state(context, player["player_id"], state)
+    row = _row_by_recnet_id(context, int(recnet_id))
+    row = _migrate_legacy_generated_name(context, row, platform_id)
+    if row:
+        return _profile_from_row(row)
     return _profile_from_player(player, state)
 
 
@@ -649,6 +702,7 @@ async def _handle_platformlogin(path: str, request: Request, context: Any) -> Re
         platform = _int_value(payload.get("Platform") if isinstance(payload, dict) else None)
         platform_id = str(payload.get("PlatformId") if isinstance(payload, dict) else "")
         row = _row_by_platform(context, platform, platform_id)
+        row = _migrate_legacy_generated_name(context, row, platform_id)
         return JSONResponse([_profile_from_row(row)] if row else [])
 
     if path == "api/platformlogin/v1/removecachedlogin" and method == "POST":
@@ -1321,7 +1375,7 @@ def _presence_payload(player_id: int, state: dict[str, Any] | None = None) -> di
     state = state or {}
     game_session = state.get("presence_game_session")
     if not isinstance(game_session, dict):
-        game_session = _offline_dorm_presence_session(player_id)
+        game_session = None
     return {
         "PlayerId": player_id,
         "IsOnline": True,
@@ -2179,12 +2233,10 @@ async def handle_websocket(route_path: str, websocket: WebSocket, context: Any) 
 
     try:
         await websocket.send_text(json.dumps({"SessionId": _now_ticks()}))
-        await send_presence_heartbeat()
         while True:
             try:
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=15)
             except asyncio.TimeoutError:
-                await send_presence_heartbeat()
                 continue
             command = message.strip().casefold()
             parsed = None
