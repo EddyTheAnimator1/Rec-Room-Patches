@@ -31,7 +31,7 @@ DEFAULT_LOCAL_PORT = 7979
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
-ADMIN_KEY_ENV_NAMES = ("RECROOM_ADMIN_KEY", "RR_ADMIN_KEY")
+ADMIN_KEY_ENV_NAMES = ("RECROOM_ADMIN_BAN_KEY", "RECROOM_ADMIN_SECRET", "RECROOM_ADMIN_KEY", "RR_ADMIN_KEY")
 
 
 class ConfigurationError(RuntimeError):
@@ -451,8 +451,23 @@ def initialize_database(db: Database) -> None:
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (version, utc_now()),
                 )
+    ensure_default_server_settings(db)
     ensure_coach_profile(db)
     cleanup_existing_banned_players(db)
+
+
+def ensure_default_server_settings(db: Database) -> None:
+    """Seed database-backed settings that should exist even without Railway variables."""
+    now = utc_now()
+    with db.transaction() as conn:
+        conn.execute(
+            """
+            INSERT INTO server_settings(key, value_json, created_at, updated_at)
+            VALUES ('motd', ?, ?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (json.dumps(""), now, now),
+        )
 
 
 def cleanup_existing_banned_players(db: Database) -> None:
@@ -537,7 +552,7 @@ def configured_admin_key() -> str | None:
 
 
 def admin_key_from_request(request: Request) -> str:
-    value = str(request.headers.get("x-rec-room-admin-key") or "").strip()
+    value = str(request.headers.get("x-rec-room-admin-key") or request.headers.get("x-recroom-admin-key") or "").strip()
     if value:
         return value
     authorization = str(request.headers.get("authorization") or "").strip()
@@ -553,6 +568,24 @@ def require_admin_key(request: Request) -> None:
     provided = admin_key_from_request(request)
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=403, detail="Forbidden.")
+
+
+def admin_api_version_from_payload(payload: dict[str, Any], *, default: str | None = None) -> str | None:
+    api_version = str(payload.get("api_version") or payload.get("apiVersion") or default or "").strip()
+    if not api_version:
+        return None
+    if not API_VERSION_RE.fullmatch(api_version):
+        raise HTTPException(status_code=400, detail="Invalid api_version.")
+    return api_version
+
+
+def append_recnet_identity_pairs(identities: list[tuple[str, Any]], recnet_id: str, api_version: str | None) -> None:
+    if not recnet_id:
+        return
+    identities.append(("account_id", f"recnet:{recnet_id}"))
+    if api_version:
+        identities.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
+        identities.append(("account_id", f"local-{api_version}-{recnet_id}"))
 
 
 def get_or_create_player(
@@ -643,12 +676,7 @@ class ServerContext:
         return self.settings.db_path
 
     def get_motd(self, api_version: str) -> str:
-        env_key = f"RR_MOTD_{api_version.upper()}"
-        for key in (env_key, "RECROOM_MOTD"):
-            value = os.getenv(key)
-            if value is not None:
-                return value
-
+        """Return MOTD text from SQLite only. Railway/env MOTD variables are intentionally ignored."""
         setting_keys = (f"{api_version}.motd", "motd")
         with self.db.connection() as conn:
             for setting_key in setting_keys:
@@ -738,6 +766,7 @@ class ServerContext:
         pairs: list[tuple[str, Any]] = [("ip_hash", self.request_ip_value(request_or_websocket))]
         profile_id = str(headers.get("x-rec-room-profile") or "").strip()
         if profile_id:
+            pairs.append(("account_id", f"recnet:{profile_id}"))
             pairs.append(("account_id", f"{api_version}:recnet:{profile_id}"))
         authorization = str(headers.get("authorization") or "").strip()
         if authorization.casefold().startswith("bearer "):
@@ -748,6 +777,7 @@ class ServerContext:
             if authorization.casefold().startswith(token_prefix.casefold()):
                 recnet_id = authorization[len(token_prefix) :].strip()
                 if recnet_id:
+                    pairs.append(("account_id", f"recnet:{recnet_id}"))
                     pairs.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
         player = self.player_from_request(request_or_websocket, api_version)
         if player:
@@ -760,6 +790,7 @@ class ServerContext:
                 state = {}
             recnet_id = state.get("recnet_id")
             if recnet_id:
+                pairs.append(("account_id", f"recnet:{recnet_id}"))
                 pairs.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
         return pairs
 
@@ -1250,6 +1281,42 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
         return await call_next(request)
 
+    @app.get("/admin/motd")
+    async def admin_get_motd(request: Request) -> JSONResponse:
+        require_admin_key(request)
+        payload = {
+            "api_version": request.query_params.get("api_version") or request.query_params.get("apiVersion") or "MOTD2016"
+        }
+        api_version = admin_api_version_from_payload(payload, default="MOTD2016") or "MOTD2016"
+        return JSONResponse({"Success": True, "ApiVersion": api_version, "MessageOfTheDay": context.get_motd(api_version)})
+
+    @app.post("/admin/motd")
+    async def admin_set_motd(request: Request) -> JSONResponse:
+        require_admin_key(request)
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Admin MOTD payload must be JSON.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Admin MOTD payload must be a JSON object.")
+
+        api_version = admin_api_version_from_payload(payload, default="MOTD2016") or "MOTD2016"
+        raw_message = payload.get("message", payload.get("MessageOfTheDay", payload.get("motd", "")))
+        if raw_message is None:
+            raw_message = ""
+        message = str(raw_message)
+        if len(message.encode("utf-8")) > 8192:
+            raise HTTPException(status_code=413, detail="MOTD is too large.")
+
+        shared = bool(payload.get("shared", False))
+        if shared:
+            context.set_shared_motd(message)
+            setting_key = "motd"
+        else:
+            context.set_motd(api_version, message)
+            setting_key = f"{api_version}.motd"
+        return JSONResponse({"Success": True, "ApiVersion": api_version, "Key": setting_key})
+
     @app.post("/admin/ban")
     async def admin_ban(request: Request) -> JSONResponse:
         require_admin_key(request)
@@ -1260,9 +1327,7 @@ def create_app() -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Admin ban payload must be a JSON object.")
 
-        api_version = str(payload.get("api_version") or payload.get("apiVersion") or "12january2018").strip()
-        if not API_VERSION_RE.fullmatch(api_version):
-            raise HTTPException(status_code=400, detail="Invalid api_version.")
+        api_version = admin_api_version_from_payload(payload)
         reason = str(payload.get("reason") or payload.get("Reason") or "Banned by server operator.").strip()
 
         username = str(payload.get("username") or payload.get("Username") or "").strip()
@@ -1300,8 +1365,7 @@ def create_app() -> FastAPI:
         if account_id:
             identities.append(("account_id", account_id))
         if recnet_id:
-            identities.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
-            identities.append(("account_id", f"local-{api_version}-{recnet_id}"))
+            append_recnet_identity_pairs(identities, recnet_id, api_version)
         if platform_id:
             platform_key = f"platform:{platform or 0}:{platform_id}"
             identities.append(("account_id", platform_key))
@@ -1339,29 +1403,51 @@ def create_app() -> FastAPI:
                 except ValueError:
                     recnet_id_int = 0
                 if recnet_id_int > 0:
+                    if api_version:
+                        rows = conn.execute(
+                            """
+                            SELECT p.*
+                            FROM players p
+                            JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                            WHERE pvs.api_version = ?
+                              AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                            """,
+                            (api_version, recnet_id_int),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT p.*
+                            FROM players p
+                            JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                            WHERE json_extract(pvs.state_json, '$.recnet_id') = ?
+                            """,
+                            (recnet_id_int,),
+                        ).fetchall()
+                    for row in rows:
+                        matched[row["player_id"]] = row
+            if platform_id:
+                if api_version:
                     rows = conn.execute(
                         """
                         SELECT p.*
                         FROM players p
                         JOIN player_version_state pvs ON p.player_id = pvs.player_id
                         WHERE pvs.api_version = ?
-                          AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                          AND json_extract(pvs.state_json, '$.platform_id') = ?
                         """,
-                        (api_version, recnet_id_int),
+                        (api_version, platform_id),
                     ).fetchall()
-                    for row in rows:
-                        matched[row["player_id"]] = row
-            if platform_id:
-                rows = conn.execute(
-                    """
-                    SELECT p.*
-                    FROM players p
-                    JOIN player_version_state pvs ON p.player_id = pvs.player_id
-                    WHERE pvs.api_version = ?
-                      AND json_extract(pvs.state_json, '$.platform_id') = ?
-                    """,
-                    (api_version, platform_id),
-                ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT p.*
+                        FROM players p
+                        JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                        WHERE json_extract(pvs.state_json, '$.platform_id') = ?
+                        """,
+                        (platform_id,),
+                    ).fetchall()
                 for row in rows:
                     matched[row["player_id"]] = row
 
@@ -1402,9 +1488,7 @@ def create_app() -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Admin unban payload must be a JSON object.")
 
-        api_version = str(payload.get("api_version") or payload.get("apiVersion") or "12january2018").strip()
-        if not API_VERSION_RE.fullmatch(api_version):
-            raise HTTPException(status_code=400, detail="Invalid api_version.")
+        api_version = admin_api_version_from_payload(payload)
 
         username = str(payload.get("username") or payload.get("Username") or "").strip()
         display_name = str(
@@ -1441,8 +1525,7 @@ def create_app() -> FastAPI:
         if account_id:
             identities.append(("account_id", account_id))
         if recnet_id:
-            identities.append(("account_id", f"{api_version}:recnet:{recnet_id}"))
-            identities.append(("account_id", f"local-{api_version}-{recnet_id}"))
+            append_recnet_identity_pairs(identities, recnet_id, api_version)
         if platform_id:
             identities.append(("account_id", f"platform:{platform or 0}:{platform_id}"))
         if ip:
@@ -1477,29 +1560,51 @@ def create_app() -> FastAPI:
                 except ValueError:
                     recnet_id_int = 0
                 if recnet_id_int > 0:
+                    if api_version:
+                        rows = conn.execute(
+                            """
+                            SELECT p.*
+                            FROM players p
+                            JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                            WHERE pvs.api_version = ?
+                              AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                            """,
+                            (api_version, recnet_id_int),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT p.*
+                            FROM players p
+                            JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                            WHERE json_extract(pvs.state_json, '$.recnet_id') = ?
+                            """,
+                            (recnet_id_int,),
+                        ).fetchall()
+                    for row in rows:
+                        matched[row["player_id"]] = row
+            if platform_id:
+                if api_version:
                     rows = conn.execute(
                         """
                         SELECT p.*
                         FROM players p
                         JOIN player_version_state pvs ON p.player_id = pvs.player_id
                         WHERE pvs.api_version = ?
-                          AND json_extract(pvs.state_json, '$.recnet_id') = ?
+                          AND json_extract(pvs.state_json, '$.platform_id') = ?
                         """,
-                        (api_version, recnet_id_int),
+                        (api_version, platform_id),
                     ).fetchall()
-                    for row in rows:
-                        matched[row["player_id"]] = row
-            if platform_id:
-                rows = conn.execute(
-                    """
-                    SELECT p.*
-                    FROM players p
-                    JOIN player_version_state pvs ON p.player_id = pvs.player_id
-                    WHERE pvs.api_version = ?
-                      AND json_extract(pvs.state_json, '$.platform_id') = ?
-                    """,
-                    (api_version, platform_id),
-                ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT p.*
+                        FROM players p
+                        JOIN player_version_state pvs ON p.player_id = pvs.player_id
+                        WHERE json_extract(pvs.state_json, '$.platform_id') = ?
+                        """,
+                        (platform_id,),
+                    ).fetchall()
                 for row in rows:
                     matched[row["player_id"]] = row
 
