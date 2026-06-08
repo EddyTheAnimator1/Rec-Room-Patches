@@ -27,6 +27,8 @@ IMAGE_DATA_DIR_NAME = "IMAGES"
 ALLOWED_DATA_ROOT_EXTENSIONS = {".json"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 SQLITE_SIDECAR_RE = re.compile(r"^database\.sqlite3(?:-(?:journal|wal|shm))?$")
+ROBOTS_TXT_FILENAME = "robots.txt"
+DEFAULT_ROBOTS_TXT = "User-agent: OAI-SearchBot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /\n"
 DEFAULT_LOCAL_PORT = 7979
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
@@ -139,10 +141,43 @@ def is_allowed_data_file(path: Path, data_dir: Path) -> bool:
     if len(relative.parts) == 1 and SQLITE_SIDECAR_RE.match(name):
         return True
     if len(relative.parts) == 1:
+        if name == ROBOTS_TXT_FILENAME:
+            return True
         return resolved.suffix.lower() in ALLOWED_DATA_ROOT_EXTENSIONS
     if len(relative.parts) == 2 and relative.parts[0] == IMAGE_DATA_DIR_NAME:
         return resolved.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
     return False
+
+
+def robots_txt_candidate_paths(settings: Settings) -> list[Path]:
+    candidates = [
+        settings.data_dir / ROBOTS_TXT_FILENAME,
+        settings.root_dir / ROBOTS_TXT_FILENAME,
+    ]
+
+    data_parent = settings.data_dir.parent
+    if data_parent != settings.data_dir:
+        candidates.insert(1, data_parent / ROBOTS_TXT_FILENAME)
+
+    unique_candidates: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def read_robots_txt(settings: Settings) -> str:
+    for candidate in robots_txt_candidate_paths(settings):
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return DEFAULT_ROBOTS_TXT
 
 
 def enforce_data_directory_policy(data_dir: Path) -> None:
@@ -1280,6 +1315,14 @@ def create_app() -> FastAPI:
         if not limiter.allow(f"http:{client_host}"):
             return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
         return await call_next(request)
+
+    @app.api_route("/robots.txt", methods=["GET", "HEAD"], include_in_schema=False)
+    async def robots_txt() -> Response:
+        try:
+            body = read_robots_txt(settings)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail="robots.txt could not be read.") from exc
+        return Response(content=body, media_type="text/plain; charset=utf-8")
 
     @app.get("/admin/motd")
     async def admin_get_motd(request: Request) -> JSONResponse:
