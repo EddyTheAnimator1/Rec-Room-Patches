@@ -490,6 +490,7 @@ def initialize_database(db: Database) -> None:
                     (version, utc_now()),
                 )
     ensure_default_server_settings(db)
+    normalize_shared_server_settings(db)
     ensure_coach_profile(db)
     cleanup_existing_banned_players(db)
 
@@ -506,6 +507,51 @@ def ensure_default_server_settings(db: Database) -> None:
             """,
             (json.dumps(""), now, now),
         )
+
+
+def normalize_shared_server_settings(db: Database) -> None:
+    """Normalize old build-local global settings into shared canonical server settings.
+
+    Live MOTD storage is intentionally build-neutral. Older deployments may
+    contain keys such as MOTD2016.motd or 11august2016v1.motd; those are
+    migration leftovers, not separate live data spaces. If the shared MOTD is
+    empty, preserve the first non-empty legacy value, then remove the legacy
+    MOTD keys so all builds read the same canonical value.
+    """
+    with db.transaction() as conn:
+        shared_row = conn.execute("SELECT value_json FROM server_settings WHERE key = 'motd'").fetchone()
+        shared_value = None
+        if shared_row is not None:
+            try:
+                shared_value = json.loads(shared_row["value_json"])
+            except Exception:
+                shared_value = shared_row["value_json"]
+        if not isinstance(shared_value, str) or shared_value == "":
+            legacy_rows = conn.execute(
+                """
+                SELECT key, value_json
+                FROM server_settings
+                WHERE key LIKE '%.motd'
+                ORDER BY updated_at DESC, created_at DESC
+                """
+            ).fetchall()
+            for row in legacy_rows:
+                try:
+                    value = json.loads(row["value_json"])
+                except Exception:
+                    value = row["value_json"]
+                if isinstance(value, str) and value != "":
+                    conn.execute(
+                        """
+                        INSERT INTO server_settings(key, value_json, created_at, updated_at)
+                        VALUES ('motd', ?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE
+                        SET value_json = excluded.value_json, updated_at = excluded.updated_at
+                        """,
+                        (json.dumps(value), utc_now(), utc_now()),
+                    )
+                    break
+        conn.execute("DELETE FROM server_settings WHERE key LIKE '%.motd'")
 
 
 def cleanup_existing_banned_players(db: Database) -> None:
@@ -713,27 +759,25 @@ class ServerContext:
     def db_path(self) -> Path:
         return self.settings.db_path
 
-    def get_motd(self, api_version: str) -> str:
-        """Return MOTD text from SQLite only. Railway/env MOTD variables are intentionally ignored."""
-        setting_keys = (f"{api_version}.motd", "motd")
+    def get_server_setting(self, setting_key: str, default: Any = None) -> Any:
         with self.db.connection() as conn:
-            for setting_key in setting_keys:
-                row = conn.execute("SELECT value_json FROM server_settings WHERE key = ?", (setting_key,)).fetchone()
-                value = self._decode_setting_string(row)
-                if value is not None:
-                    return value
+            row = conn.execute("SELECT value_json FROM server_settings WHERE key = ?", (setting_key,)).fetchone()
+        if row is None:
+            return default
+        try:
+            return json.loads(row["value_json"])
+        except Exception:
+            return row["value_json"]
 
-            row = conn.execute(
-                """
-                SELECT value_json
-                FROM server_settings
-                WHERE key LIKE '%.motd'
-                ORDER BY created_at ASC
-                LIMIT 1
-                """
-            ).fetchone()
-            value = self._decode_setting_string(row)
-            return value if value is not None else ""
+    def get_motd(self, api_version: str | None = None) -> str:
+        """Return the shared canonical MOTD.
+
+        api_version is accepted so version adapters can call the same helper,
+        but it does not select a separate live MOTD key. The build-specific
+        files only decide how to serialize the shared text.
+        """
+        value = self.get_server_setting("motd", "")
+        return value if isinstance(value, str) else ""
 
     @staticmethod
     def _decode_setting_string(row: sqlite3.Row | None) -> str | None:
@@ -745,14 +789,17 @@ class ServerContext:
         try:
             value = json.loads(raw_value)
         except json.JSONDecodeError:
-            return raw_value
+            value = raw_value
         return value if isinstance(value, str) else None
 
     def set_shared_motd(self, message: str) -> None:
         self._set_server_setting("motd", message)
 
     def set_motd(self, api_version: str, message: str) -> None:
-        self._set_server_setting(f"{api_version}.motd", message)
+        # MOTD is a shared canonical server setting for the currently
+        # supported builds. Keep this method for older adapter/admin callers,
+        # but do not create build-local MOTD keys.
+        self.set_shared_motd(message)
 
     def _set_server_setting(self, setting_key: str, value: Any) -> None:
         now = utc_now()
@@ -766,6 +813,53 @@ class ServerContext:
                 (setting_key, json.dumps(value), now, now),
             )
 
+    def find_player_by_identity(self, identity_type: str, value: Any) -> dict[str, Any] | None:
+        identity_hash = self.identity_hash(identity_type, value)
+        if not identity_hash:
+            return None
+        with self.db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*
+                FROM player_identities AS pi
+                JOIN players AS p ON p.player_id = pi.player_id
+                WHERE pi.identity_type = ?
+                  AND pi.identity_hash = ?
+                ORDER BY pi.last_seen_at DESC
+                LIMIT 1
+                """,
+                (identity_type, identity_hash),
+            ).fetchone()
+        return row_to_canonical_player(row) if row else None
+
+    def ensure_player_version_state(
+        self,
+        player_id: str,
+        api_version: str,
+        default_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        default_state = dict(default_state or {})
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT state_json FROM player_version_state WHERE player_id = ? AND api_version = ?",
+                (player_id, api_version),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO player_version_state(player_id, api_version, state_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (player_id, api_version, json.dumps(default_state, sort_keys=True), now, now),
+                )
+                return default_state
+            try:
+                state = json.loads(row["state_json"] or "{}")
+            except Exception:
+                state = {}
+            return state if isinstance(state, dict) else {}
+
     def get_or_create_player(self, api_version: str, **kwargs: Any) -> dict[str, Any]:
         username = kwargs.get("username")
         display_name = kwargs.get("display_name")
@@ -777,7 +871,13 @@ class ServerContext:
                 ("account_id", identity_key),
             ]
         )
-        player = get_or_create_player(self.db, api_version=api_version, **kwargs)
+
+        player = self.find_player_by_identity("account_id", identity_key) if identity_key else None
+        if player is not None:
+            self.ensure_player_version_state(player["player_id"], api_version, {"identity_key": identity_key})
+        else:
+            player = get_or_create_player(self.db, api_version=api_version, **kwargs)
+
         identities = [
             ("account_id", player["player_id"]),
             ("username_lower", player["username"]),
@@ -1335,11 +1435,14 @@ def create_app() -> FastAPI:
     @app.get("/admin/motd")
     async def admin_get_motd(request: Request) -> JSONResponse:
         require_admin_key(request)
-        payload = {
-            "api_version": request.query_params.get("api_version") or request.query_params.get("apiVersion") or "MOTD2016"
-        }
-        api_version = admin_api_version_from_payload(payload, default="MOTD2016") or "MOTD2016"
-        return JSONResponse({"Success": True, "ApiVersion": api_version, "MessageOfTheDay": context.get_motd(api_version)})
+        return JSONResponse(
+            {
+                "Success": True,
+                "Scope": "shared",
+                "Key": "motd",
+                "MessageOfTheDay": context.get_motd(),
+            }
+        )
 
     @app.post("/admin/motd")
     async def admin_set_motd(request: Request) -> JSONResponse:
@@ -1351,7 +1454,6 @@ def create_app() -> FastAPI:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Admin MOTD payload must be a JSON object.")
 
-        api_version = admin_api_version_from_payload(payload, default="MOTD2016") or "MOTD2016"
         raw_message = payload.get("message", payload.get("MessageOfTheDay", payload.get("motd", "")))
         if raw_message is None:
             raw_message = ""
@@ -1359,14 +1461,8 @@ def create_app() -> FastAPI:
         if len(message.encode("utf-8")) > 8192:
             raise HTTPException(status_code=413, detail="MOTD is too large.")
 
-        shared = bool(payload.get("shared", False))
-        if shared:
-            context.set_shared_motd(message)
-            setting_key = "motd"
-        else:
-            context.set_motd(api_version, message)
-            setting_key = f"{api_version}.motd"
-        return JSONResponse({"Success": True, "ApiVersion": api_version, "Key": setting_key})
+        context.set_shared_motd(message)
+        return JSONResponse({"Success": True, "Scope": "shared", "Key": "motd"})
 
     @app.post("/admin/ban")
     async def admin_ban(request: Request) -> JSONResponse:

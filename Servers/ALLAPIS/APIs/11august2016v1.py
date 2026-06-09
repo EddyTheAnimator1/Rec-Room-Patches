@@ -69,11 +69,12 @@ def _save_version_state(context, player_id: str, state: dict[str, Any]) -> None:
     with context.db.transaction() as conn:
         conn.execute(
             """
-            UPDATE player_version_state
-            SET state_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE player_id = ? AND api_version = ?
+            INSERT INTO player_version_state(player_id, api_version, state_json, created_at, updated_at)
+            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT(player_id, api_version) DO UPDATE
+            SET state_json = excluded.state_json, updated_at = excluded.updated_at
             """,
-            (json.dumps(state, sort_keys=True), player_id, API_VERSION),
+            (player_id, API_VERSION, json.dumps(state, sort_keys=True)),
         )
 
 
@@ -107,22 +108,38 @@ def _allocate_legacy_player_id(context) -> int:
 
 
 def _find_player_by_steam_id(context, steam_id: str) -> dict[str, Any] | None:
-    with context.db.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT p.*, pvs.state_json
-            FROM players AS p
-            JOIN player_version_state AS pvs ON p.player_id = pvs.player_id
-            WHERE pvs.api_version = ?
-              AND json_extract(pvs.state_json, '$.steam_id') = ?
-            LIMIT 1
-            """,
-            (API_VERSION, str(steam_id)),
-        ).fetchone()
-    if row is None:
-        return None
-    player = {key: row[key] for key in row.keys() if key != "state_json"}
-    player["state"] = _state_from_row(row)
+    """Find by the shared canonical Steam identity, then ensure this build's state.
+
+    Steam ID is not owned by one API version. It is a canonical account identity
+    that should point to the same player everywhere. The 2016-specific legacy
+    integer ID remains version adapter state because this old client requires it.
+    """
+    identity_key = f"steam:{steam_id}"
+    player = context.find_player_by_identity("account_id", identity_key)
+    if player is None:
+        with context.db.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*, pvs.state_json
+                FROM players AS p
+                JOIN player_version_state AS pvs ON p.player_id = pvs.player_id
+                WHERE json_extract(pvs.state_json, '$.steam_id') = ?
+                   OR json_extract(pvs.state_json, '$.identity_key') = ?
+                ORDER BY pvs.updated_at DESC
+                LIMIT 1
+                """,
+                (str(steam_id), identity_key),
+            ).fetchone()
+        if row is None:
+            return None
+        player = {key: row[key] for key in row.keys() if key != "state_json"}
+    state = _ensure_legacy_state(
+        context,
+        player,
+        steam_id=str(steam_id),
+        display_name=str(player.get("display_name") or player.get("username") or "Player"),
+    )
+    player["state"] = state
     return player
 
 
@@ -192,9 +209,9 @@ def _serialize_player_for_client(player: dict[str, Any]) -> dict[str, Any]:
     state = player.get("state") or {}
     return {
         "Id": int(state.get("legacy_player_id") or 0),
-        "Name": str(state.get("name") or player.get("display_name") or player.get("username") or "Player"),
+        "Name": str(player.get("display_name") or player.get("username") or state.get("name") or "Player"),
         "SteamID": int(str(state.get("steam_id") or "0") or 0),
-        "Email": str(state.get("email") or player.get("email") or DEFAULT_EMAIL),
+        "Email": str(player.get("email") or state.get("email") or DEFAULT_EMAIL),
         "Gender": str(state.get("gender") or DEFAULT_GENDER),
         "XP": int(player.get("canonical_xp") or 0),
         "Level": int(player.get("canonical_level") or 1),
@@ -318,7 +335,7 @@ async def _handle_update_player(request: Request, route_path: str, context) -> R
     state = player.get("state") or {}
     name = _str_field(payload, "Name", "name", default=str(state.get("name") or player.get("display_name") or "Player"))
     state["name"] = _safe_display_name(name, fallback=str(state.get("name") or "Player"))
-    state["email"] = _str_field(payload, "Email", "email", default=str(state.get("email") or DEFAULT_EMAIL)) or DEFAULT_EMAIL
+    state["email"] = _str_field(payload, "Email", "email", default=str(player.get("email") or state.get("email") or DEFAULT_EMAIL)) or DEFAULT_EMAIL
     state["gender"] = _str_field(payload, "Gender", "gender", default=str(state.get("gender") or DEFAULT_GENDER))
     state["reputation"] = _int_field(payload, "Reputation", "reputation", default=int(state.get("reputation") or DEFAULT_REPUTATION))
 
@@ -328,10 +345,10 @@ async def _handle_update_player(request: Request, route_path: str, context) -> R
         conn.execute(
             """
             UPDATE players
-            SET display_name = ?, canonical_xp = ?, canonical_level = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            SET display_name = ?, email = ?, canonical_xp = ?, canonical_level = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
             WHERE player_id = ? AND is_coach = 0
             """,
-            (state["name"], max(0, xp), max(1, level), player["player_id"]),
+            (state["name"], state["email"], max(0, xp), max(1, level), player["player_id"]),
         )
         conn.execute(
             """
