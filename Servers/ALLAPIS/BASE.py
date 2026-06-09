@@ -23,6 +23,9 @@ from starlette import status
 
 
 API_VERSION_RE = re.compile(r"^[A-Za-z0-9_]+$")
+API_VERSION_ALIASES = {
+    "11august2016": "11august2016v1",
+}
 IMAGE_DATA_DIR_NAME = "IMAGES"
 ALLOWED_DATA_ROOT_EXTENSIONS = {".json"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -1269,9 +1272,14 @@ def maybe_await(value: Any) -> Any:
     return None
 
 
+def resolve_api_version(api_version: str) -> str:
+    return API_VERSION_ALIASES.get(api_version, api_version)
+
+
 def load_version_module(settings: Settings, api_version: str) -> Any:
     if not API_VERSION_RE.fullmatch(api_version):
         raise HTTPException(status_code=404, detail="Unknown API version.")
+    api_version = resolve_api_version(api_version)
     module_path = settings.api_dir / f"{api_version}.py"
     if not module_path.is_file():
         raise HTTPException(status_code=404, detail="Unknown API version.")
@@ -1677,8 +1685,9 @@ def create_app() -> FastAPI:
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     )
     async def dispatch_http(api_version: str, route_path: str, request: Request) -> Response:
-        module = load_version_module(settings, api_version)
-        context.assert_request_not_banned(request, api_version)
+        resolved_api_version = resolve_api_version(api_version)
+        module = load_version_module(settings, resolved_api_version)
+        context.assert_request_not_banned(request, resolved_api_version)
         handler = getattr(module, "handle_http", None)
         if handler is None:
             raise HTTPException(status_code=501, detail="HTTP API is not implemented for this version.")
@@ -1698,8 +1707,9 @@ def create_app() -> FastAPI:
         if not limiter.allow(f"ws:{client_host}"):
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="Rate limit exceeded.")
         try:
-            module = load_version_module(settings, api_version)
-            context.assert_request_not_banned(websocket, api_version)
+            resolved_api_version = resolve_api_version(api_version)
+            module = load_version_module(settings, resolved_api_version)
+            context.assert_request_not_banned(websocket, resolved_api_version)
         except HTTPException as exc:
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=str(exc.detail)) from exc
         handler = getattr(module, "handle_websocket", None)
