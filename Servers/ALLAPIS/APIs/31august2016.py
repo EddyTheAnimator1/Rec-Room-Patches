@@ -310,9 +310,10 @@ async def _handle_get_player(request: Request, context) -> Response:
     platform_id = str(request.query_params.get("id") or request.query_params.get("PlatformId") or "").strip()
     if not platform_id:
         raise HTTPException(status_code=400, detail="id is required.")
+    context.assert_identities_not_banned(_identity_pairs(platform, platform_id))
     player = _find_player_by_platform(context, platform=platform, platform_id=platform_id)
     if player is None:
-        raise HTTPException(status_code=404, detail="Player not found.")
+        return JSONResponse({})
     context.assert_player_not_banned(player["player_id"])
     context.record_player_identities(player["player_id"], _identity_pairs(platform, platform_id))
     return _json_response(player)

@@ -318,9 +318,10 @@ async def _handle_get_player(request: Request, context) -> Response:
     steam_id = str(request.query_params.get("steamId") or request.query_params.get("SteamID") or "").strip()
     if not steam_id:
         raise HTTPException(status_code=400, detail="steamId is required.")
+    context.assert_identities_not_banned([("account_id", f"steam:{steam_id}")])
     player = _find_player_by_steam_id(context, steam_id)
     if player is None:
-        raise HTTPException(status_code=404, detail="Player not found.")
+        return JSONResponse({})
     context.assert_player_not_banned(player["player_id"])
     context.record_player_identities(player["player_id"], [("account_id", f"steam:{steam_id}")])
     return _json_response(player)
