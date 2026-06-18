@@ -2,14 +2,15 @@
   "version": 1,
   "instructions": [
     {
-      "type": "replace_csharp_string",
+      "type": "install_patch_file",
+      "source": "Assembly-CSharp.dll",
       "base_dir": "Recroom_Release_Data/Managed",
       "file": "Assembly-CSharp.dll",
-      "find": "http://www.againstgrav.com/motd",
-      "replace": "https://raw.githubusercontent.com/EddyTheAnimator1/Rec-Room-Patches/refs/heads/main/ApiGetsnSorts/motd.txt"
+      "overwrite": true
     },
     {
       "type": "replace_bytes",
+      "base_dir": "Recroom_Release_Data",
       "file": "resources.assets",
       "replacements": [
         {
