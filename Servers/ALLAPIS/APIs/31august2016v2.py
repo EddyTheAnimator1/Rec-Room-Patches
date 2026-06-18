@@ -9,7 +9,7 @@ Confirmed from decompiled client build 3798172550462140867:
 - GET  api/tournament/forfeit?match=<MatchId>&player=<Photon player name>
 
 The API-bearing classes are byte-for-byte identical to 31august2016. This
-module reuses that implementation with version-specific state keys.
+module reuses that implementation with shared 2016 legacy player state.
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from fastapi import Request, WebSocket
 from fastapi.responses import Response
 
 API_VERSION = "31august2016v2"
-NEXT_PLAYER_ID_SETTING = f"{API_VERSION}.next_legacy_player_id"
 
 
 def _load_base_adapter():
@@ -32,7 +31,6 @@ def _load_base_adapter():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.API_VERSION = API_VERSION
-    module.NEXT_PLAYER_ID_SETTING = NEXT_PLAYER_ID_SETTING
     return module
 
 

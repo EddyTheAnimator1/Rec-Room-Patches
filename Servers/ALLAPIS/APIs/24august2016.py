@@ -22,7 +22,6 @@ from fastapi import HTTPException, Request, WebSocket
 from fastapi.responses import Response
 
 API_VERSION = "24august2016"
-NEXT_PLAYER_ID_SETTING = f"{API_VERSION}.next_legacy_player_id"
 
 
 def _load_base_adapter():
@@ -33,7 +32,6 @@ def _load_base_adapter():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.API_VERSION = API_VERSION
-    module.NEXT_PLAYER_ID_SETTING = NEXT_PLAYER_ID_SETTING
     return module
 
 

@@ -24,7 +24,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette import status
 
 API_VERSION = "31august2016"
-NEXT_PLAYER_ID_SETTING = f"{API_VERSION}.next_legacy_player_id"
+STATE_API_VERSION = "2016_legacy_player"
+NEXT_PLAYER_ID_SETTING = f"{STATE_API_VERSION}.next_legacy_player_id"
 DEFAULT_REPUTATION = 0
 
 
@@ -55,7 +56,7 @@ def _fetch_version_state(context, player_id: str) -> dict[str, Any]:
     with context.db.connection() as conn:
         row = conn.execute(
             "SELECT state_json FROM player_version_state WHERE player_id = ? AND api_version = ?",
-            (player_id, API_VERSION),
+            (player_id, STATE_API_VERSION),
         ).fetchone()
     return _state_from_row(row)
 
@@ -69,7 +70,7 @@ def _save_version_state(context, player_id: str, state: dict[str, Any]) -> None:
             ON CONFLICT(player_id, api_version) DO UPDATE
             SET state_json = excluded.state_json, updated_at = excluded.updated_at
             """,
-            (player_id, API_VERSION, json.dumps(state, sort_keys=True)),
+            (player_id, STATE_API_VERSION, json.dumps(state, sort_keys=True)),
         )
 
 
@@ -86,7 +87,7 @@ def _allocate_legacy_player_id(context) -> int:
             FROM player_version_state
             WHERE api_version = ?
             """,
-            (API_VERSION,),
+            (STATE_API_VERSION,),
         ).fetchone()
         max_id = int(max_row["max_id"] or 0)
         next_id = max(next_id, max_id + 1, 1)
@@ -134,6 +135,9 @@ def _ensure_platform_state(context, player: dict[str, Any], *, platform: int, pl
         if state.get(key) != value:
             state[key] = value
             changed = True
+    if platform == 0 and str(state.get("steam_id") or "") != str(platform_id):
+        state["steam_id"] = str(platform_id)
+        changed = True
     if not state.get("legacy_player_id"):
         state["legacy_player_id"] = _allocate_legacy_player_id(context)
         changed = True
@@ -165,8 +169,21 @@ def _find_player_by_platform(context, *, platform: int, platform_id: str) -> dic
                 ORDER BY pvs.updated_at DESC
                 LIMIT 1
                 """,
-                (API_VERSION, platform, str(platform_id)),
+                (STATE_API_VERSION, platform, str(platform_id)),
             ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT p.*, pvs.state_json
+                    FROM players AS p
+                    JOIN player_version_state AS pvs ON p.player_id = pvs.player_id
+                    WHERE CAST(json_extract(pvs.state_json, '$.platform') AS INTEGER) = ?
+                      AND json_extract(pvs.state_json, '$.platform_id') = ?
+                    ORDER BY pvs.updated_at DESC
+                    LIMIT 1
+                    """,
+                    (platform, str(platform_id)),
+                ).fetchone()
         if row is None:
             return None
         player = {key: row[key] for key in row.keys() if key != "state_json"}
@@ -192,8 +209,20 @@ def _find_player_by_legacy_id(context, legacy_id: int) -> dict[str, Any] | None:
               AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) = ?
             LIMIT 1
             """,
-            (API_VERSION, legacy_id),
+            (STATE_API_VERSION, legacy_id),
         ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT p.*, pvs.state_json
+                FROM players AS p
+                JOIN player_version_state AS pvs ON p.player_id = pvs.player_id
+                WHERE pvs.api_version = ?
+                  AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) = ?
+                LIMIT 1
+                """,
+                (API_VERSION, legacy_id),
+            ).fetchone()
     if row is None:
         return None
     player = {key: row[key] for key in row.keys() if key != "state_json"}
@@ -205,7 +234,7 @@ def _create_player_for_platform(context, *, platform: int, platform_id: str, nam
     fallback = f"Player{platform_id[-4:] if platform_id else ''}"
     display_name = _safe_display_name(name, fallback=fallback)
     canonical = context.get_or_create_player(
-        API_VERSION,
+        STATE_API_VERSION,
         identity_key=_platform_identity_key(platform, platform_id),
         username=_canonical_username(platform, platform_id),
         display_name=display_name,
@@ -340,7 +369,7 @@ async def _handle_update_player(request: Request, route_path: str, context) -> R
             SET state_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
             WHERE player_id = ? AND api_version = ?
             """,
-            (json.dumps(state, sort_keys=True), player["player_id"], API_VERSION),
+            (json.dumps(state, sort_keys=True), player["player_id"], STATE_API_VERSION),
         )
     updated = _find_player_by_legacy_id(context, legacy_id)
     return _json_response(updated or player)

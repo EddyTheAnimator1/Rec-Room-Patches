@@ -23,9 +23,7 @@ from starlette import status
 
 
 API_VERSION_RE = re.compile(r"^[A-Za-z0-9_]+$")
-API_VERSION_ALIASES = {
-    "11august2016": "11august2016v1",
-}
+API_VERSION_ALIASES: dict[str, str] = {}
 IMAGE_DATA_DIR_NAME = "IMAGES"
 ALLOWED_DATA_ROOT_EXTENSIONS = {".json"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -661,6 +659,19 @@ def admin_api_version_from_payload(payload: dict[str, Any], *, default: str | No
     if not API_VERSION_RE.fullmatch(api_version):
         raise HTTPException(status_code=400, detail="Invalid api_version.")
     return api_version
+
+
+def payload_truthy(payload: dict[str, Any], *names: str) -> bool:
+    for name in names:
+        if name not in payload:
+            continue
+        value = payload[name]
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value).strip().casefold() in {"1", "true", "yes", "y", "on"}
+    return False
 
 
 def append_recnet_identity_pairs(identities: list[tuple[str, Any]], recnet_id: str, api_version: str | None) -> None:
@@ -1464,6 +1475,84 @@ def create_app() -> FastAPI:
         context.set_shared_motd(message)
         return JSONResponse({"Success": True, "Scope": "shared", "Key": "motd"})
 
+    @app.get("/admin/ban/status")
+    async def admin_ban_status(request: Request) -> JSONResponse:
+        require_admin_key(request)
+        params = request.query_params
+        api_version = admin_api_version_from_payload(dict(params))
+        username = str(params.get("username") or params.get("Username") or "").strip()
+        display_name = str(params.get("display_name") or params.get("displayName") or params.get("DisplayName") or "").strip()
+        canonical_player_id = str(
+            params.get("canonical_player_id") or params.get("canonicalPlayerId") or params.get("player_uuid") or ""
+        ).strip()
+        player_id_value = str(params.get("player_id") or params.get("playerId") or params.get("PlayerId") or "").strip()
+        if not canonical_player_id and re.fullmatch(r"[0-9a-fA-F-]{32,36}", player_id_value):
+            canonical_player_id = player_id_value
+            player_id_value = ""
+        recnet_id = str(params.get("recnet_id") or params.get("recNetId") or params.get("recnetId") or "").strip()
+        if not recnet_id and player_id_value:
+            recnet_id = player_id_value
+        platform = str(params.get("platform") or params.get("Platform") or "").strip()
+        platform_id = str(params.get("platform_id") or params.get("platformId") or params.get("PlatformId") or "").strip()
+        account_id = str(params.get("account_id") or params.get("accountId") or "").strip()
+        ip = str(params.get("ip") or params.get("ipAddress") or params.get("ip_address") or "").strip()
+        hardware_id = str(params.get("hardware_id") or params.get("hardwareId") or params.get("device_id") or params.get("deviceId") or "").strip()
+
+        identities: list[tuple[str, Any]] = []
+        if username:
+            identities.append(("username_lower", username))
+        if display_name:
+            identities.append(("username_lower", display_name))
+        if canonical_player_id:
+            identities.append(("account_id", canonical_player_id))
+        if account_id:
+            identities.append(("account_id", account_id))
+        if recnet_id:
+            append_recnet_identity_pairs(identities, recnet_id, api_version)
+        if platform_id:
+            identities.append(("account_id", f"platform:{platform or 0}:{platform_id}"))
+            if (platform or "0") == "0":
+                identities.append(("account_id", f"steam:{platform_id}"))
+        if ip:
+            identities.append(("ip_hash", ip))
+        if hardware_id:
+            identities.append(("hardware_id_hash", hardware_id))
+        if not identities:
+            raise HTTPException(status_code=400, detail="Provide at least one player or identity field.")
+
+        checked: list[dict[str, str]] = []
+        active_bans: list[dict[str, Any]] = []
+        with db.connection() as conn:
+            for identity_type, value in identities:
+                identity_hash = context.identity_hash(identity_type, value)
+                if not identity_hash:
+                    continue
+                checked.append({"identity_type": identity_type, "value": str(value)})
+                rows = conn.execute(
+                    """
+                    SELECT id, player_id, identity_type, reason, active, created_at, updated_at
+                    FROM bans
+                    WHERE identity_type = ?
+                      AND identity_hash = ?
+                      AND active = 1
+                    ORDER BY updated_at DESC
+                    """,
+                    (identity_type, identity_hash),
+                ).fetchall()
+                for row in rows:
+                    active_bans.append(
+                        {
+                            "id": row["id"],
+                            "player_id": row["player_id"],
+                            "identity_type": row["identity_type"],
+                            "reason": row["reason"],
+                            "created_at": row["created_at"],
+                            "updated_at": row["updated_at"],
+                        }
+                    )
+
+        return JSONResponse({"Success": True, "IsBanned": bool(active_bans), "CheckedIdentities": checked, "ActiveBans": active_bans})
+
     @app.post("/admin/ban")
     async def admin_ban(request: Request) -> JSONResponse:
         require_admin_key(request)
@@ -1501,6 +1590,10 @@ def create_app() -> FastAPI:
         hardware_id = str(
             payload.get("hardware_id") or payload.get("hardwareId") or payload.get("device_id") or payload.get("deviceId") or ""
         ).strip()
+        allow_multiple = payload_truthy(payload, "allow_multiple", "allowMultiple", "AllowMultiple")
+        has_strong_player_identifier = bool(
+            username or canonical_player_id or recnet_id or platform_id or account_id or ip or hardware_id
+        )
 
         identities: list[tuple[str, Any]] = []
         if username:
@@ -1542,6 +1635,11 @@ def create_app() -> FastAPI:
                     """,
                     (username, username, display_name, display_name),
                 ).fetchall()
+                if display_name and not has_strong_player_identifier and not allow_multiple and len(rows) > 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Display name matched multiple players. Provide a stronger identifier or allow_multiple=true.",
+                    )
                 for row in rows:
                     matched[row["player_id"]] = row
             if recnet_id:
@@ -1661,6 +1759,10 @@ def create_app() -> FastAPI:
         hardware_id = str(
             payload.get("hardware_id") or payload.get("hardwareId") or payload.get("device_id") or payload.get("deviceId") or ""
         ).strip()
+        allow_multiple = payload_truthy(payload, "allow_multiple", "allowMultiple", "AllowMultiple")
+        has_strong_player_identifier = bool(
+            username or canonical_player_id or recnet_id or platform_id or account_id or ip or hardware_id
+        )
 
         identities: list[tuple[str, Any]] = []
         if username:
@@ -1699,6 +1801,11 @@ def create_app() -> FastAPI:
                     """,
                     (username, username, display_name, display_name),
                 ).fetchall()
+                if display_name and not has_strong_player_identifier and not allow_multiple and len(rows) > 1:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Display name matched multiple players. Provide a stronger identifier or allow_multiple=true.",
+                    )
                 for row in rows:
                     matched[row["player_id"]] = row
             if recnet_id:

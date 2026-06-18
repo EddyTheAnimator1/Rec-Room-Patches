@@ -7,8 +7,8 @@ Confirmed from decompiled client build 8414822626868729817:
 - GET  motd, for patched MOTD URL convenience
 
 The API-bearing classes are byte-for-byte identical to the earlier
-17august2016 adapter, so this module reuses that implementation with a
-version-specific state key.
+17august2016 adapter, so this module reuses that implementation with shared
+2016 legacy player state.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from fastapi import Request, WebSocket
 from fastapi.responses import Response
 
 API_VERSION = "17august2016v2"
-NEXT_PLAYER_ID_SETTING = f"{API_VERSION}.next_legacy_player_id"
 
 
 def _load_base_adapter():
@@ -31,7 +30,6 @@ def _load_base_adapter():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.API_VERSION = API_VERSION
-    module.NEXT_PLAYER_ID_SETTING = NEXT_PLAYER_ID_SETTING
     return module
 
 

@@ -21,7 +21,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette import status
 
 API_VERSION = "17august2016"
-NEXT_PLAYER_ID_SETTING = f"{API_VERSION}.next_legacy_player_id"
+STATE_API_VERSION = "2016_legacy_player"
+NEXT_PLAYER_ID_SETTING = f"{STATE_API_VERSION}.next_legacy_player_id"
 DEFAULT_EMAIL = "idontwanttoguess@gmail.com"
 DEFAULT_GENDER = ""
 DEFAULT_REPUTATION = 0
@@ -60,7 +61,7 @@ def _fetch_version_state(context, player_id: str) -> dict[str, Any]:
     with context.db.connection() as conn:
         row = conn.execute(
             "SELECT state_json FROM player_version_state WHERE player_id = ? AND api_version = ?",
-            (player_id, API_VERSION),
+            (player_id, STATE_API_VERSION),
         ).fetchone()
     return _state_from_row(row)
 
@@ -74,7 +75,7 @@ def _save_version_state(context, player_id: str, state: dict[str, Any]) -> None:
             ON CONFLICT(player_id, api_version) DO UPDATE
             SET state_json = excluded.state_json, updated_at = excluded.updated_at
             """,
-            (player_id, API_VERSION, json.dumps(state, sort_keys=True)),
+            (player_id, STATE_API_VERSION, json.dumps(state, sort_keys=True)),
         )
 
 
@@ -91,7 +92,7 @@ def _allocate_legacy_player_id(context) -> int:
             FROM player_version_state
             WHERE api_version = ?
             """,
-            (API_VERSION,),
+            (STATE_API_VERSION,),
         ).fetchone()
         max_id = int(max_row["max_id"] or 0)
         next_id = max(next_id, max_id + 1, 1)
@@ -112,7 +113,8 @@ def _find_player_by_steam_id(context, steam_id: str) -> dict[str, Any] | None:
 
     Steam ID is not owned by one API version. It is a canonical account identity
     that should point to the same player everywhere. The 2016-specific legacy
-    integer ID remains version adapter state because this old client requires it.
+    integer ID remains shared 2016 adapter state because compatible old clients
+    all treat it as the server player Id.
     """
     identity_key = f"steam:{steam_id}"
     player = context.find_player_by_identity("account_id", identity_key)
@@ -154,8 +156,20 @@ def _find_player_by_legacy_id(context, legacy_id: int) -> dict[str, Any] | None:
               AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) = ?
             LIMIT 1
             """,
-            (API_VERSION, legacy_id),
+            (STATE_API_VERSION, legacy_id),
         ).fetchone()
+        if row is None:
+            row = conn.execute(
+                """
+                SELECT p.*, pvs.state_json
+                FROM players AS p
+                JOIN player_version_state AS pvs ON p.player_id = pvs.player_id
+                WHERE pvs.api_version = ?
+                  AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) = ?
+                LIMIT 1
+                """,
+                (API_VERSION, legacy_id),
+            ).fetchone()
     if row is None:
         return None
     player = {key: row[key] for key in row.keys() if key != "state_json"}
@@ -171,6 +185,12 @@ def _ensure_legacy_state(context, player: dict[str, Any], *, steam_id: str, disp
         changed = True
     if str(state.get("steam_id") or "") != str(steam_id):
         state["steam_id"] = str(steam_id)
+        changed = True
+    if "platform" not in state:
+        state["platform"] = 0
+        changed = True
+    if str(state.get("platform_id") or "") != str(steam_id):
+        state["platform_id"] = str(steam_id)
         changed = True
     if not state.get("legacy_player_id"):
         state["legacy_player_id"] = _allocate_legacy_player_id(context)
@@ -195,7 +215,7 @@ def _ensure_legacy_state(context, player: dict[str, Any], *, steam_id: str, disp
 def _create_player_for_steam(context, *, steam_id: str, name: str) -> dict[str, Any]:
     display_name = _safe_display_name(name, fallback=f"Player{steam_id[-4:] if steam_id else ''}")
     canonical = context.get_or_create_player(
-        API_VERSION,
+        STATE_API_VERSION,
         identity_key=f"steam:{steam_id}",
         username=_canonical_username_for_steam(steam_id),
         display_name=display_name,
@@ -356,7 +376,7 @@ async def _handle_update_player(request: Request, route_path: str, context) -> R
             SET state_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
             WHERE player_id = ? AND api_version = ?
             """,
-            (json.dumps(state, sort_keys=True), player["player_id"], API_VERSION),
+            (json.dumps(state, sort_keys=True), player["player_id"], STATE_API_VERSION),
         )
 
     updated = _find_player_by_legacy_id(context, legacy_id)
