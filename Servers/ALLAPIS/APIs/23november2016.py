@@ -39,8 +39,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import mimetypes
 import re
 import time
+from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as email_default_policy
+from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -49,6 +54,14 @@ from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 API_VERSION = "23november2016"
+PROFILE_IMAGE_PURPOSE = "shared.profile_image"
+DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Wed, 23 Nov 2016 01:26:08 GMT"
+DEFAULT_PROFILE_IMAGE_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+    b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4"
+    b"\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05"
+    b"\xfe\x02\xfeA\xe2 \x9a\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 DAILY_OBJECTIVES = [
     [
@@ -253,6 +266,171 @@ async def _parse_body_any(request: Request) -> Any:
 async def _parse_client_payload(request: Request) -> dict[str, Any]:
     payload = await _parse_body_any(request)
     return payload if isinstance(payload, dict) else {}
+
+
+def _legacy_id_from_image_route(route_path: str) -> int | None:
+    match = re.fullmatch(r"api/images/v1/profile/(\d+)/?", route_path.strip("/"), flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _image_asset_for_player(context, player_id: str):
+    with context.db.connection() as conn:
+        player = conn.execute("SELECT profile_picture_asset_id FROM players WHERE player_id = ?", (player_id,)).fetchone()
+        asset_id = player["profile_picture_asset_id"] if player else None
+        if asset_id:
+            asset = conn.execute("SELECT * FROM data_assets WHERE asset_id = ?", (asset_id,)).fetchone()
+            if asset:
+                return asset
+        return conn.execute(
+            """
+            SELECT *
+            FROM data_assets
+            WHERE owner_player_id = ?
+              AND purpose = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (player_id, PROFILE_IMAGE_PURPOSE),
+        ).fetchone()
+
+
+def _detect_image_type(content: bytes, fallback_mime: str = "") -> tuple[str, str]:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    fallback_mime = fallback_mime.lower()
+    fallback_ext = mimetypes.guess_extension(fallback_mime) or ""
+    if fallback_mime in {"image/png", "image/jpeg"} and fallback_ext.lower() in {".png", ".jpg", ".jpeg"}:
+        return fallback_mime, fallback_ext.lower()
+    raise HTTPException(status_code=400, detail="image must be PNG or JPEG.")
+
+
+def _parse_multipart_image(content_type: str, body: bytes) -> tuple[bytes, str]:
+    if "multipart/form-data" not in content_type.casefold():
+        mime_type, _ = _detect_image_type(body, content_type.split(";", 1)[0].strip())
+        return body, mime_type
+    if "boundary=" not in content_type.casefold():
+        raise HTTPException(status_code=400, detail="Multipart boundary is required.")
+
+    message = BytesParser(policy=email_default_policy).parsebytes(
+        b"Content-Type: " + content_type.encode("utf-8") + b"\r\n\r\n" + body
+    )
+    for part in message.iter_parts():
+        disposition = part.get_content_disposition()
+        field_name = part.get_param("name", header="content-disposition")
+        if disposition == "form-data" and field_name == "image":
+            content = part.get_payload(decode=True) or b""
+            return content, str(part.get_content_type() or "")
+    raise HTTPException(status_code=400, detail="image form field is required.")
+
+
+def _http_date_from_created_at(created_at: Any) -> str:
+    value = str(created_at or "").strip()
+    try:
+        stamp = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except Exception:
+        return DEFAULT_PROFILE_IMAGE_LAST_MODIFIED
+    return format_datetime(stamp, usegmt=True)
+
+
+def _same_http_date(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return parsedate_to_datetime(left) == parsedate_to_datetime(right)
+    except Exception:
+        return left.strip() == right.strip()
+
+
+def _profile_image_response(
+    request: Request,
+    *,
+    content: bytes,
+    media_type: str,
+    last_modified: str,
+) -> Response:
+    headers = {"Last-Modified": last_modified}
+    if _same_http_date(str(request.headers.get("if-modified-since") or ""), last_modified):
+        return Response(status_code=304, headers=headers)
+    return Response(content=content, media_type=media_type, headers=headers)
+
+
+async def _handle_get_profile_image(request: Request, route_path: str, context) -> Response:
+    legacy_id = _legacy_id_from_image_route(route_path)
+    if legacy_id is None:
+        raise HTTPException(status_code=404, detail="Unknown endpoint.")
+    player = _PLATFORM_BASE._find_player_by_legacy_id(context, legacy_id)
+    if player is None:
+        return _profile_image_response(
+            request,
+            content=DEFAULT_PROFILE_IMAGE_BYTES,
+            media_type="image/png",
+            last_modified=DEFAULT_PROFILE_IMAGE_LAST_MODIFIED,
+        )
+    context.assert_player_not_banned(player["player_id"])
+    asset = _image_asset_for_player(context, player["player_id"])
+    if asset is None:
+        return _profile_image_response(
+            request,
+            content=DEFAULT_PROFILE_IMAGE_BYTES,
+            media_type="image/png",
+            last_modified=DEFAULT_PROFILE_IMAGE_LAST_MODIFIED,
+        )
+    image_path = (context.data_dir / asset["relative_path"]).resolve()
+    data_dir = context.data_dir.resolve()
+    if data_dir not in image_path.parents or not image_path.is_file():
+        return _profile_image_response(
+            request,
+            content=DEFAULT_PROFILE_IMAGE_BYTES,
+            media_type="image/png",
+            last_modified=DEFAULT_PROFILE_IMAGE_LAST_MODIFIED,
+        )
+    return _profile_image_response(
+        request,
+        content=image_path.read_bytes(),
+        media_type=str(asset["mime_type"] or "application/octet-stream"),
+        last_modified=_http_date_from_created_at(asset["created_at"]),
+    )
+
+
+async def _handle_set_profile_image(request: Request, route_path: str, context) -> Response:
+    legacy_id = _legacy_id_from_image_route(route_path)
+    if legacy_id is None:
+        raise HTTPException(status_code=404, detail="Unknown endpoint.")
+    player = _PLATFORM_BASE._find_player_by_legacy_id(context, legacy_id)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found.")
+    context.assert_player_not_banned(player["player_id"])
+
+    body = await request.body()
+    content, declared_mime_type = _parse_multipart_image(str(request.headers.get("content-type") or ""), body)
+    if not content:
+        raise HTTPException(status_code=400, detail="image form field is empty.")
+    mime_type, file_ext = _detect_image_type(content, declared_mime_type)
+    try:
+        asset = context.save_image_bytes(
+            owner_player_id=player["player_id"],
+            content=content,
+            file_ext=file_ext,
+            mime_type=mime_type,
+            purpose=PROFILE_IMAGE_PURPOSE,
+            metadata={"legacy_player_id": legacy_id},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with context.db.transaction() as conn:
+        conn.execute(
+            """
+            UPDATE players
+            SET profile_picture_asset_id = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+            """,
+            (asset["asset_id"], player["player_id"]),
+        )
+    return Response(status_code=204)
 
 
 def _display_name_for_profile(player: dict[str, Any]) -> str:
@@ -818,6 +996,13 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         if method != "GET":
             raise HTTPException(status_code=501, detail="Daily objectives method is not implemented.")
         return JSONResponse(DAILY_OBJECTIVES)
+
+    if path.startswith("api/images/v1/profile/"):
+        if method == "GET":
+            return await _handle_get_profile_image(request, route_path, context)
+        if method == "POST":
+            return await _handle_set_profile_image(request, route_path, context)
+        raise HTTPException(status_code=501, detail="Profile image method is not implemented.")
 
     if method == "GET" and path in {"api/players/v1", "api/players/v1/"}:
         return await _handle_get_profile_by_platform(request, context)
