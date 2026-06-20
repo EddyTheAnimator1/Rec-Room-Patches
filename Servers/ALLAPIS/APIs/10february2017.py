@@ -3,8 +3,9 @@
 Confirmed from decompiled client build 2420201992531381519:
 - RecNet networking is obfuscated, but the real HTTP base fields still route
   through the same request queue as the 3 February 2017 client family.
-- Player subscription sync was added at api/PlayerSubscriptions/v1/add and
-  api/PlayerSubscriptions/v1/remove with a raw JSON array of player ids.
+- Player subscription sync was added at api/PlayerSubscriptions/v1/init,
+  api/PlayerSubscriptions/v1/add, and api/PlayerSubscriptions/v1/remove with a
+  raw JSON array of player ids.
 - Objective leaderboard lookup was added at api/Leaderboard/v1.
 - Push notifications use api/notification/v2.
 """
@@ -139,7 +140,9 @@ async def _handle_player_subscriptions(request: Request, action: str, context) -
             continue
         if stored_id > 0:
             subscribed.add(stored_id)
-    if action == "add":
+    if action == "init":
+        subscribed = set(requested_ids)
+    elif action == "add":
         subscribed.update(requested_ids)
     elif action == "remove":
         subscribed.difference_update(requested_ids)
@@ -158,7 +161,7 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
             raise HTTPException(status_code=501, detail="Leaderboard method is not implemented.")
         return await _handle_leaderboard(request, context)
 
-    for action in ("add", "remove"):
+    for action in ("init", "add", "remove"):
         if path in {f"api/playersubscriptions/v1/{action}", f"api/playersubscriptions/v1/{action}/"}:
             if method != "POST":
                 raise HTTPException(status_code=501, detail="Player subscription method is not implemented.")
