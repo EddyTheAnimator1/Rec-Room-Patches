@@ -7,6 +7,25 @@ https://github.com/user-attachments/assets/92014a05-bd8b-4297-8eaf-b41dce0c675a
 
 This project is not affiliated with [Rec Room Inc.]([https://example.com](https://recroom.com/)). It is made by a solo developer and it isn't official.
 
+
+# ❗ BEFORE GOING BEYOND THIS POINT
+This is a developer warning.
+
+This project may enable developer/debug functionality for all users in certain restored Rec Room builds.
+
+This is done for preservation, research, transparency, and educational purposes, so players can explore how these older builds behaved internally. These tools were not necessarily intended for normal public use and may expose unfinished, unstable, privileged, or unsafe game functionality.
+
+Exercise extreme caution when using builds newer than 18 January 2017. These builds may contain developer tools, moderation interfaces, room-editing systems, debug menus, experimental features, or other functionality that can behave unpredictably.
+
+Use these builds at your own risk. I am not responsible for damage, data loss, broken rooms, account issues, misuse by other players, or any consequences caused by enabling or using developer/debug functionality.
+
+Do not use developer features to harass, disrupt, impersonate, moderate, punish, ban, kick, damage, or interfere with other players, accounts, rooms, or servers. Any abuse is the responsibility of the person performing it.
+
+**This project is intended for archival and educational use only.**
+
+
+
+
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the RecRoompatches.exe
 2. Put the RecRoompatches.exe in a folder to stay organized (It downloads Depotdownloader)
