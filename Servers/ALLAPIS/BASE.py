@@ -12,10 +12,14 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
+from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -38,6 +42,12 @@ DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
 ADMIN_KEY_ENV_NAMES = ("RECROOM_ADMIN_BAN_KEY", "RECROOM_ADMIN_SECRET", "RECROOM_ADMIN_KEY", "RR_ADMIN_KEY")
+ERROR_WEBHOOK_ENV_NAMES = ("RECROOM_ERROR_WEBHOOK_URL", "RECROOM_API_ERROR_WEBHOOK_URL", "DISCORD_ERROR_WEBHOOK_URL")
+DISCORD_RED_COLOR = 0xFF0000
+WEBHOOK_ALERT_TITLE = "⋆｡°✩ Endpoint ghost detected ✩°｡⋆"
+WEBHOOK_ALERT_MESSAGE = "Someone was waiting for a ghost. ."
+MAX_WEBHOOK_FIELD_VALUE_LENGTH = 900
+SENSITIVE_PAYLOAD_KEY_RE = re.compile(r"(?i)(token|secret|password|authorization|webhook|cookie|session|email|admin)")
 
 
 class ConfigurationError(RuntimeError):
@@ -55,6 +65,7 @@ class Settings:
     host: str
     ban_hash_pepper: str
     max_request_body_bytes: int
+    error_webhook_url: str | None
 
 
 def _is_railway_environment() -> bool:
@@ -113,6 +124,16 @@ def _read_max_request_body_bytes(default: int = DEFAULT_MAX_REQUEST_BODY_BYTES) 
     return value
 
 
+def _read_error_webhook_url() -> str | None:
+    for name in ERROR_WEBHOOK_ENV_NAMES:
+        value = os.getenv(name)
+        if value:
+            value = value.strip()
+            if value:
+                return value
+    return None
+
+
 def load_settings() -> Settings:
     root_dir = Path(__file__).resolve().parent
     is_railway = _is_railway_environment()
@@ -135,6 +156,7 @@ def load_settings() -> Settings:
         host=os.getenv("HOST", "0.0.0.0"),
         ban_hash_pepper=ban_hash_pepper,
         max_request_body_bytes=_read_max_request_body_bytes(),
+        error_webhook_url=_read_error_webhook_url(),
     )
 
 
@@ -287,6 +309,84 @@ def migrate_legacy_data_asset_records(db: Database, legacy_image_moves: dict[str
 
 def utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _truncate_webhook_value(value: str, limit: int = MAX_WEBHOOK_FIELD_VALUE_LENGTH) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 3)] + "..."
+
+
+def _normalize_alert_route_path(route_path: str) -> str:
+    clean_path = route_path.split("?", 1)[0].strip("/")
+    return "/" + clean_path if clean_path else "/"
+
+
+def endpoint_alert_key(method: str, route_path: str) -> str:
+    normalized = f"{method.upper()} {_normalize_alert_route_path(route_path).casefold()}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _summarize_payload_shape(value: Any, depth: int = 0) -> Any:
+    if depth >= 2:
+        return type(value).__name__
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:20]:
+            key_text = str(key)
+            if SENSITIVE_PAYLOAD_KEY_RE.search(key_text):
+                result[key_text] = "[redacted]"
+            else:
+                result[key_text] = _summarize_payload_shape(item, depth + 1)
+        return result
+    if isinstance(value, list):
+        if not value:
+            return []
+        return [f"{len(value)} item(s)", _summarize_payload_shape(value[0], depth + 1)]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return f"string({len(value)} chars)"
+    return type(value).__name__
+
+
+async def summarize_request_data(request: Request, route_path: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "method": request.method.upper(),
+        "endpoint": _normalize_alert_route_path(route_path),
+    }
+    query_keys = sorted({str(key) for key in request.query_params.keys()})
+    if query_keys:
+        summary["query_keys"] = query_keys[:30]
+    content_type = str(request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type:
+        summary["content_type"] = content_type
+    try:
+        body = await request.body()
+    except Exception:
+        body = b""
+        summary["body"] = "unavailable"
+    if not body:
+        summary.setdefault("body", "empty")
+        return summary
+    summary["body_bytes"] = len(body)
+    if content_type == "application/json":
+        try:
+            summary["json_shape"] = _summarize_payload_shape(json.loads(body.decode("utf-8")))
+        except Exception:
+            summary["body"] = "invalid json"
+    elif content_type in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+        summary["body"] = "form data present; values redacted"
+    elif content_type.startswith("text/") and len(body) <= 256:
+        try:
+            text = body.decode("utf-8")
+        except UnicodeDecodeError:
+            summary["body"] = "binary data present"
+        else:
+            summary["text_preview"] = _truncate_webhook_value(text.replace("\r", "\\r").replace("\n", "\\n"), 256)
+    else:
+        summary["body"] = "binary or large data present"
+    return summary
 
 
 class Database:
@@ -484,6 +584,26 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
         CREATE INDEX IF NOT EXISTS idx_room_data_blobs_room
             ON room_data_blobs(room_id, updated_at);
+        """,
+    ),
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS endpoint_error_alerts (
+            endpoint_key TEXT PRIMARY KEY,
+            method TEXT NOT NULL,
+            route_path TEXT NOT NULL,
+            api_versions_json TEXT NOT NULL,
+            latest_api_version TEXT NOT NULL,
+            latest_adapter_file TEXT NOT NULL,
+            latest_status_code INTEGER NOT NULL,
+            request_count INTEGER NOT NULL,
+            webhook_message_id TEXT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            last_request_summary_json TEXT NOT NULL,
+            last_error_detail TEXT NOT NULL
+        );
         """,
     ),
 )
@@ -787,6 +907,113 @@ class ServerContext:
     @property
     def db_path(self) -> Path:
         return self.settings.db_path
+
+    def record_endpoint_error_alert(
+        self,
+        *,
+        method: str,
+        route_path: str,
+        api_version: str,
+        adapter_file: str,
+        status_code: int,
+        request_summary: dict[str, Any],
+        error_detail: str,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        normalized_route_path = _normalize_alert_route_path(route_path)
+        endpoint_key = endpoint_alert_key(method, normalized_route_path)
+        method = method.upper()
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM endpoint_error_alerts WHERE endpoint_key = ?",
+                (endpoint_key,),
+            ).fetchone()
+            if row is None:
+                versions = [api_version]
+                conn.execute(
+                    """
+                    INSERT INTO endpoint_error_alerts(
+                        endpoint_key, method, route_path, api_versions_json, latest_api_version,
+                        latest_adapter_file, latest_status_code, request_count, webhook_message_id,
+                        first_seen_at, last_seen_at, last_request_summary_json, last_error_detail
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?)
+                    """,
+                    (
+                        endpoint_key,
+                        method,
+                        normalized_route_path,
+                        json.dumps(versions),
+                        api_version,
+                        adapter_file,
+                        status_code,
+                        now,
+                        now,
+                        json.dumps(request_summary, sort_keys=True),
+                        error_detail,
+                    ),
+                )
+                request_count = 1
+                message_id = None
+                is_new = True
+            else:
+                try:
+                    versions = json.loads(row["api_versions_json"])
+                except Exception:
+                    versions = []
+                if api_version not in versions:
+                    versions.append(api_version)
+                request_count = int(row["request_count"]) + 1
+                message_id = row["webhook_message_id"]
+                conn.execute(
+                    """
+                    UPDATE endpoint_error_alerts
+                    SET api_versions_json = ?,
+                        latest_api_version = ?,
+                        latest_adapter_file = ?,
+                        latest_status_code = ?,
+                        request_count = ?,
+                        last_seen_at = ?,
+                        last_request_summary_json = ?,
+                        last_error_detail = ?
+                    WHERE endpoint_key = ?
+                    """,
+                    (
+                        json.dumps(versions),
+                        api_version,
+                        adapter_file,
+                        status_code,
+                        request_count,
+                        now,
+                        json.dumps(request_summary, sort_keys=True),
+                        error_detail,
+                        endpoint_key,
+                    ),
+                )
+                is_new = False
+        return {
+            "endpoint_key": endpoint_key,
+            "method": method,
+            "route_path": normalized_route_path,
+            "api_versions": versions,
+            "latest_api_version": api_version,
+            "latest_adapter_file": adapter_file,
+            "latest_status_code": status_code,
+            "request_count": request_count,
+            "webhook_message_id": message_id,
+            "first_seen_at": now if is_new else row["first_seen_at"],
+            "last_seen_at": now,
+            "last_request_summary": request_summary,
+            "last_error_detail": error_detail,
+            "is_new": is_new,
+        }
+
+    def set_endpoint_error_alert_message_id(self, endpoint_key: str, message_id: str) -> None:
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE endpoint_error_alerts SET webhook_message_id = ? WHERE endpoint_key = ?",
+                (message_id, endpoint_key),
+            )
 
     def get_server_setting(self, setting_key: str, default: Any = None) -> Any:
         with self.db.connection() as conn:
@@ -1453,6 +1680,192 @@ def load_version_module(settings: Settings, api_version: str) -> Any:
         return module
 
 
+def _format_status_code(status_code: int) -> str:
+    try:
+        phrase = HTTPStatus(status_code).phrase
+    except ValueError:
+        phrase = "Error"
+    return f"{status_code} {phrase}"
+
+
+def _format_webhook_count(request_count: int) -> str:
+    plural = "time" if request_count == 1 else "times"
+    return f"-# Requested {request_count} {plural} total"
+
+
+def _build_error_webhook_payload(alert_record: dict[str, Any]) -> dict[str, Any]:
+    versions = ", ".join(alert_record["api_versions"])
+    request_summary = json.dumps(alert_record["last_request_summary"], indent=2, sort_keys=True)
+    embed = {
+        "title": WEBHOOK_ALERT_TITLE,
+        "color": DISCORD_RED_COLOR,
+        "timestamp": alert_record["last_seen_at"],
+        "fields": [
+            {
+                "name": "Version",
+                "value": _truncate_webhook_value(versions or alert_record["latest_api_version"], 1024),
+                "inline": True,
+            },
+            {
+                "name": "Status",
+                "value": _format_status_code(alert_record["latest_status_code"]),
+                "inline": True,
+            },
+            {
+                "name": "Python adapter",
+                "value": alert_record["latest_adapter_file"],
+                "inline": False,
+            },
+            {
+                "name": "Endpoint",
+                "value": f"{alert_record['method']} {alert_record['route_path']}",
+                "inline": False,
+            },
+            {
+                "name": "Data requested",
+                "value": "```json\n" + _truncate_webhook_value(request_summary, 900) + "\n```",
+                "inline": False,
+            },
+            {
+                "name": "Error detail",
+                "value": _truncate_webhook_value(alert_record["last_error_detail"] or "Unknown error.", 1024),
+                "inline": False,
+            },
+            {
+                "name": "Precise second",
+                "value": alert_record["last_seen_at"],
+                "inline": True,
+            },
+        ],
+        "footer": {"text": "No IPs, headers, hostnames, or full URLs included."},
+    }
+    return {
+        "content": f"{WEBHOOK_ALERT_MESSAGE}\n{_format_webhook_count(alert_record['request_count'])}",
+        "embeds": [embed],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def _webhook_url_with_wait(webhook_url: str) -> str:
+    parts = urllib.parse.urlsplit(webhook_url)
+    query = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    query["wait"] = "true"
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+
+def _webhook_message_url(webhook_url: str, message_id: str) -> str:
+    return webhook_url.rstrip("/") + "/messages/" + urllib.parse.quote(message_id, safe="")
+
+
+def _execute_discord_webhook_request(
+    webhook_url: str,
+    payload: dict[str, Any],
+    *,
+    message_id: str | None = None,
+) -> str | None:
+    data = json.dumps(payload).encode("utf-8")
+    if message_id:
+        target_url = _webhook_message_url(webhook_url, message_id)
+        method = "PATCH"
+    else:
+        target_url = _webhook_url_with_wait(webhook_url)
+        method = "POST"
+    request = urllib.request.Request(
+        target_url,
+        data=data,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "rec-room-api-restoring-server",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        response_body = response.read()
+    if not response_body:
+        return None
+    try:
+        response_json = json.loads(response_body.decode("utf-8"))
+    except Exception:
+        return None
+    message_id_value = response_json.get("id")
+    return str(message_id_value) if message_id_value else None
+
+
+async def notify_endpoint_error_webhook(context: ServerContext, alert_record: dict[str, Any]) -> None:
+    webhook_url = context.settings.error_webhook_url
+    if not webhook_url:
+        return
+    message_id = alert_record.get("webhook_message_id")
+    if not alert_record.get("is_new") and not message_id:
+        return
+    payload = _build_error_webhook_payload(alert_record)
+    try:
+        returned_message_id = await asyncio.to_thread(
+            _execute_discord_webhook_request,
+            webhook_url,
+            payload,
+            message_id=message_id,
+        )
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        print(f"Discord endpoint alert failed: {type(exc).__name__}", file=sys.stderr)
+        return
+    except Exception as exc:
+        print(f"Discord endpoint alert failed unexpectedly: {type(exc).__name__}", file=sys.stderr)
+        return
+    if alert_record.get("is_new") and returned_message_id:
+        context.set_endpoint_error_alert_message_id(alert_record["endpoint_key"], returned_message_id)
+
+
+def should_alert_endpoint_status(status_code: int) -> bool:
+    return status_code == 404 or status_code >= 500
+
+
+def _adapter_file_label(settings: Settings, module: Any | None, resolved_api_version: str) -> str:
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        try:
+            return str(Path(module_file).resolve().relative_to(settings.root_dir))
+        except ValueError:
+            return Path(module_file).name
+    return f"APIs/{resolved_api_version}.py (not loaded)"
+
+
+def _safe_error_detail(detail: Any) -> str:
+    if detail is None:
+        return ""
+    if isinstance(detail, str):
+        return _truncate_webhook_value(detail, 1024)
+    try:
+        text = json.dumps(_summarize_payload_shape(detail), sort_keys=True)
+    except Exception:
+        text = type(detail).__name__
+    return _truncate_webhook_value(text, 1024)
+
+
+async def record_and_notify_endpoint_error(
+    *,
+    context: ServerContext,
+    settings: Settings,
+    request: Request,
+    route_path: str,
+    resolved_api_version: str,
+    module: Any | None,
+    status_code: int,
+    error_detail: Any,
+) -> None:
+    request_summary = await summarize_request_data(request, route_path)
+    alert_record = context.record_endpoint_error_alert(
+        method=request.method,
+        route_path=route_path,
+        api_version=resolved_api_version,
+        adapter_file=_adapter_file_label(settings, module, resolved_api_version),
+        status_code=status_code,
+        request_summary=request_summary,
+        error_detail=_safe_error_detail(error_detail),
+    )
+    await notify_endpoint_error_webhook(context, alert_record)
+
+
 def create_app() -> FastAPI:
     settings = load_settings()
     legacy_image_moves = ensure_runtime_directories(settings)
@@ -1948,20 +2361,58 @@ def create_app() -> FastAPI:
     )
     async def dispatch_http(api_version: str, route_path: str, request: Request) -> Response:
         resolved_api_version = resolve_api_version(api_version)
-        module = load_version_module(settings, resolved_api_version)
-        context.assert_request_not_banned(request, resolved_api_version)
-        handler = getattr(module, "handle_http", None)
-        if handler is None:
-            raise HTTPException(status_code=501, detail="HTTP API is not implemented for this version.")
-        result = handler(request=request, route_path=route_path, context=context)
-        awaited = maybe_await(result)
-        if awaited is not None:
-            result = await awaited
-        if isinstance(result, Response):
-            return result
-        if result is None:
-            raise HTTPException(status_code=404, detail="Unknown endpoint.")
-        return JSONResponse(content=result)
+        module = None
+        try:
+            module = load_version_module(settings, resolved_api_version)
+            context.assert_request_not_banned(request, resolved_api_version)
+            handler = getattr(module, "handle_http", None)
+            if handler is None:
+                raise HTTPException(status_code=501, detail="HTTP API is not implemented for this version.")
+            result = handler(request=request, route_path=route_path, context=context)
+            awaited = maybe_await(result)
+            if awaited is not None:
+                result = await awaited
+            if isinstance(result, Response):
+                if should_alert_endpoint_status(result.status_code):
+                    await record_and_notify_endpoint_error(
+                        context=context,
+                        settings=settings,
+                        request=request,
+                        route_path=route_path,
+                        resolved_api_version=resolved_api_version,
+                        module=module,
+                        status_code=result.status_code,
+                        error_detail="Adapter returned an error response.",
+                    )
+                return result
+            if result is None:
+                raise HTTPException(status_code=404, detail="Unknown endpoint.")
+            return JSONResponse(content=result)
+        except HTTPException as exc:
+            if should_alert_endpoint_status(exc.status_code):
+                await record_and_notify_endpoint_error(
+                    context=context,
+                    settings=settings,
+                    request=request,
+                    route_path=route_path,
+                    resolved_api_version=resolved_api_version,
+                    module=module,
+                    status_code=exc.status_code,
+                    error_detail=exc.detail,
+                )
+            raise
+        except Exception as exc:
+            await record_and_notify_endpoint_error(
+                context=context,
+                settings=settings,
+                request=request,
+                route_path=route_path,
+                resolved_api_version=resolved_api_version,
+                module=module,
+                status_code=500,
+                error_detail=f"Internal server error ({type(exc).__name__}).",
+            )
+            raise
 
     @app.websocket("/{api_version}/{route_path:path}")
     async def dispatch_websocket(api_version: str, route_path: str, websocket: WebSocket) -> None:
