@@ -961,35 +961,8 @@ class ServerContext:
                     versions = json.loads(row["api_versions_json"])
                 except Exception:
                     versions = []
-                if api_version not in versions:
-                    versions.append(api_version)
-                request_count = int(row["request_count"]) + 1
+                request_count = int(row["request_count"])
                 message_id = row["webhook_message_id"]
-                conn.execute(
-                    """
-                    UPDATE endpoint_error_alerts
-                    SET api_versions_json = ?,
-                        latest_api_version = ?,
-                        latest_adapter_file = ?,
-                        latest_status_code = ?,
-                        request_count = ?,
-                        last_seen_at = ?,
-                        last_request_summary_json = ?,
-                        last_error_detail = ?
-                    WHERE endpoint_key = ?
-                    """,
-                    (
-                        json.dumps(versions),
-                        api_version,
-                        adapter_file,
-                        status_code,
-                        request_count,
-                        now,
-                        json.dumps(request_summary, sort_keys=True),
-                        error_detail,
-                        endpoint_key,
-                    ),
-                )
                 is_new = False
         return {
             "endpoint_key": endpoint_key,
@@ -1688,11 +1661,6 @@ def _format_status_code(status_code: int) -> str:
     return f"{status_code} {phrase}"
 
 
-def _format_webhook_count(request_count: int) -> str:
-    plural = "time" if request_count == 1 else "times"
-    return f"-# Requested {request_count} {plural} total"
-
-
 def _build_error_webhook_payload(alert_record: dict[str, Any]) -> dict[str, Any]:
     versions = ", ".join(alert_record["api_versions"])
     request_summary = json.dumps(alert_record["last_request_summary"], indent=2, sort_keys=True)
@@ -1737,10 +1705,9 @@ def _build_error_webhook_payload(alert_record: dict[str, Any]) -> dict[str, Any]
                 "inline": True,
             },
         ],
-        "footer": {"text": "No IPs, headers, hostnames, or full URLs included."},
     }
     return {
-        "content": f"{WEBHOOK_ALERT_MESSAGE}\n{_format_webhook_count(alert_record['request_count'])}",
+        "content": WEBHOOK_ALERT_MESSAGE,
         "embeds": [embed],
         "allowed_mentions": {"parse": []},
     }
@@ -1753,27 +1720,13 @@ def _webhook_url_with_wait(webhook_url: str) -> str:
     return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
 
 
-def _webhook_message_url(webhook_url: str, message_id: str) -> str:
-    return webhook_url.rstrip("/") + "/messages/" + urllib.parse.quote(message_id, safe="")
-
-
-def _execute_discord_webhook_request(
-    webhook_url: str,
-    payload: dict[str, Any],
-    *,
-    message_id: str | None = None,
-) -> str | None:
+def _execute_discord_webhook_request(webhook_url: str, payload: dict[str, Any]) -> str | None:
     data = json.dumps(payload).encode("utf-8")
-    if message_id:
-        target_url = _webhook_message_url(webhook_url, message_id)
-        method = "PATCH"
-    else:
-        target_url = _webhook_url_with_wait(webhook_url)
-        method = "POST"
+    target_url = _webhook_url_with_wait(webhook_url)
     request = urllib.request.Request(
         target_url,
         data=data,
-        method=method,
+        method="POST",
         headers={
             "Content-Type": "application/json",
             "User-Agent": "rec-room-api-restoring-server",
@@ -1795,8 +1748,7 @@ async def notify_endpoint_error_webhook(context: ServerContext, alert_record: di
     webhook_url = context.settings.error_webhook_url
     if not webhook_url:
         return
-    message_id = alert_record.get("webhook_message_id")
-    if not alert_record.get("is_new") and not message_id:
+    if not alert_record.get("is_new"):
         return
     payload = _build_error_webhook_payload(alert_record)
     try:
@@ -1804,7 +1756,6 @@ async def notify_endpoint_error_webhook(context: ServerContext, alert_record: di
             _execute_discord_webhook_request,
             webhook_url,
             payload,
-            message_id=message_id,
         )
     except (OSError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         print(f"Discord endpoint alert failed: {type(exc).__name__}", file=sys.stderr)
