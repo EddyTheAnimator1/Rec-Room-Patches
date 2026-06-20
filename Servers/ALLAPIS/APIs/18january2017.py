@@ -12,9 +12,10 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException, Request, WebSocket
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 API_VERSION = "18january2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Wed, 18 Jan 2017 01:10:07 GMT"
@@ -38,10 +39,40 @@ def _load_shared_adapter():
 _SHARED = _load_shared_adapter()
 _BASE = _SHARED._BASE
 _PLATFORM_BASE = _SHARED._PLATFORM_BASE
+PROFILE_REQUIRED_KEYS = {"Id", "Username", "DisplayName", "XP", "Level", "Reputation", "Verified"}
 
 
 def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
+
+
+def _looks_like_profile_payload(payload: Any) -> bool:
+    return isinstance(payload, dict) and PROFILE_REQUIRED_KEYS.issubset(payload)
+
+
+def _add_developer_flag(payload: Any) -> bool:
+    if _looks_like_profile_payload(payload):
+        payload["Developer"] = True
+        return True
+    if isinstance(payload, list):
+        changed = False
+        for item in payload:
+            if _looks_like_profile_payload(item):
+                item["Developer"] = True
+                changed = True
+        return changed
+    return False
+
+
+async def _handle_shared_http(request: Request, route_path: str, context) -> Response:
+    response = await _SHARED.handle_http(request=request, route_path=route_path, context=context)
+    path = _clean_route_path(route_path).casefold()
+    if not path.startswith("api/players/"):
+        return response
+    payload = _BASE._load_response_json(response)
+    if not _add_developer_flag(payload):
+        return response
+    return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
 
 
 def _local_profile_id(request: Request) -> int:
@@ -117,7 +148,7 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
             raise HTTPException(status_code=501, detail="Player reporting method is not implemented.")
         return await _handle_player_report(request, context)
 
-    return await _SHARED.handle_http(request=request, route_path=route_path, context=context)
+    return await _handle_shared_http(request, route_path, context)
 
 
 async def handle_websocket(*, websocket: WebSocket, route_path: str, context) -> None:
