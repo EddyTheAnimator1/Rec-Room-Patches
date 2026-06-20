@@ -2,6 +2,10 @@
 
 Confirmed from decompiled client build 512603081605663477:
 - The late-February objective and notification-WebSocket family remains active.
+- RecNet core adds POST /api/platformlogin/v1 before profile bootstrap. The
+  request is form data containing Platform, PlatformId, Name, ClientTimestamp,
+  BuildTimestamp, AuthParams, and Verify; the response only needs Token and
+  PlayerId for the client to continue.
 - New player routes appear for current profile, list-by-platform-id, search,
   display-name updates, and phone verification.
 - Messages add api/messages/v1/sendMultiple and offline invites add
@@ -103,6 +107,10 @@ def _ok_payload(message: str = "") -> dict[str, Any]:
     }
 
 
+def _login_token(legacy_player_id: int) -> str:
+    return f"local-{API_VERSION}-{legacy_player_id}"
+
+
 async def _json_or_form_payload(request: Request) -> Any:
     body = await request.body()
     if not body:
@@ -114,6 +122,49 @@ async def _json_or_form_payload(request: Request) -> Any:
         return json.loads(text)
     except Exception:
         return await _BASE._parse_client_payload(request)
+
+
+async def _handle_platform_login(request: Request, context) -> Response:
+    payload = await _BASE._parse_client_payload(request)
+    platform = _BASE._int_field(payload, "Platform", "platform", default=0)
+    platform_id = _BASE._str_field(payload, "PlatformId", "platformId", "platform_id", "id")
+    if not platform_id:
+        raise HTTPException(status_code=400, detail="PlatformId is required.")
+    identities = list(_PLATFORM_BASE._identity_pairs(platform, platform_id))
+    identities.append(("ip_hash", context.request_ip_value(request)))
+    context.assert_identities_not_banned(identities)
+    player = _PLATFORM_BASE._find_player_by_platform(context, platform=platform, platform_id=platform_id)
+    if player is None:
+        name = _BASE._str_field(payload, "Name", "name", default=f"Player{platform_id[-4:]}")
+        player = _PLATFORM_BASE._create_player_for_platform(
+            context,
+            platform=platform,
+            platform_id=platform_id,
+            name=name,
+        )
+    context.assert_player_not_banned(player["player_id"])
+    state = player.get("state") or {}
+    legacy_player_id = int(state.get("legacy_player_id") or 0)
+    if legacy_player_id <= 0:
+        player = _PLATFORM_BASE._create_player_for_platform(
+            context,
+            platform=platform,
+            platform_id=platform_id,
+            name=_BASE._str_field(payload, "Name", "name", default=f"Player{platform_id[-4:]}"),
+        )
+        state = player.get("state") or {}
+        legacy_player_id = int(state.get("legacy_player_id") or 0)
+    token = _login_token(legacy_player_id)
+    context.record_player_identities(
+        player["player_id"],
+        identities
+        + [
+            ("account_id", token),
+            ("account_id", f"recnet:{legacy_player_id}"),
+            ("account_id", f"{API_VERSION}:recnet:{legacy_player_id}"),
+        ],
+    )
+    return JSONResponse({"Token": token, "PlayerId": legacy_player_id})
 
 
 async def _handle_current_player(request: Request, context) -> Response:
@@ -262,6 +313,11 @@ async def _handle_offline_invite(request: Request, context) -> Response:
 async def handle_http(*, request: Request, route_path: str, context) -> Response:
     path = _clean_route_path(route_path).casefold()
     method = request.method.upper()
+
+    if path in {"api/platformlogin/v1", "api/platformlogin/v1/"}:
+        if method != "POST":
+            raise HTTPException(status_code=501, detail="Platform login method is not implemented.")
+        return await _handle_platform_login(request, context)
 
     if path.startswith("api/playersubscriptions/"):
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
