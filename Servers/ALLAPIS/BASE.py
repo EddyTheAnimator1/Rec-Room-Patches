@@ -9,6 +9,8 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
+import threading
 import time
 import uuid
 from collections import defaultdict, deque
@@ -31,6 +33,7 @@ SQLITE_SIDECAR_RE = re.compile(r"^database\.sqlite3(?:-(?:journal|wal|shm))?$")
 ROBOTS_TXT_FILENAME = "robots.txt"
 DEFAULT_ROBOTS_TXT = "User-agent: OAI-SearchBot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /\n"
 DEFAULT_LOCAL_PORT = 7979
+DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
@@ -51,6 +54,7 @@ class Settings:
     port: int
     host: str
     ban_hash_pepper: str
+    max_request_body_bytes: int
 
 
 def _is_railway_environment() -> bool:
@@ -96,6 +100,19 @@ def _read_port(default: int = DEFAULT_LOCAL_PORT) -> int:
     return port
 
 
+def _read_max_request_body_bytes(default: int = DEFAULT_MAX_REQUEST_BODY_BYTES) -> int:
+    raw_value = os.getenv("RECROOM_MAX_REQUEST_BODY_BYTES") or os.getenv("MAX_REQUEST_BODY_BYTES")
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ConfigurationError("MAX_REQUEST_BODY_BYTES must be an integer.") from exc
+    if value < 0:
+        raise ConfigurationError("MAX_REQUEST_BODY_BYTES must be zero or greater.")
+    return value
+
+
 def load_settings() -> Settings:
     root_dir = Path(__file__).resolve().parent
     is_railway = _is_railway_environment()
@@ -117,6 +134,7 @@ def load_settings() -> Settings:
         port=_read_port(),
         host=os.getenv("HOST", "0.0.0.0"),
         ban_hash_pepper=ban_hash_pepper,
+        max_request_body_bytes=_read_max_request_body_bytes(),
     )
 
 
@@ -1364,9 +1382,12 @@ class RateLimiter:
         self.limit = limit
         self.window_seconds = window_seconds
         self._events: dict[str, deque[float]] = defaultdict(deque)
+        self._next_sweep = 0.0
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
+        if now >= self._next_sweep:
+            self._sweep(now)
         events = self._events[key]
         cutoff = now - self.window_seconds
         while events and events[0] < cutoff:
@@ -1375,6 +1396,16 @@ class RateLimiter:
             return False
         events.append(now)
         return True
+
+    def _sweep(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        for key in list(self._events):
+            events = self._events[key]
+            while events and events[0] < cutoff:
+                events.popleft()
+            if not events:
+                del self._events[key]
+        self._next_sweep = now + self.window_seconds
 
 
 def maybe_await(value: Any) -> Any:
@@ -1387,6 +1418,10 @@ def resolve_api_version(api_version: str) -> str:
     return API_VERSION_ALIASES.get(api_version, api_version)
 
 
+_VERSION_MODULE_CACHE: dict[str, Any] = {}
+_VERSION_MODULE_CACHE_LOCK = threading.RLock()
+
+
 def load_version_module(settings: Settings, api_version: str) -> Any:
     if not API_VERSION_RE.fullmatch(api_version):
         raise HTTPException(status_code=404, detail="Unknown API version.")
@@ -1394,13 +1429,28 @@ def load_version_module(settings: Settings, api_version: str) -> Any:
     module_path = settings.api_dir / f"{api_version}.py"
     if not module_path.is_file():
         raise HTTPException(status_code=404, detail="Unknown API version.")
-    module_name = f"recroom_api_{api_version}"
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise HTTPException(status_code=500, detail="API module could not be loaded.")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    with _VERSION_MODULE_CACHE_LOCK:
+        cached_module = _VERSION_MODULE_CACHE.get(api_version)
+        if cached_module is not None:
+            return cached_module
+        module_name = f"recroom_api_{api_version}"
+        cached_module = sys.modules.get(module_name)
+        if cached_module is not None:
+            _VERSION_MODULE_CACHE[api_version] = cached_module
+            return cached_module
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            raise HTTPException(status_code=500, detail="API module could not be loaded.")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if sys.modules.get(module_name) is module:
+                del sys.modules[module_name]
+            raise
+        _VERSION_MODULE_CACHE[api_version] = module
+        return module
 
 
 def create_app() -> FastAPI:
@@ -1430,6 +1480,15 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def rate_limit_middleware(request: Request, call_next: Callable[[Request], Any]) -> Response:
+        raw_content_length = request.headers.get("content-length")
+        if settings.max_request_body_bytes and raw_content_length:
+            try:
+                content_length = int(raw_content_length)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+            if content_length > settings.max_request_body_bytes:
+                return JSONResponse(status_code=413, content={"detail": "Request body is too large."})
+
         client_host = request.client.host if request.client else "unknown"
         if not limiter.allow(f"http:{client_host}"):
             return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded."})
