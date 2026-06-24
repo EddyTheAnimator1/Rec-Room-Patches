@@ -8,6 +8,7 @@ Confirmed from the game build at manifest 512603081605663477:
   BuildTimestamp, AuthParams, and Verify.
 - Player subscription synchronization remains notification-WebSocket driven;
   REST api/PlayerSubscriptions/v1/init/add/remove is not a real route here.
+- Config v2 now includes the PhotonConfig object required by this client.
 """
 
 from __future__ import annotations
@@ -67,6 +68,10 @@ PROFILE_DEFAULTS = {
     "CanReceiveInvites": True,
     "PhoneLastFour": "",
 }
+PHOTON_CONFIG_DEFAULTS = {
+    "CloudRegion": "us",
+    "CrcCheckEnabled": False,
+}
 
 
 def _clean_route_path(route_path: str) -> str:
@@ -108,6 +113,31 @@ def _profile_response(player: dict[str, Any], *, status_code: int = 200) -> Resp
 def _augment_profile_response(response: Response) -> Response:
     payload = _BASE._load_response_json(response)
     if not _add_9march_profile_fields(payload):
+        return response
+    return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
+
+
+def _add_9march_config_fields(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+
+    photon_config = payload.get("PhotonConfig")
+    if not isinstance(photon_config, dict):
+        payload["PhotonConfig"] = dict(PHOTON_CONFIG_DEFAULTS)
+        return True
+
+    changed = False
+    for key, value in PHOTON_CONFIG_DEFAULTS.items():
+        if key not in photon_config:
+            photon_config[key] = value
+            changed = True
+    return changed
+
+
+async def _handle_config_v2(request: Request, route_path: str, context) -> Response:
+    response = await _SHARED.handle_http(request=request, route_path=route_path, context=context)
+    payload = _BASE._load_response_json(response)
+    if not _add_9march_config_fields(payload):
         return response
     return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
 
@@ -282,6 +312,11 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         if method != "POST":
             raise HTTPException(status_code=501, detail="Platform login method is not implemented.")
         return await _handle_platform_login(request, context)
+
+    if path in {"api/config/v2", "api/config/v2/"}:
+        if method != "GET":
+            raise HTTPException(status_code=501, detail="Config method is not implemented.")
+        return await _handle_config_v2(request, route_path, context)
 
     if path.startswith("api/playersubscriptions/"):
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
