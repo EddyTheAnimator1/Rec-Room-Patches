@@ -37,6 +37,12 @@ SQLITE_SIDECAR_RE = re.compile(r"^database\.sqlite3(?:-(?:journal|wal|shm))?$")
 ROBOTS_TXT_FILENAME = "robots.txt"
 DEFAULT_ROBOTS_TXT = "User-agent: OAI-SearchBot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /\n"
 DEFAULT_LOCAL_PORT = 7979
+DEFAULT_RAILWAY_PUBLIC_BASE_URL = "https://brand-new-all-production.up.railway.app"
+PUBLIC_BASE_URL_ENV_NAMES = (
+    "RECROOM_PUBLIC_BASE_URL",
+    "RECROOM_API_PUBLIC_BASE_URL",
+    "RECROOM_SERVER_PUBLIC_BASE_URL",
+)
 DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
@@ -132,6 +138,67 @@ def _read_error_webhook_url() -> str | None:
             if value:
                 return value
     return None
+
+
+def _first_header_value(value: str | None) -> str:
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def _normalize_origin(value: str) -> str:
+    value = value.strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _configured_public_base_url() -> str | None:
+    for name in PUBLIC_BASE_URL_ENV_NAMES:
+        value = os.getenv(name)
+        if value:
+            normalized = _normalize_origin(value)
+            if normalized:
+                return normalized
+
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain:
+        normalized = _normalize_origin(railway_domain)
+        if normalized:
+            return normalized
+    return None
+
+
+def _request_origin(request: Request, settings: Any | None = None) -> str:
+    proto = _first_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme or "http"
+    host = (
+        _first_header_value(request.headers.get("x-forwarded-host"))
+        or _first_header_value(request.headers.get("host"))
+        or request.url.netloc
+    )
+    host_lower = host.casefold()
+    if (
+        not host
+        or host_lower.startswith("testserver")
+        or host_lower.startswith("0.0.0.0")
+        or host_lower in {"::", "[::]"}
+    ):
+        port = getattr(settings, "port", DEFAULT_LOCAL_PORT)
+        host = f"localhost:{port}"
+        proto = "http"
+    return f"{proto}://{host}".rstrip("/")
+
+
+def public_api_base_url(request: Request, context: Any, api_version: str) -> str:
+    settings = getattr(context, "settings", None)
+    if getattr(settings, "is_railway", False):
+        origin = _configured_public_base_url() or DEFAULT_RAILWAY_PUBLIC_BASE_URL
+    else:
+        origin = _request_origin(request, settings)
+    return f"{origin.rstrip('/')}/{api_version.strip('/')}/"
 
 
 def load_settings() -> Settings:

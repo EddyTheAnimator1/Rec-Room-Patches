@@ -6,7 +6,7 @@ Confirmed from the game build at manifest 4635637071237364407:
 - Login posts /api/platformlogin/v1 with the same form fields as 17 March.
 - Profile image upload is POST api/images/v2/profile.
 - Profile image display reads ProfileImageName from profile JSON, then downloads
-  that path against config serverAddress with COGCNMJCNKN.ELHLFBNMPMF.
+  that path against config CdnBaseUri with COGCNMJCNKN.ELHLFBNMPMF.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import BASE as _SERVER_BASE
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
 API_VERSION = "23march2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Thu, 23 Mar 2017 03:01:13 GMT"
-RAILWAY_SERVER_ADDRESS = "https://brand-new-all-production.up.railway.app/23march2017/"
 
 
 def _retarget_module(module) -> None:
@@ -82,30 +82,15 @@ def _add_profile_image_names(payload: Any) -> bool:
     return changed
 
 
-def _server_address(request: Request, context) -> str:
-    settings = getattr(context, "settings", None)
-    if getattr(settings, "is_railway", False):
-        return RAILWAY_SERVER_ADDRESS
-
-    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",", 1)[0].strip()
-    host = (
-        request.headers.get("x-forwarded-host")
-        or request.headers.get("host")
-        or request.url.netloc
-        or f"{getattr(settings, 'host', '127.0.0.1')}:{getattr(settings, 'port', 7979)}"
-    )
-    host = host.split(",", 1)[0].strip()
-    return f"{proto}://{host}/{API_VERSION}/"
-
-
 def _add_config_fields(payload: Any, request: Request, context) -> bool:
     if not isinstance(payload, dict):
         return False
     changed = _add_profile_image_names(payload)
-    server_address = _server_address(request, context)
-    if payload.get("serverAddress") != server_address:
-        payload["serverAddress"] = server_address
-        changed = True
+    server_base = _SERVER_BASE.public_api_base_url(request, context, API_VERSION)
+    for key in ("CdnBaseUri", "serverAddress"):
+        if payload.get(key) != server_base:
+            payload[key] = server_base
+            changed = True
     return changed
 
 
