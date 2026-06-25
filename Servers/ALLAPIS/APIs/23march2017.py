@@ -12,6 +12,8 @@ Confirmed from the game build at manifest 4635637071237364407:
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +23,12 @@ from fastapi.responses import JSONResponse, Response
 
 API_VERSION = "23march2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Thu, 23 Mar 2017 03:01:13 GMT"
+XP_PER_LEVEL = 500
 MATCHMAKING_DEFAULTS = {
     "PreferFullRoomsFrequency": 0.5,
     "PreferEmptyRoomsFrequency": 0.0,
 }
-LEVEL_PROGRESSION_MAPS = [{"Level": level, "RequiredXp": (level - 1) * 500} for level in range(1, 31)]
+LEVEL_PROGRESSION_MAPS = [{"Level": level, "RequiredXp": (level - 1) * XP_PER_LEVEL} for level in range(1, 31)]
 DAILY_OBJECTIVES_DEFAULTS = [
     [{"type": 301, "score": 1}, {"type": 500, "score": 1}, {"type": 801, "score": 1}],
     [{"type": 201, "score": 1}, {"type": 400, "score": 1}, {"type": 100, "score": 1}],
@@ -67,6 +70,7 @@ def _load_shared_adapter():
 
 _SHARED = _load_shared_adapter()
 _BASE = _SHARED._BASE
+_PLATFORM_BASE = _SHARED._PLATFORM_BASE
 
 
 def _clean_route_path(route_path: str) -> str:
@@ -100,10 +104,56 @@ def _add_profile_image_names(payload: Any) -> bool:
     return changed
 
 
+def _normalize_profile_progression(payload: Any) -> bool:
+    if isinstance(payload, list):
+        changed = False
+        for item in payload:
+            changed = _normalize_profile_progression(item) or changed
+        return changed
+
+    if not isinstance(payload, dict):
+        return False
+
+    changed = False
+    player_payload = payload.get("Player")
+    if isinstance(player_payload, dict):
+        changed = _normalize_profile_progression(player_payload) or changed
+
+    if "Level" not in payload or "XP" not in payload:
+        return changed
+
+    try:
+        level = max(1, int(payload.get("Level") or 1))
+    except Exception:
+        level = 1
+    try:
+        xp = max(0, int(payload.get("XP") or 0))
+    except Exception:
+        xp = 0
+
+    if xp >= XP_PER_LEVEL:
+        level += xp // XP_PER_LEVEL
+        xp %= XP_PER_LEVEL
+        payload["Level"] = level
+        payload["XP"] = xp
+        changed = True
+
+    if payload.get("XpRequiredToLevelUp") != XP_PER_LEVEL:
+        payload["XpRequiredToLevelUp"] = XP_PER_LEVEL
+        changed = True
+    return changed
+
+
+def _augment_profile_payload(payload: Any) -> bool:
+    changed = _add_profile_image_names(payload)
+    changed = _normalize_profile_progression(payload) or changed
+    return changed
+
+
 def _add_config_fields(payload: Any, request: Request, context) -> bool:
     if not isinstance(payload, dict):
         return False
-    changed = _add_profile_image_names(payload)
+    changed = _augment_profile_payload(payload)
     server_base = _SERVER_BASE.public_api_base_url(request, context, API_VERSION)
 
     if not isinstance(payload.get("MessageOfTheDay"), str):
@@ -162,6 +212,97 @@ def _add_config_fields(payload: Any, request: Request, context) -> bool:
     return changed
 
 
+def _local_profile_id(request: Request) -> int:
+    raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
+    try:
+        player_id = int(raw_id or 0)
+    except Exception:
+        player_id = 0
+    if player_id > 0:
+        return player_id
+
+    auth = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+    match = re.fullmatch(rf"Bearer\s+local-{re.escape(API_VERSION)}-(\d+)", auth.strip(), flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _level_for_total_xp(total_xp: int) -> tuple[int, int]:
+    total_xp = max(0, int(total_xp or 0))
+    return max(1, total_xp // XP_PER_LEVEL + 1), total_xp % XP_PER_LEVEL
+
+
+def _player_total_xp(player: dict[str, Any]) -> int:
+    level = max(1, int(player.get("canonical_level") or 1))
+    xp = max(0, int(player.get("canonical_xp") or 0))
+    return ((level - 1) * XP_PER_LEVEL) + xp
+
+
+async def _parse_objectives_payload(request: Request) -> list[dict[str, Any]]:
+    body = await request.body()
+    if not body:
+        return []
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception:
+        payload = await _BASE._parse_client_payload(request)
+    if isinstance(payload, dict):
+        payload = payload.get("Objectives") or payload.get("objectives") or [payload]
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+async def _apply_objective_xp(request: Request, context, player_id: int, objectives: list[dict[str, Any]]) -> Response:
+    player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
+    if player is None:
+        return JSONResponse({"Success": False, "Message": "Player not found."}, status_code=404)
+    context.assert_player_not_banned(player["player_id"])
+
+    completed_count = max(1, len(objectives))
+    additional_xp = sum(max(0, _BASE._int_field(item, "additionalXp", "AdditionalXp", default=0)) for item in objectives)
+    delta_xp = (_BASE.DEFAULT_XP_REWARD * completed_count) + additional_xp
+    current_level, current_xp = _level_for_total_xp(_player_total_xp(player) + delta_xp)
+
+    with context.db.transaction() as conn:
+        conn.execute(
+            """
+            UPDATE players
+            SET canonical_xp = ?,
+                canonical_level = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+              AND is_coach = 0
+            """,
+            (current_xp, current_level, player["player_id"]),
+        )
+    return JSONResponse(
+        {
+            "deltaXp": delta_xp,
+            "currentLevel": current_level,
+            "currentXp": current_xp,
+            "xpRequiredToLevelUp": XP_PER_LEVEL,
+        }
+    )
+
+
+async def _handle_objectives_v1(request: Request, context) -> Response:
+    player_id = _local_profile_id(request)
+    if player_id <= 0:
+        return JSONResponse({"Success": False, "Message": "X-Rec-Room-Profile is required."}, status_code=400)
+    objectives = await _parse_objectives_payload(request)
+    return await _apply_objective_xp(request, context, player_id, objectives)
+
+
+async def _handle_objective_v1(request: Request, route_path: str, context) -> Response:
+    match = re.fullmatch(r"api/players/v1/objective/(\d+)/?", _clean_route_path(route_path), flags=re.IGNORECASE)
+    if not match:
+        return JSONResponse({"Success": False, "Message": "Unknown endpoint."}, status_code=404)
+    payload = await _BASE._parse_client_payload(request)
+    return await _apply_objective_xp(request, context, int(match.group(1)), [payload])
+
+
 async def _handle_config_v2(request: Request, route_path: str, context) -> Response:
     response = await _SHARED.handle_http(request=request, route_path=route_path, context=context)
     payload = _BASE._load_response_json(response)
@@ -171,7 +312,8 @@ async def _handle_config_v2(request: Request, route_path: str, context) -> Respo
 
 
 async def handle_http(*, request: Request, route_path: str, context) -> Response:
-    path = _clean_route_path(route_path).casefold()
+    clean_path = _clean_route_path(route_path)
+    path = clean_path.casefold()
     method = request.method.upper()
 
     if path in {"api/config/v2", "api/config/v2/"}:
@@ -179,10 +321,40 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
             return await _SHARED.handle_http(request=request, route_path=route_path, context=context)
         return await _handle_config_v2(request, route_path, context)
 
+    if path.startswith("img/api/images/v1/profile/"):
+        if method != "GET":
+            return JSONResponse({"Success": False, "Message": "Profile image method is not implemented."}, status_code=501)
+        return await _SHARED.handle_http(request=request, route_path=clean_path[4:], context=context)
+
+    if path in {"api/players/v1/blockduration", "api/players/v1/blockduration/"}:
+        if method != "GET":
+            return JSONResponse({"Success": False, "Message": "Block duration method is not implemented."}, status_code=501)
+        return JSONResponse({"BlockedDuration": 0})
+
+    if path in {"api/players/v1/phonelastfour", "api/players/v1/phonelastfour/"}:
+        if method != "GET":
+            return JSONResponse({"Success": False, "Message": "Phone last-four method is not implemented."}, status_code=501)
+        return JSONResponse({"PhoneNumber": ""})
+
+    if path in {"api/players/v2/phone/verify", "api/players/v2/phone/verify/"}:
+        if method != "POST":
+            return JSONResponse({"Success": False, "Message": "Phone verify method is not implemented."}, status_code=501)
+        return JSONResponse({"Success": True, "Message": ""})
+
+    if path in {"api/players/v1/objectives", "api/players/v1/objectives/"}:
+        if method != "POST":
+            return JSONResponse({"Success": False, "Message": "Player objectives method is not implemented."}, status_code=501)
+        return await _handle_objectives_v1(request, context)
+
+    if path.startswith("api/players/v1/objective/"):
+        if method != "POST":
+            return JSONResponse({"Success": False, "Message": "Player objective method is not implemented."}, status_code=501)
+        return await _handle_objective_v1(request, route_path, context)
+
     response = await _SHARED.handle_http(request=request, route_path=route_path, context=context)
     if path.startswith("api/players/"):
         payload = _BASE._load_response_json(response)
-        if _add_profile_image_names(payload):
+        if _augment_profile_payload(payload):
             return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
     return response
 
