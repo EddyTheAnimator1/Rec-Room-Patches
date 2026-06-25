@@ -152,7 +152,7 @@ def _local_profile_id(request: Request) -> int:
         return player_id
 
     auth = request.headers.get("Authorization") or request.headers.get("authorization") or ""
-    match = re.fullmatch(r"Bearer\s+local-9march2017-(\d+)", auth.strip(), flags=re.IGNORECASE)
+    match = re.fullmatch(rf"Bearer\s+local-{re.escape(API_VERSION)}-(\d+)", auth.strip(), flags=re.IGNORECASE)
     if match:
         return int(match.group(1))
 
