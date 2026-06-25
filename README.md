@@ -24,7 +24,8 @@ Do not use developer features to harass, disrupt, impersonate, moderate, punish,
 **This project is intended for archival and educational use only.**
 
 
-
+# Need help?
+There is a discord server available! https://discord.gg/nrpWndwvwy
 
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the RecRoompatches.exe
