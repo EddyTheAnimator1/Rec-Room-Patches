@@ -107,12 +107,10 @@ def _profile_image_response(request: Request, *, content: bytes, media_type: str
         "Last-Modified": last_modified,
         "other_player_id": last_modified,
         "reported_player_rep": last_modified,
+        "Cache-Control": "no-cache, no-store, max-age=0",
     }
-    if _BASE._same_http_date(str(request.headers.get("if-modified-since") or ""), last_modified):
-        return Response(status_code=304, headers=headers)
-    for name in ("amount", "reported_player_rep"):
-        if _BASE._same_http_date(str(request.headers.get(name) or ""), last_modified):
-            return Response(status_code=189, headers=headers)
+    # The 17 March client has multiple profile-image cache header variants. Returning
+    # image bytes every time avoids stale client-side cache paths swallowing updates.
     return Response(content=content, media_type=media_type, headers=headers)
 
 
