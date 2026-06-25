@@ -130,6 +130,11 @@ async def _handle_profile_image_v2(request: Request, context) -> Response:
     return await _BASE._handle_set_profile_image(request, f"api/images/v1/profile/{player_id}", context)
 
 
+async def _handle_phone_update(request: Request, context) -> Response:
+    _ensure_local_profile(request, context)
+    return JSONResponse({"Success": True, "Message": ""})
+
+
 def _coerce_player_ids(values: Any) -> list[int]:
     if not isinstance(values, list):
         raise HTTPException(status_code=400, detail="ToPlayerIds must be a list.")
@@ -201,6 +206,11 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         if method != "POST":
             raise HTTPException(status_code=501, detail="Display name method is not implemented.")
         return await _handle_display_name_update(request, context)
+
+    if path in {"api/players/v2/phone", "api/players/v2/phone/"}:
+        if method != "POST":
+            raise HTTPException(status_code=501, detail="Phone method is not implemented.")
+        return await _handle_phone_update(request, context)
 
     if path in {"api/images/v2/profile", "api/images/v2/profile/"}:
         if method != "POST":
