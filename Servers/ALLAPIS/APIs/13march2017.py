@@ -14,6 +14,7 @@ Confirmed from the game builds at manifests 1917087114031565919 and
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,73 @@ def _ensure_local_profile(request: Request, context) -> int:
         raise HTTPException(status_code=404, detail="Player not found.")
     context.assert_player_not_banned(player["player_id"])
     return player_id
+
+
+def _safe_display_name(name: str, fallback: str) -> str:
+    cleaner = getattr(_PLATFORM_BASE, "_safe_display_name", None)
+    if callable(cleaner):
+        return cleaner(name, fallback=fallback)
+    name = str(name or "").strip()
+    return name[:64] if name else fallback
+
+
+async def _handle_display_name_update(request: Request, context) -> Response:
+    player_id = _ensure_local_profile(request, context)
+    player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
+    if player is None:
+        raise HTTPException(status_code=404, detail="Player not found.")
+
+    payload = await _BASE._parse_client_payload(request)
+    raw_name = _BASE._str_field(payload, "Name", "name", "DisplayName", "displayName")
+    if not raw_name:
+        return JSONResponse({"Success": False, "Message": "Name is required."})
+
+    state = dict(player.get("state") or {})
+    previous_name = str(state.get("name") or player.get("display_name") or player.get("username") or "Player")
+    display_name = _safe_display_name(raw_name, fallback=previous_name)
+    state["name"] = display_name
+
+    api_state = context.ensure_player_version_state(player["player_id"], API_VERSION, {})
+    api_state["name"] = display_name
+
+    with context.db.transaction() as conn:
+        conn.execute(
+            """
+            UPDATE players
+            SET display_name = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+              AND is_coach = 0
+            """,
+            (display_name, player["player_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE player_version_state
+            SET state_json = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+              AND api_version = ?
+            """,
+            (json.dumps(state, sort_keys=True), player["player_id"], _PLATFORM_BASE.STATE_API_VERSION),
+        )
+        conn.execute(
+            """
+            UPDATE player_version_state
+            SET state_json = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+              AND api_version = ?
+            """,
+            (json.dumps(api_state, sort_keys=True), player["player_id"], API_VERSION),
+        )
+    context.record_player_identities(player["player_id"], [("username_lower", display_name)])
+    return JSONResponse({"Success": True, "Message": ""})
+
+
+async def _handle_profile_image_v2(request: Request, context) -> Response:
+    player_id = _ensure_local_profile(request, context)
+    return await _BASE._handle_set_profile_image(request, f"api/images/v1/profile/{player_id}", context)
 
 
 def _coerce_player_ids(values: Any) -> list[int]:
@@ -128,6 +196,16 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         if method != "POST":
             raise HTTPException(status_code=501, detail="Offline invite method is not implemented.")
         return await _handle_offline_invite(request, context)
+
+    if path in {"api/players/v2/displayname", "api/players/v2/displayname/"}:
+        if method != "POST":
+            raise HTTPException(status_code=501, detail="Display name method is not implemented.")
+        return await _handle_display_name_update(request, context)
+
+    if path in {"api/images/v2/profile", "api/images/v2/profile/"}:
+        if method != "POST":
+            raise HTTPException(status_code=501, detail="Profile image upload method is not implemented.")
+        return await _handle_profile_image_v2(request, context)
 
     return await _SHARED.handle_http(request=request, route_path=route_path, context=context)
 
