@@ -21,6 +21,24 @@ from fastapi.responses import JSONResponse, Response
 
 API_VERSION = "23march2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Thu, 23 Mar 2017 03:01:13 GMT"
+MATCHMAKING_DEFAULTS = {
+    "PreferFullRoomsFrequency": 0.5,
+    "PreferEmptyRoomsFrequency": 0.0,
+}
+LEVEL_PROGRESSION_MAPS = [{"Level": level, "RequiredXp": (level - 1) * 500} for level in range(1, 31)]
+DAILY_OBJECTIVES_DEFAULTS = [
+    [{"type": 301, "score": 1}, {"type": 500, "score": 1}, {"type": 801, "score": 1}],
+    [{"type": 201, "score": 1}, {"type": 400, "score": 1}, {"type": 100, "score": 1}],
+    [{"type": 601, "score": 1}, {"type": 701, "score": 1}, {"type": 301, "score": 1}],
+    [{"type": 801, "score": 1}, {"type": 201, "score": 1}, {"type": 500, "score": 1}],
+    [{"type": 100, "score": 1}, {"type": 400, "score": 1}, {"type": 301, "score": 1}],
+    [{"type": 500, "score": 1}, {"type": 801, "score": 1}, {"type": 201, "score": 1}],
+    [{"type": 301, "score": 1}, {"type": 400, "score": 1}, {"type": 100, "score": 1}],
+]
+PHOTON_CONFIG_DEFAULTS = {
+    "CloudRegion": "us",
+    "CrcCheckEnabled": False,
+}
 
 
 def _retarget_module(module) -> None:
@@ -87,10 +105,60 @@ def _add_config_fields(payload: Any, request: Request, context) -> bool:
         return False
     changed = _add_profile_image_names(payload)
     server_base = _SERVER_BASE.public_api_base_url(request, context, API_VERSION)
+
+    if not isinstance(payload.get("MessageOfTheDay"), str):
+        payload["MessageOfTheDay"] = ""
+        changed = True
+
     for key in ("CdnBaseUri", "serverAddress"):
         if payload.get(key) != server_base:
             payload[key] = server_base
             changed = True
+
+    matchmaking_params = payload.get("MatchmakingParams")
+    if not isinstance(matchmaking_params, dict):
+        payload["MatchmakingParams"] = dict(MATCHMAKING_DEFAULTS)
+        changed = True
+    else:
+        for key, value in MATCHMAKING_DEFAULTS.items():
+            if key not in matchmaking_params:
+                matchmaking_params[key] = value
+                changed = True
+
+    level_maps = payload.get("LevelProgressionMaps")
+    if not isinstance(level_maps, list) or not level_maps or not all(
+        isinstance(item, dict) and "Level" in item and "RequiredXp" in item for item in level_maps
+    ):
+        payload["LevelProgressionMaps"] = [dict(item) for item in LEVEL_PROGRESSION_MAPS]
+        changed = True
+
+    daily_objectives = payload.get("DailyObjectives")
+    if (
+        not isinstance(daily_objectives, list)
+        or not daily_objectives
+        or not all(
+            isinstance(day, list)
+            and all(isinstance(item, dict) and "type" in item and "score" in item for item in day)
+            for day in daily_objectives
+        )
+    ):
+        payload["DailyObjectives"] = [[dict(item) for item in day] for day in DAILY_OBJECTIVES_DEFAULTS]
+        changed = True
+
+    config_table = payload.get("ConfigTable")
+    if not isinstance(config_table, list) or not all(isinstance(item, dict) for item in config_table):
+        payload["ConfigTable"] = []
+        changed = True
+
+    photon_config = payload.get("PhotonConfig")
+    if not isinstance(photon_config, dict):
+        payload["PhotonConfig"] = dict(PHOTON_CONFIG_DEFAULTS)
+        changed = True
+    else:
+        for key, value in PHOTON_CONFIG_DEFAULTS.items():
+            if key not in photon_config:
+                photon_config[key] = value
+                changed = True
     return changed
 
 
