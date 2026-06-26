@@ -3,52 +3,50 @@ import ctypes
 import getpass
 import json
 import os
+import re
 import shutil
 import subprocess
-import struct
-import traceback
-import zipfile
 import sys
+import time
+import traceback
 import webbrowser
+import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib import error, request
 
+
 APP_ID = 471710
 DEPOT_ID = 471711
-CONFIG_NAME = "steam_build_ui_release.json"
-LOG_NAME = "last_depotdownloader_release.log"
-TOOLS_DIR_NAME = "DepotDownloader"
-DOWNLOAD_CHUNK = 1024 * 128
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
-)
+APP_VERSION = "0.0.0-dev"
+REMEMBERING_NAME = "Remembering.json"
+LOG_NAME = "last_depotdownloader_noir.log"
+ERROR_LOG_NAME = "last_release_noir_error.log"
+PREVIEW_STATE_VERSION = 1
+USER_AGENT = "Release-Noir/1.0"
 DEPOTDOWNLOADER_RELEASE_API = "https://api.github.com/repos/SteamRE/DepotDownloader/releases/latest"
 PATCH_REPO_OWNER = "EddyTheAnimator1"
 PATCH_REPO_NAME = "Rec-Room-Patches"
 PATCH_BRANCHES = ("main", "master")
-GITHUB_TREE_API = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-GITHUB_RAW_FILE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-RELEASE_DATA_DIR_NAME = "Recroom_Release_Data"
-APP_VERSION = "0.0.1"
-SELF_UPDATE_REPO_OWNER = "EddyTheAnimator1"
-SELF_UPDATE_REPO_NAME = "Rec-Room-Patches"
+SELF_UPDATE_REPO_OWNER = PATCH_REPO_OWNER
+SELF_UPDATE_REPO_NAME = PATCH_REPO_NAME
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITHUB_RELEASES_PAGE_URL = "https://github.com/{owner}/{repo}/releases/latest"
-
-INVALID_WIN_CHARS = {
-    '<': '‹',
-    '>': '›',
-    ':': '.',
-    '"': "'",
-    '/': '∕',
-    '\\': '∖',
-    '|': 'ǀ',
-    '?': '？',
-    '*': '＊',
+GITHUB_TREE_API = "https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+GITHUB_RAW_FILE_URL = "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+DOWNLOAD_CHUNK = 1024 * 256
+STEP_DELAY = 0.01
+BETA_MANIFESTS = {
+    "2932388464690083659": "dankr",
+    "8267987913704360820": "tmoney_trailer",
+    "6185049689623293718": "pedro_test",
+    "4693569285935572384": "index_improved",
 }
 
+PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+LEADING_PERCENT_RE = re.compile(r"^\s*\d+(?:\.\d+)?\s*%\s*")
+SPINNER = "|/-\\"
 EXE_NAME_PREFERENCES = [
     "RecRoom_Release.exe",
     "RecRoom.exe",
@@ -63,77 +61,29 @@ EXE_NAME_BLOCKLIST = {
     "unins000.exe",
     "DepotDownloader.exe",
 }
-
-_TREE_CACHE: dict[str, list[str]] = {}
-_CURRENT_GITHUB_PATCH_BRANCH: str | None = None
-
-
-class UI:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    CYAN = "\033[96m"
-    MAGENTA = "\033[95m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    BLUE = "\033[94m"
-
-    @staticmethod
-    def enable_ansi() -> None:
-        if os.name == "nt":
-            os.system("")
-
-    @staticmethod
-    def clear() -> None:
-        os.system("cls" if os.name == "nt" else "clear")
-
-    @staticmethod
-    def line(char: str = "-", width: int = 64, color: str = DIM) -> None:
-        print(f"{color}{char * width}{UI.RESET}")
-
-    @staticmethod
-    def title(text: str) -> None:
-        UI.line("=", color=UI.MAGENTA)
-        print(f"{UI.BOLD}{UI.CYAN}{text}{UI.RESET}")
-        UI.line("=", color=UI.MAGENTA)
-
-    @staticmethod
-    def section(text: str) -> None:
-        print(f"\n{UI.BOLD}{UI.MAGENTA}{text}{UI.RESET}")
-        UI.line(color=UI.MAGENTA)
-
-    @staticmethod
-    def info(text: str) -> None:
-        print(f"{UI.BLUE}[INFO]{UI.RESET} {text}")
-
-    @staticmethod
-    def ok(text: str) -> None:
-        print(f"{UI.GREEN}[OK]{UI.RESET} {text}")
-
-    @staticmethod
-    def warn(text: str) -> None:
-        print(f"{UI.YELLOW}[WARN]{UI.RESET} {text}")
-
-    @staticmethod
-    def err(text: str) -> None:
-        print(f"{UI.RED}[ERR]{UI.RESET} {text}")
-
-    @staticmethod
-    def huge_warning(lines: list[str]) -> None:
-        UI.line("!", color=UI.RED)
-        print(f"{UI.BOLD}{UI.RED}WARNING . . WARNING . . WARNING{UI.RESET}")
-        UI.line("!", color=UI.RED)
-        for line in lines:
-            print(f"{UI.BOLD}{UI.YELLOW}{line}{UI.RESET}")
-        UI.line("!", color=UI.RED)
-
-
-class DPAPIError(RuntimeError):
-    pass
+INVALID_WIN_CHARS = {
+    "<": "-",
+    ">": "-",
+    ":": ".",
+    '"': "'",
+    "/": "-",
+    "\\": "-",
+    "|": "-",
+    "?": "-",
+    "*": "-",
+}
+TREE_CACHE: dict[str, list[str]] = {}
 
 
 class DownloadError(RuntimeError):
+    pass
+
+
+class CredentialError(RuntimeError):
+    pass
+
+
+class ManifestError(RuntimeError):
     pass
 
 
@@ -153,16 +103,28 @@ class DATA_BLOB(ctypes.Structure):
 
 
 @dataclass
-class PatchLookup:
+class LocalBuild:
+    path: Path
+    name: str
     manifest_id: str
-    found: bool
-    folder_name: str | None = None
-    raw_label: str | None = None
-    safe_label: str | None = None
-    branch: str | None = None
-    patch_path: str | None = None
-    patch_payload: dict | list | None = None
-    warning: str | None = None
+    launcher: str
+    modified_ts: float
+    preview: bool
+
+
+@dataclass
+class ManifestBundle:
+    manifest_id: str
+    beta_branch: str | None
+    branch: str | None
+    folder_name: str
+    date_raw: str
+    date_label: str
+    safe_label: str
+    patch_path: str | None
+    patch_payload: dict | list | None
+    patch_error: str | None = None
+    local_folder: Path | None = None
 
 
 @dataclass
@@ -171,269 +133,510 @@ class PatchResult:
     summary: str
 
 
-@dataclass
-class LocalBuild:
-    path: Path
-    name: str
-    exe_path: Path | None
-    modified_ts: float
+class Noir:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    BLACK = "\033[30m"
+    BG_BLACK = "\033[40m"
+    ORANGE = "\033[38;5;208m"
+    ORANGE_SOFT = "\033[38;5;214m"
+    GOLD = "\033[38;5;220m"
+    GREEN = "\033[38;5;82m"
+    RED = "\033[38;5;196m"
+    WHITE = "\033[38;5;255m"
+    GRAY = "\033[38;5;245m"
+    DARK = "\033[38;5;238m"
+
+    use_color = True
+    width = 74
+
+    @classmethod
+    def configure(cls, color: bool = True, width: int = 74) -> None:
+        cls.use_color = color and not os.environ.get("NO_COLOR")
+        cls.width = max(60, min(width, 100))
+        if cls.use_color and os.name == "nt":
+            os.system("")
+
+    @classmethod
+    def c(cls, color: str, text: str) -> str:
+        if not cls.use_color:
+            return text
+        return f"{color}{text}{cls.RESET}"
+
+    @classmethod
+    def clear(cls) -> None:
+        os.system("cls" if os.name == "nt" else "clear")
+
+    @classmethod
+    def line(cls, char: str = "-", color: str | None = None) -> None:
+        print(cls.c(color or cls.DARK, char * cls.width))
+
+    @classmethod
+    def label(cls, text: str, color: str | None = None) -> str:
+        return cls.c(color or cls.ORANGE, text)
+
+    @classmethod
+    def chip(cls, text: str, color: str | None = None) -> str:
+        left = "["
+        right = "]"
+        return cls.c(color or cls.ORANGE_SOFT, f"{left}{text}{right}")
+
+    @classmethod
+    def header(cls, build_count: int, fake_mode: bool, storage: Path) -> None:
+        mode = "PREVIEW" if fake_mode else "READY"
+        title = "REC ROOM RELEASE"
+        cls.line("=" , cls.ORANGE)
+        print(cls.c(cls.BOLD + cls.ORANGE, title))
+        cls.line("=" , cls.ORANGE)
+        left = f"App {APP_ID} / Depot {DEPOT_ID}"
+        right = f"{mode} / {build_count} builds"
+        print(cls.c(cls.GRAY, left) + cls.c(cls.ORANGE_SOFT, right.rjust(max(1, cls.width - len(left)))))
+        print(cls.c(cls.GRAY, "Storage ") + cls.c(cls.WHITE, str(storage)))
+        cls.line(color=cls.DARK)
+
+    @classmethod
+    def section(cls, text: str) -> None:
+        print()
+        print(cls.c(cls.BOLD + cls.ORANGE, text.upper()))
+        cls.line(color=cls.DARK)
+
+    @classmethod
+    def info(cls, text: str) -> None:
+        print(f"{cls.chip('INFO', cls.ORANGE_SOFT)} {text}")
+
+    @classmethod
+    def ok(cls, text: str) -> None:
+        print(f"{cls.chip('OK', cls.GREEN)} {text}")
+
+    @classmethod
+    def warn(cls, text: str) -> None:
+        print(f"{cls.chip('WARN', cls.GOLD)} {text}")
+
+    @classmethod
+    def err(cls, text: str) -> None:
+        print(f"{cls.chip('ERR', cls.RED)} {text}")
+
+    @classmethod
+    def menu(cls, rows: list[tuple[str, str]]) -> None:
+        for key, title in rows:
+            key_part = cls.c(cls.BOLD + cls.ORANGE, f"{key:>2}")
+            title_part = cls.c(cls.WHITE, title)
+            print(f" {key_part}  {title_part}")
+
+    @classmethod
+    def kv(cls, key: str, value: str) -> None:
+        print(cls.c(cls.GRAY, f"{key:<10}") + cls.c(cls.WHITE, value))
+
+    @classmethod
+    def step(cls, label: str, result: str, detail: str = "", delay: float = STEP_DELAY) -> None:
+        time.sleep(max(0.0, delay))
+        dots = "." * max(1, 24 - len(label))
+        print(
+            cls.c(cls.GRAY, f"  {label} {dots} ")
+            + cls.c(cls.GREEN, result)
+            + (cls.c(cls.DIM + cls.GRAY, f"  {detail}") if detail else "")
+        )
 
 
-
-def _blob_from_bytes(data: bytes):
-    keepalive = ctypes.create_string_buffer(data)
-    blob = DATA_BLOB(len(data), ctypes.cast(keepalive, ctypes.POINTER(ctypes.c_ubyte)))
-    return blob, keepalive
-
-
-
-def _bytes_from_blob(blob: DATA_BLOB) -> bytes:
-    if not blob.cbData:
-        return b""
-    return ctypes.string_at(blob.pbData, blob.cbData)
-
-
-
-def dpapi_encrypt_to_b64(text: str) -> str:
-    if os.name != "nt":
-        raise DPAPIError("Windows DPAPI is required for stored credentials.")
-
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    data_in, keepalive = _blob_from_bytes(text.encode("utf-8"))
-    data_out = DATA_BLOB()
-
-    ok = crypt32.CryptProtectData(
-        ctypes.byref(data_in),
-        None,
-        None,
-        None,
-        None,
-        0x01,
-        ctypes.byref(data_out),
-    )
-    if not ok:
-        raise DPAPIError(f"CryptProtectData failed: {ctypes.GetLastError()}")
-
-    try:
-        return base64.b64encode(_bytes_from_blob(data_out)).decode("ascii")
-    finally:
-        if data_out.pbData:
-            kernel32.LocalFree(data_out.pbData)
-        del keepalive
-
-
-
-def dpapi_decrypt_from_b64(value: str) -> str:
-    if os.name != "nt":
-        raise DPAPIError("Windows DPAPI is required for stored credentials.")
-
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    raw = base64.b64decode(value.encode("ascii"))
-    data_in, keepalive = _blob_from_bytes(raw)
-    data_out = DATA_BLOB()
-
-    ok = crypt32.CryptUnprotectData(
-        ctypes.byref(data_in),
-        None,
-        None,
-        None,
-        None,
-        0x01,
-        ctypes.byref(data_out),
-    )
-    if not ok:
-        raise DPAPIError(f"CryptUnprotectData failed: {ctypes.GetLastError()}")
-
-    try:
-        return _bytes_from_blob(data_out).decode("utf-8")
-    finally:
-        if data_out.pbData:
-            kernel32.LocalFree(data_out.pbData)
-        del keepalive
-
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def script_dir() -> Path:
-    return current_executable_path().parent
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
 
 
-
-def tools_dir() -> Path:
-    return script_dir() / TOOLS_DIR_NAME
-
+def settings_path() -> Path:
+    return script_dir() / REMEMBERING_NAME
 
 
-def config_path() -> Path:
-    return script_dir() / CONFIG_NAME
-
+def credentials_path() -> Path:
+    return script_dir() / "DoNotShare"
 
 
 def log_path() -> Path:
     return script_dir() / LOG_NAME
 
 
+def error_log_path() -> Path:
+    return script_dir() / ERROR_LOG_NAME
 
-def depot_root() -> Path:
+
+def depotdownloader_exe_path() -> Path:
+    return script_dir() / "DepotDownloader.exe"
+
+
+def depot_root(settings: dict | None = None) -> Path:
+    root = (settings or {}).get("storage_root")
+    if root:
+        return Path(root)
     return script_dir() / "depots" / str(DEPOT_ID)
 
 
-
-def build_storage_root(config: dict | None = None) -> Path:
-    return depot_root()
-
+def preview_receipt_dir() -> Path:
+    return script_dir() / ".release_noir"
 
 
-def desktop_dir() -> Path:
-    home = Path(os.environ.get("USERPROFILE") or Path.home())
-    return home / "Desktop"
+def default_settings() -> dict:
+    return {
+        "state_version": PREVIEW_STATE_VERSION,
+        "fake_mode": False,
+        "theme": "orange-black",
+        "created_at": now_iso(),
+        "last_launch": None,
+        "storage_root": str(script_dir() / "depots" / str(DEPOT_ID)),
+        "app_update": {},
+        "depotdownloader": {},
+        "recent_manifests": [],
+        "manifests": {},
+    }
 
 
-
-def print_intro(build_count: int | None = None) -> None:
-    UI.title("Rec Room Build Service [Release Build]")
-    print(f"App ID        : {APP_ID}")
-    print(f"Depot ID      : {DEPOT_ID}")
-    print(f"Build storage : {build_storage_root()}")
-    print("Patch mode    : GitHub manifest Patch.json")
-    if build_count is not None:
-        print(f"Local builds  : {build_count}")
-    UI.line(color=UI.MAGENTA)
+def normalize_manifest_id(value: object) -> str | None:
+    if not isinstance(value, (str, int)):
+        return None
+    manifest_id = str(value).strip()
+    if manifest_id and manifest_id.isascii() and manifest_id.isdecimal():
+        return manifest_id
+    return None
 
 
+def compact_manifest_record(manifest_id: str, record: dict) -> dict | None:
+    path_value = record.get("path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
 
-def load_config() -> dict:
-    path = config_path()
+    build_path = Path(path_value)
+    if not build_path.exists() or not build_path.is_dir():
+        return None
+
+    compact: dict[str, str] = {"path": str(build_path)}
+    beta_branch = record.get("beta_branch") or beta_branch_for_manifest(manifest_id)
+    if isinstance(beta_branch, str) and beta_branch.strip():
+        compact["beta_branch"] = beta_branch.strip()
+
+    updated_at = record.get("updated_at")
+    if isinstance(updated_at, str) and updated_at.strip():
+        compact["updated_at"] = updated_at.strip()
+    return compact
+
+
+def prune_remembered_manifests(settings: dict) -> None:
+    raw_manifests = settings.get("manifests")
+    if not isinstance(raw_manifests, dict):
+        raw_manifests = {}
+
+    manifests: dict[str, dict] = {}
+    for manifest_id, record in raw_manifests.items():
+        if not isinstance(record, dict):
+            continue
+        normalized_manifest_id = normalize_manifest_id(manifest_id)
+        if normalized_manifest_id is None:
+            continue
+        compact = compact_manifest_record(normalized_manifest_id, record)
+        if compact is not None:
+            manifests[normalized_manifest_id] = compact
+
+    settings["manifests"] = manifests
+
+    raw_recent = settings.get("recent_manifests")
+    if not isinstance(raw_recent, list):
+        raw_recent = []
+
+    recent: list[str] = []
+    for manifest_id in raw_recent:
+        value = normalize_manifest_id(manifest_id)
+        if value in manifests and value not in recent:
+            recent.append(value)
+    settings["recent_manifests"] = recent[:8]
+
+    last_manifest = normalize_manifest_id(settings.get("last_manifest"))
+    if last_manifest is not None and last_manifest in manifests:
+        settings["last_manifest"] = last_manifest
+        return
+    if settings["recent_manifests"]:
+        settings["last_manifest"] = settings["recent_manifests"][0]
+    else:
+        settings.pop("last_manifest", None)
+
+
+def load_settings() -> dict:
+    path = settings_path()
     if not path.exists():
-        return {}
+        settings = default_settings()
+        save_settings(settings)
+        return settings
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        UI.warn("Config exists but could not be read. Starting with a new one.")
-        return {}
-
-    if not isinstance(data, dict):
-        return {}
-
-    if "build_storage_dir" in data:
-        data.pop("build_storage_dir", None)
+        backup = path.with_suffix(".broken.json")
         try:
-            save_config(data)
-        except Exception:
+            path.replace(backup)
+        except OSError:
             pass
+        settings = default_settings()
+        save_settings(settings)
+        return settings
 
+    if not isinstance(loaded, dict):
+        loaded = {}
+
+    settings = default_settings()
+    deep_update(settings, loaded)
+    settings["state_version"] = PREVIEW_STATE_VERSION
+    settings["fake_mode"] = False
+    settings["last_launch"] = now_iso()
+    settings.pop("fake_services", None)
+    settings.pop("fake_steam_username", None)
+    settings.pop("created_preview_builds", None)
+    settings.pop("notes", None)
+    prune_remembered_manifests(settings)
+    save_settings(settings)
+    return settings
+
+
+def deep_update(base: dict, incoming: dict) -> None:
+    for key, value in incoming.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            deep_update(base[key], value)
+        else:
+            base[key] = value
+
+
+def save_settings(settings: dict) -> None:
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    replace_with_retry(tmp, path)
+
+
+def replace_with_retry(source: Path, target: Path) -> None:
+    last_error: OSError | None = None
+    for _ in range(8):
+        try:
+            source.replace(target)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.08)
+    raise last_error if last_error is not None else OSError(f"Could not replace {target}")
+
+
+def request_json(url: str) -> dict:
+    req = request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    if not isinstance(data, dict):
+        raise DownloadError("GitHub returned an unexpected response.")
     return data
 
 
+def request_bytes(url: str) -> bytes:
+    req = request.Request(url, headers={"User-Agent": USER_AGENT})
+    with request.urlopen(req, timeout=60) as resp:
+        return resp.read()
 
-def save_config(config: dict) -> None:
-    config_path().write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+def request_text(url: str) -> str:
+    return request_bytes(url).decode("utf-8", errors="replace")
 
 
+def normalize_version_tag(value: str) -> str:
+    return value.strip().lstrip("vV")
 
-def pause_close() -> None:
+
+def is_dev_version(value: str) -> bool:
+    normalized = normalize_version_tag(value).lower()
+    return not normalized or normalized.endswith("-dev") or "dev" in normalized
+
+
+def parse_version_numbers(value: str) -> tuple[int, int, int]:
+    normalized = normalize_version_tag(value).split("-", 1)[0]
+    numbers: list[int] = []
+    for chunk in normalized.split("."):
+        if chunk.isdigit():
+            numbers.append(int(chunk))
+        else:
+            match = re.match(r"(\d+)", chunk)
+            numbers.append(int(match.group(1)) if match else 0)
+        if len(numbers) == 3:
+            break
+    while len(numbers) < 3:
+        numbers.append(0)
+    return tuple(numbers[:3])
+
+
+def is_outdated_version(current_version: str, latest_version: str) -> bool:
+    return parse_version_numbers(current_version) < parse_version_numbers(latest_version)
+
+
+def latest_app_release_api_url() -> str:
+    return GITHUB_LATEST_RELEASE_API.format(owner=SELF_UPDATE_REPO_OWNER, repo=SELF_UPDATE_REPO_NAME)
+
+
+def latest_app_release_page_url() -> str:
+    return GITHUB_RELEASES_PAGE_URL.format(owner=SELF_UPDATE_REPO_OWNER, repo=SELF_UPDATE_REPO_NAME)
+
+
+def read_latest_app_release() -> dict:
+    payload = request_json(latest_app_release_api_url())
+    tag_name = payload.get("tag_name")
+    if not isinstance(tag_name, str) or not tag_name.strip():
+        raise DownloadError("Latest GitHub release did not include a version tag.")
+    html_url = payload.get("html_url")
+    return {
+        "version": normalize_version_tag(tag_name),
+        "url": str(html_url) if isinstance(html_url, str) and html_url.strip() else latest_app_release_page_url(),
+    }
+
+
+def check_app_release(settings: dict, *, enforce: bool) -> int:
+    current_version = normalize_version_tag(APP_VERSION)
+    checked_at = now_iso()
     try:
-        input("\nPress Enter to close . . .")
-    except EOFError:
-        pass
+        latest = read_latest_app_release()
+    except (error.HTTPError, error.URLError, TimeoutError, DownloadError, json.JSONDecodeError) as exc:
+        settings["app_update"] = {
+            "checked_at": checked_at,
+            "current": current_version or APP_VERSION,
+            "status": "check_failed",
+            "last_error": str(exc),
+        }
+        save_settings(settings)
+        Noir.warn("GitHub update check failed; continuing.")
+        return 0
 
+    latest_version = str(latest["version"])
+    release_url = str(latest["url"])
+    dev_build = is_dev_version(current_version)
+    update_required = (not dev_build) and is_outdated_version(current_version, latest_version)
+    status = "dev" if dev_build else "outdated" if update_required else "current"
+    settings["app_update"] = {
+        "checked_at": checked_at,
+        "current": current_version or APP_VERSION,
+        "latest": latest_version,
+        "status": status,
+        "url": release_url,
+    }
+    save_settings(settings)
 
+    if not (enforce and update_required):
+        return 0
 
-def press_enter(message: str = "Press Enter to continue . . .") -> None:
+    Noir.clear()
+    Noir.section("Update")
+    Noir.err("This build is outdated.")
+    Noir.kv("Current", f"v{current_version}")
+    Noir.kv("Latest", f"v{latest_version}")
+    Noir.kv("Download", release_url)
     try:
-        input(f"\n{message}")
-    except EOFError:
-        pass
+        webbrowser.open(release_url)
+        Noir.ok("Opened GitHub releases.")
+    except Exception as exc:
+        Noir.warn(f"Could not open browser: {exc}")
+    press_enter("Press Enter to close")
+    return 2
 
 
-
-def prompt_nonempty(label: str, default: str | None = None) -> str:
-    while True:
-        suffix = f" [{default}]" if default else ""
-        value = input(f"{label}{suffix}: ").strip()
-        if value:
-            return value
-        if default is not None:
-            return default
-        UI.warn("This field cannot be empty.")
-
-
-def prompt_password(label: str) -> str:
-    prompt = f"{label}: "
-    if os.name != "nt":
-        return getpass.getpass(prompt)
-
-    import msvcrt
-
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
-    chars: list[str] = []
-
-    while True:
-        key = msvcrt.getwch()
-
-        if key in {"\r", "\n"}:
-            print()
-            return "".join(chars)
-
-        if key == "\003":
-            print()
-            raise KeyboardInterrupt
-
-        if key == "\b":
-            if chars:
-                chars.pop()
-                sys.stdout.write("\b \b")
-                sys.stdout.flush()
-            continue
-
-        if key in {"\x00", "\xe0"}:
-            msvcrt.getwch()
-            continue
-
-        if key.isprintable():
-            chars.append(key)
-            sys.stdout.write("*")
-            sys.stdout.flush()
-
-def prompt_yes_no(label: str, default: bool = True) -> bool:
-    suffix = "Y/n" if default else "y/N"
-    while True:
-        raw = input(f"{label} [{suffix}]: ").strip().lower()
-        if not raw:
-            return default
-        if raw in {"y", "yes"}:
-            return True
-        if raw in {"n", "no"}:
-            return False
-        UI.warn("Enter yes or no.")
+def fetch_repo_file(branch: str, path: str) -> str:
+    return request_text(
+        GITHUB_RAW_FILE_URL.format(
+            owner=PATCH_REPO_OWNER,
+            repo=PATCH_REPO_NAME,
+            branch=branch,
+            path=path,
+        )
+    )
 
 
+def fetch_repo_bytes(branch: str, path: str) -> bytes:
+    return request_bytes(
+        GITHUB_RAW_FILE_URL.format(
+            owner=PATCH_REPO_OWNER,
+            repo=PATCH_REPO_NAME,
+            branch=branch,
+            path=path,
+        )
+    )
 
-def prompt_menu_choice(valid: set[str], label: str = "Select option") -> str:
-    while True:
-        value = input(f"{label}: ").strip().lower()
-        if value in valid:
-            return value
-        UI.warn("That option is not valid.")
+
+def get_repo_tree(branch: str) -> list[str]:
+    if branch in TREE_CACHE:
+        return TREE_CACHE[branch]
+    payload = request_json(
+        GITHUB_TREE_API.format(
+            owner=PATCH_REPO_OWNER,
+            repo=PATCH_REPO_NAME,
+            branch=branch,
+        )
+    )
+    entries = payload.get("tree")
+    if not isinstance(entries, list):
+        raise ManifestError("GitHub tree response was not usable.")
+    paths = [str(item.get("path")) for item in entries if isinstance(item, dict) and item.get("path")]
+    TREE_CACHE[branch] = paths
+    return paths
 
 
+def beta_branch_for_manifest(manifest_id: str) -> str | None:
+    return BETA_MANIFESTS.get(manifest_id)
 
-def mask_command(args: list[str]) -> str:
-    masked: list[str] = []
-    hide_next = False
-    sensitive_flags = {"-password", "-username", "-twofactor"}
-    for part in args:
-        if hide_next:
-            masked.append("<hidden>")
-            hide_next = False
-            continue
-        masked.append(part)
-        if part in sensitive_flags:
-            hide_next = True
-    return " ".join(masked)
 
+def manifest_lookup_name(manifest_id: str, beta_branch: str | None = None) -> str:
+    return f"{manifest_id} {beta_branch}" if beta_branch else manifest_id
+
+
+def choose_manifest_folder(manifest_id: str, folders: list[str], beta_branch: str | None = None) -> str:
+    lookup_name = manifest_lookup_name(manifest_id, beta_branch)
+    exact = [folder for folder in folders if folder == lookup_name]
+    if exact:
+        return exact[0]
+    contains = [folder for folder in folders if lookup_name in folder]
+    if len(contains) == 1:
+        return contains[0]
+    if not contains:
+        raise ManifestError(f"Manifest folder was not found on GitHub: {lookup_name}")
+    raise ManifestError(f"Manifest folder is ambiguous on GitHub: {lookup_name}")
+
+
+def parse_date_json_text(text: str) -> str:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ManifestError("Date.json did not contain valid JSON.") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise ManifestError("Date.json did not contain a usable date string.")
+    return value.strip()
+
+
+def parse_date_json_optional(text: str) -> str:
+    try:
+        return parse_date_json_text(text)
+    except ManifestError:
+        return ""
+
+
+def format_manifest_date(raw_date: str) -> str:
+    normalized = " ".join(raw_date.strip().split())
+    marker = " \u2013 "
+    if marker in normalized:
+        date_part, time_part = normalized.split(marker, 1)
+        return f"{date_part.replace(' ', '')}{marker}{time_part.strip()}"
+    parts = normalized.split(" ", 3)
+    if len(parts) >= 4 and parts[0].isdigit():
+        return f"{parts[0]}{parts[1]}{parts[2]}{marker}{parts[3]}"
+    return normalized.replace(" ", "")
 
 
 def make_windows_safe(name: str) -> str:
@@ -444,151 +647,145 @@ def make_windows_safe(name: str) -> str:
     return value or "UnknownBuild"
 
 
-
-def make_unique_path(path: Path, force_full_name: bool = False) -> Path:
-    if not path.exists():
-        return path
-    counter = 2
-    while True:
-        if force_full_name:
-            candidate_name = f"{path.name} ({counter})"
-        else:
-            candidate_name = f"{path.stem} ({counter}){path.suffix}"
-        candidate = path.with_name(candidate_name)
-        if not candidate.exists():
-            return candidate
-        counter += 1
+def fallback_folder_label(manifest_id: str, beta_branch: str | None) -> str:
+    return manifest_lookup_name(manifest_id, beta_branch)
 
 
-
-def request_bytes(url: str, extra_headers: dict[str, str] | None = None) -> bytes:
-    headers = {"User-Agent": USER_AGENT}
-    if extra_headers:
-        headers.update(extra_headers)
-    req = request.Request(url, headers=headers)
-    with request.urlopen(req, timeout=30) as resp:
-        return resp.read()
-
-
-
-def request_text(url: str, extra_headers: dict[str, str] | None = None) -> str:
-    return request_bytes(url, extra_headers).decode("utf-8", errors="replace")
-
-
-
-def request_json(url: str) -> dict:
-    return json.loads(
-        request_text(
-            url,
-            {
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
+def make_manifest_bundle(
+    *,
+    manifest_id: str,
+    beta_branch: str | None,
+    branch: str | None,
+    folder_name: str,
+    raw_date: str,
+    patch_path: str | None,
+    patch_payload: dict | list | None,
+    patch_error: str | None = None,
+    local_folder: Path | None = None,
+) -> ManifestBundle:
+    date_label = format_manifest_date(raw_date) if raw_date else "Unknown"
+    folder_label = date_label if raw_date else fallback_folder_label(manifest_id, beta_branch)
+    return ManifestBundle(
+        manifest_id=manifest_id,
+        beta_branch=beta_branch,
+        branch=branch,
+        folder_name=folder_name,
+        date_raw=raw_date,
+        date_label=date_label,
+        safe_label=make_windows_safe(folder_label),
+        patch_path=patch_path,
+        patch_payload=patch_payload,
+        patch_error=patch_error,
+        local_folder=local_folder,
     )
 
 
-def normalize_version_tag(value: str) -> str:
-    return value.strip().lstrip("vV")
+def fallback_manifest_bundle(manifest_id: str) -> ManifestBundle:
+    beta_branch = beta_branch_for_manifest(manifest_id)
+    lookup_name = manifest_lookup_name(manifest_id, beta_branch)
+    return make_manifest_bundle(
+        manifest_id=manifest_id,
+        beta_branch=beta_branch,
+        branch=None,
+        folder_name=lookup_name,
+        raw_date="",
+        patch_path=None,
+        patch_payload=None,
+        local_folder=None,
+    )
 
 
-def parse_version_parts(value: str) -> tuple[int | str, ...]:
-    normalized = normalize_version_tag(value)
-    parts: list[int | str] = []
-    for chunk in normalized.replace("-", ".").split("."):
-        item = chunk.strip()
-        if not item:
+def read_local_patch_payload(patch_path: Path, manifest_name: str) -> tuple[dict | list | None, str | None]:
+    try:
+        return json.loads(patch_path.read_text(encoding="utf-8")), None
+    except json.JSONDecodeError as exc:
+        return None, f"Patch.json was invalid for manifest {manifest_name}: {exc}"
+
+
+def load_local_manifest_bundle(manifest_id: str) -> ManifestBundle | None:
+    beta_branch = beta_branch_for_manifest(manifest_id)
+    folder_name = manifest_lookup_name(manifest_id, beta_branch)
+    folder = script_dir() / "manifest" / folder_name
+    if not folder.exists() or not folder.is_dir():
+        return None
+
+    date_path = folder / "Date.json"
+    patch_path = folder / "Patch.json"
+    raw_date = parse_date_json_optional(date_path.read_text(encoding="utf-8")) if date_path.exists() else ""
+    patch_payload, patch_error = read_local_patch_payload(patch_path, folder_name) if patch_path.exists() else (None, None)
+    return make_manifest_bundle(
+        manifest_id=manifest_id,
+        beta_branch=beta_branch,
+        branch=None,
+        folder_name=folder_name,
+        raw_date=raw_date,
+        patch_path=str(patch_path) if patch_path.exists() else None,
+        patch_payload=patch_payload,
+        patch_error=patch_error,
+        local_folder=folder,
+    )
+
+
+def manifest_folder_names(paths: list[str]) -> list[str]:
+    folders: set[str] = set()
+    for path in paths:
+        normalized = path.replace("\\", "/")
+        if not normalized.startswith("manifest/"):
             continue
-        parts.append(int(item) if item.isdigit() else item.lower())
-    return tuple(parts)
+        parts = normalized.split("/")
+        if len(parts) >= 3 and parts[1]:
+            folders.add(parts[1])
+    return sorted(folders)
 
 
-def is_probably_frozen() -> bool:
-    return bool(getattr(sys, "frozen", False))
+def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
+    local_bundle = load_local_manifest_bundle(manifest_id)
+    if local_bundle is not None:
+        return local_bundle
+
+    beta_branch = beta_branch_for_manifest(manifest_id)
+    for branch in PATCH_BRANCHES:
+        try:
+            tree = get_repo_tree(branch)
+            folders = manifest_folder_names(tree)
+            folder_name = choose_manifest_folder(manifest_id, folders, beta_branch)
+            date_path = f"manifest/{folder_name}/Date.json"
+            patch_path = f"manifest/{folder_name}/Patch.json"
+            raw_date = parse_date_json_optional(fetch_repo_file(branch, date_path)) if date_path in tree else ""
+            patch_payload: dict | list | None = None
+            patch_error: str | None = None
+            if patch_path in tree:
+                try:
+                    patch_payload = json.loads(fetch_repo_file(branch, patch_path))
+                except json.JSONDecodeError as exc:
+                    patch_error = f"Patch.json was invalid for manifest {folder_name}: {exc}"
+            return make_manifest_bundle(
+                manifest_id=manifest_id,
+                beta_branch=beta_branch,
+                branch=branch,
+                folder_name=folder_name,
+                raw_date=raw_date,
+                patch_path=patch_path if patch_path in tree else None,
+                patch_payload=patch_payload,
+                patch_error=patch_error,
+                local_folder=None,
+            )
+        except Exception:
+            continue
+
+    return fallback_manifest_bundle(manifest_id)
 
 
-def current_executable_path() -> Path:
-    return Path(sys.executable if is_probably_frozen() else __file__).resolve()
-
-
-def latest_release_api_url() -> str:
-    return GITHUB_LATEST_RELEASE_API.format(
-        owner=SELF_UPDATE_REPO_OWNER,
-        repo=SELF_UPDATE_REPO_NAME,
-    )
-
-
-def latest_release_page_url() -> str:
-    return GITHUB_RELEASES_PAGE_URL.format(
-        owner=SELF_UPDATE_REPO_OWNER,
-        repo=SELF_UPDATE_REPO_NAME,
-    )
-
-
-def fetch_latest_release_version() -> str | None:
-    payload = request_json(latest_release_api_url())
-    tag_name = payload.get("tag_name")
-    if isinstance(tag_name, str) and tag_name.strip():
-        return normalize_version_tag(tag_name)
-    return None
-
-
-def is_outdated_version(current_version: str, latest_version: str) -> bool:
-    current_parts = parse_version_parts(current_version)
-    latest_parts = parse_version_parts(latest_version)
-    return current_parts < latest_parts
-
-
-def enforce_latest_release() -> int:
-    if not is_probably_frozen():
-        return 0
-
-    current_version = normalize_version_tag(APP_VERSION)
-    if not current_version or current_version.endswith("-dev"):
-        UI.warn("Release version is not embedded in this build. Update lock check skipped.")
-        return 0
-
-    try:
-        latest_version = fetch_latest_release_version()
-    except Exception as exc:
-        UI.warn(f"Could not check for updates right now: {exc}")
-        return 0
-
-    if not latest_version:
-        UI.warn("Could not determine the latest GitHub release version.")
-        return 0
-
-    if not is_outdated_version(current_version, latest_version):
-        return 0
-
-    UI.huge_warning(
-        [
-            "This RecRoomPatches.exe is outdated and will now close.",
-            f"Current version : v{current_version}",
-            f"Latest version  : v{latest_version}",
-            "The GitHub releases page will open so you can download the latest version.",
-        ]
-    )
-
-    try:
-        webbrowser.open(latest_release_page_url())
-        UI.ok("Opened GitHub releases page.")
-    except Exception as exc:
-        UI.warn(f"Could not open the browser automatically: {exc}")
-        UI.info(f"Open this page manually: {latest_release_page_url()}")
-
-    return 2
-
-
-
-def choose_release_asset(payload: dict) -> tuple[str, str]:
-    assets = payload.get("assets") or []
+def choose_depotdownloader_asset(release: dict) -> tuple[str, str, str]:
+    tag = str(release.get("tag_name") or "").strip()
+    assets = release.get("assets") or []
     scored: list[tuple[int, str, str]] = []
-
     for asset in assets:
-        name = str(asset.get("name", ""))
-        url = str(asset.get("browser_download_url", ""))
-        if not name or not url or not name.lower().endswith(".zip"):
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = str(asset.get("browser_download_url") or "")
+        if not name.lower().endswith(".zip") or not url:
             continue
 
         lower = name.lower()
@@ -596,46 +793,41 @@ def choose_release_asset(payload: dict) -> tuple[str, str]:
         if "windows" in lower:
             score += 100
         if "win" in lower:
-            score += 60
+            score += 50
         if "x64" in lower or "amd64" in lower:
             score += 40
-        if "portable" in lower:
-            score += 10
-        if "linux" in lower or "osx" in lower or "mac" in lower:
-            score -= 100
+        if "arm" in lower:
+            score -= 25
+        if "linux" in lower or "macos" in lower or "osx" in lower:
+            score -= 200
         scored.append((score, name, url))
 
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    if not scored or scored[0][0] <= 0:
-        raise DownloadError("Could not find a Windows DepotDownloader release asset.")
-    _, name, url = scored[0]
-    return name, url
+    if not tag or not scored or scored[0][0] <= 0:
+        raise DownloadError("Could not find a Windows DepotDownloader release.")
+    _, asset_name, asset_url = scored[0]
+    return tag, asset_name, asset_url
 
 
-
-def find_depotdownloader_command() -> list[str] | None:
-    search_roots = [script_dir(), tools_dir()]
-    exes: list[Path] = []
-    dlls: list[Path] = []
-
-    for root in search_roots:
-        if not root.exists():
-            continue
-        exes.extend(root.rglob("DepotDownloader.exe"))
-        dlls.extend(root.rglob("DepotDownloader.dll"))
-
-    if exes:
-        exes.sort(key=lambda p: len(str(p)))
-        return [str(exes[0])]
-    if dlls:
-        dlls.sort(key=lambda p: len(str(p)))
-        return ["dotnet", str(dlls[0])]
-    return None
+def terminal_columns() -> int:
+    return max(60, shutil.get_terminal_size((Noir.width, 20)).columns)
 
 
+def render_one_line(text: str, last_len: int = 0) -> int:
+    width = terminal_columns()
+    clean = " ".join(text.replace("\t", " ").split())
+    if len(clean) > width - 1:
+        clean = clean[: max(1, width - 4)] + "..."
+    padding = " " * max(0, last_len - len(clean))
+    sys.stdout.write("\r" + clean + padding)
+    sys.stdout.flush()
+    return len(clean)
 
-def download_file(url: str, dest: Path) -> None:
+
+def download_file(url: str, dest: Path, label: str) -> None:
     req = request.Request(url, headers={"User-Agent": USER_AGENT})
+    last_len = 0
+    spinner_index = 0
     with request.urlopen(req, timeout=60) as resp:
         total_header = resp.headers.get("Content-Length")
         total = int(total_header) if total_header and total_header.isdigit() else 0
@@ -647,980 +839,510 @@ def download_file(url: str, dest: Path) -> None:
                     break
                 f.write(chunk)
                 read += len(chunk)
-                if total > 0:
+                spinner_index = (spinner_index + 1) % len(SPINNER)
+                spin = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
+                if total:
                     percent = (read / total) * 100
-                    print(f"\r{UI.BLUE}[DL]{UI.RESET} {dest.name} {percent:6.2f}%", end="", flush=True)
+                    line = f"{spin} {percent:6.2f}% {label}"
                 else:
-                    print(f"\r{UI.BLUE}[DL]{UI.RESET} {dest.name} {read // 1024} KB", end="", flush=True)
-    print()
+                    line = f"{spin} {read // 1024:>7} KB {label}"
+                last_len = render_one_line(line, last_len)
+    sys.stdout.write("\n")
 
 
+def install_depotdownloader_release(settings: dict, tag: str, asset_name: str, asset_url: str) -> None:
+    work_dir = script_dir() / ".depotdownloader_update"
+    zip_path = work_dir / asset_name
+    extract_dir = work_dir / "extract"
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
 
-def ensure_depotdownloader() -> list[str]:
-    existing = find_depotdownloader_command()
-    if existing is not None:
-        UI.ok("DepotDownloader already exists.")
-        return existing
+    Noir.section("DepotDownloader")
+    try:
+        download_file(asset_url, zip_path, asset_name)
 
-    UI.section("DepotDownloader Setup")
-    UI.info("DepotDownloader not found. Downloading it now...")
-    tools_dir().mkdir(parents=True, exist_ok=True)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+        except zipfile.BadZipFile as exc:
+            raise DownloadError("DepotDownloader archive was invalid.") from exc
 
+        matches = list(extract_dir.rglob("DepotDownloader.exe"))
+        if not matches:
+            raise DownloadError("DepotDownloader.exe was not found in the release archive.")
+
+        shutil.copy2(matches[0], depotdownloader_exe_path())
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    settings["depotdownloader"] = {
+        "version": tag,
+        "asset": asset_name,
+        "exe": str(depotdownloader_exe_path()),
+        "checked_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    save_settings(settings)
+    Noir.ok(f"DepotDownloader {tag}")
+
+
+def ensure_depotdownloader(settings: dict) -> None:
     try:
         release = request_json(DEPOTDOWNLOADER_RELEASE_API)
-        asset_name, asset_url = choose_release_asset(release)
-    except error.HTTPError as exc:
-        raise DownloadError(f"Failed to query GitHub release info: HTTP {exc.code}") from exc
-    except error.URLError as exc:
-        raise DownloadError(f"Could not reach GitHub: {exc}") from exc
+        tag, asset_name, asset_url = choose_depotdownloader_asset(release)
+    except (error.HTTPError, error.URLError, TimeoutError, DownloadError) as exc:
+        if depotdownloader_exe_path().exists():
+            settings.setdefault("depotdownloader", {})["checked_at"] = now_iso()
+            settings["depotdownloader"]["last_error"] = str(exc)
+            save_settings(settings)
+            Noir.warn("DepotDownloader update check failed; using local copy.")
+            return
+        raise DownloadError(f"DepotDownloader could not be downloaded: {exc}") from exc
 
-    zip_path = tools_dir() / asset_name
-    extract_dir = tools_dir() / "current"
-    temp_extract_dir = tools_dir() / "_extracting"
+    info = settings.setdefault("depotdownloader", {})
+    info["checked_at"] = now_iso()
+    if depotdownloader_exe_path().exists() and info.get("version") == tag and info.get("asset") == asset_name:
+        info["exe"] = str(depotdownloader_exe_path())
+        info.pop("last_error", None)
+        save_settings(settings)
+        return
 
-    if temp_extract_dir.exists():
-        shutil.rmtree(temp_extract_dir, ignore_errors=True)
+    install_depotdownloader_release(settings, tag, asset_name, asset_url)
 
-    download_file(asset_url, zip_path)
 
+def _blob_from_bytes(data: bytes):
+    keepalive = ctypes.create_string_buffer(data)
+    blob = DATA_BLOB(len(data), ctypes.cast(keepalive, ctypes.POINTER(ctypes.c_ubyte)))
+    return blob, keepalive
+
+
+def _bytes_from_blob(blob: DATA_BLOB) -> bytes:
+    if not blob.cbData:
+        return b""
+    return ctypes.string_at(blob.pbData, blob.cbData)
+
+
+def protect_text(text: str) -> dict:
+    raw = text.encode("utf-8")
+    if os.name != "nt":
+        return {"method": "base64", "value": base64.b64encode(raw).decode("ascii")}
+
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    data_in, keepalive = _blob_from_bytes(raw)
+    data_out = DATA_BLOB()
+    ok = crypt32.CryptProtectData(
+        ctypes.byref(data_in),
+        None,
+        None,
+        None,
+        None,
+        0x01,
+        ctypes.byref(data_out),
+    )
+    if not ok:
+        raise CredentialError(f"CryptProtectData failed: {ctypes.GetLastError()}")
     try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(temp_extract_dir)
-    except zipfile.BadZipFile as exc:
-        raise DownloadError("Downloaded DepotDownloader archive is invalid.") from exc
-
-    if extract_dir.exists():
-        shutil.rmtree(extract_dir, ignore_errors=True)
-    temp_extract_dir.rename(extract_dir)
-
-    found = find_depotdownloader_command()
-    if found is None:
-        raise DownloadError("DepotDownloader was downloaded, but the executable could not be found after extraction.")
-
-    UI.ok(f"DepotDownloader downloaded into: {extract_dir}")
-    UI.clear()
-    print_intro(count_local_builds())
-    return found
+        return {"method": "dpapi", "value": base64.b64encode(_bytes_from_blob(data_out)).decode("ascii")}
+    finally:
+        if data_out.pbData:
+            kernel32.LocalFree(data_out.pbData)
+        del keepalive
 
 
+def unprotect_text(payload: dict) -> str:
+    method = payload.get("method")
+    value = payload.get("value")
+    if not isinstance(value, str):
+        raise CredentialError("Saved credential payload is incomplete.")
 
-def ensure_credentials(config: dict) -> tuple[str, str]:
-    stored_user = config.get("steam_username")
-    stored_pass = config.get("steam_password_b64")
+    raw = base64.b64decode(value.encode("ascii"))
+    if method == "base64":
+        return raw.decode("utf-8")
+    if method != "dpapi":
+        raise CredentialError("Saved credential payload uses an unknown method.")
+    if os.name != "nt":
+        raise CredentialError("Saved credentials require Windows DPAPI.")
 
-    if stored_user and stored_pass:
-        try:
-            password = dpapi_decrypt_from_b64(stored_pass)
-            UI.ok(f"Loaded Steam credentials for {stored_user}.")
-            if prompt_yes_no("Reuse saved Steam credentials", True):
-                return stored_user, password
-        except Exception:
-            UI.warn("Saved credentials could not be decrypted. They will be replaced.")
+    crypt32 = ctypes.windll.crypt32
+    kernel32 = ctypes.windll.kernel32
+    data_in, keepalive = _blob_from_bytes(raw)
+    data_out = DATA_BLOB()
+    ok = crypt32.CryptUnprotectData(
+        ctypes.byref(data_in),
+        None,
+        None,
+        None,
+        None,
+        0x01,
+        ctypes.byref(data_out),
+    )
+    if not ok:
+        raise CredentialError(f"CryptUnprotectData failed: {ctypes.GetLastError()}")
+    try:
+        return _bytes_from_blob(data_out).decode("utf-8")
+    finally:
+        if data_out.pbData:
+            kernel32.LocalFree(data_out.pbData)
+        del keepalive
 
-    UI.section("Steam Login Setup")
-    UI.info("Password is protected with Windows DPAPI and stored in the local JSON file.")
-    username = prompt_nonempty("Steam username")
-    password = prompt_password("Steam password").strip()
-    if not password:
-        raise ValueError("Steam password cannot be empty.")
 
-    config["steam_username"] = username
-    config["steam_password_b64"] = dpapi_encrypt_to_b64(password)
-    save_config(config)
-    UI.ok("Steam credentials saved.")
+def load_credential_state() -> dict:
+    path = credentials_path()
+    if not path.exists():
+        return {"version": 1, "reuse_credentials": True}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise CredentialError(f"Could not read DoNotShare: {exc}") from exc
+    return data if isinstance(data, dict) else {"version": 1, "reuse_credentials": True}
+
+
+def save_credential_state(state: dict) -> None:
+    state["version"] = 1
+    state["updated_at"] = now_iso()
+    path = credentials_path()
+    tmp = path.with_name(f"DoNotShare.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    replace_with_retry(tmp, path)
+
+
+def has_saved_credentials(state: dict) -> bool:
+    return isinstance(state.get("username"), dict) and isinstance(state.get("password"), dict)
+
+
+def prompt_password(label: str) -> str:
+    prompt_text = Noir.c(Noir.ORANGE_SOFT, f"{label}: ")
+    if os.name != "nt":
+        return getpass.getpass(prompt_text)
+
+    import msvcrt
+
+    sys.stdout.write(prompt_text)
+    sys.stdout.flush()
+    chars: list[str] = []
+    while True:
+        key = msvcrt.getwch()
+        if key in {"\r", "\n"}:
+            print()
+            return "".join(chars)
+        if key == "\003":
+            print()
+            raise KeyboardInterrupt
+        if key == "\b":
+            if chars:
+                chars.pop()
+                sys.stdout.write("\b \b")
+                sys.stdout.flush()
+            continue
+        if key in {"\x00", "\xe0"}:
+            msvcrt.getwch()
+            continue
+        if key.isprintable():
+            chars.append(key)
+            sys.stdout.write("*")
+            sys.stdout.flush()
+
+
+def save_credentials(username: str, password: str, reuse: bool = True) -> None:
+    save_credential_state(
+        {
+            "version": 1,
+            "reuse_credentials": reuse,
+            "username": protect_text(username),
+            "password": protect_text(password),
+            "created_at": now_iso(),
+        }
+    )
+
+
+def read_saved_credentials(state: dict) -> tuple[str, str]:
+    username = unprotect_text(state["username"])
+    password = unprotect_text(state["password"])
     return username, password
 
 
-
-def clear_saved_credentials(config: dict) -> None:
-    config.pop("steam_username", None)
-    config.pop("steam_password_b64", None)
-    save_config(config)
-
-
-
-def prompt_manifest() -> str:
-    UI.section("Manifest Input")
-    UI.info("Enter the manifest ID you want to download.")
-    while True:
-        value = prompt_nonempty("Manifest ID")
-        if value.isdigit() and len(value) >= 5:
-            return value
-        UI.warn("Manifest ID must be numeric.")
+def prompt_for_credentials() -> tuple[str, str]:
+    username = prompt("Steam username")
+    if not username:
+        raise CredentialError("Steam username is required.")
+    password = prompt_password("Steam password")
+    if not password:
+        raise CredentialError("Steam password is required.")
+    save_credentials(username, password, reuse=True)
+    return username, password
 
 
-def parse_optional_patch_label(payload: dict | list | None) -> str | None:
-    if not isinstance(payload, dict):
-        return None
-    for key in ("label", "date", "name", "title", "build_label"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+def ensure_credentials_for_download() -> tuple[str, str] | None:
+    state = load_credential_state()
+    if has_saved_credentials(state):
+        if not state.get("reuse_credentials", True):
+            Noir.warn("Saved login reuse is disabled in Settings.")
+            return None
 
-
-def open_patch_file_dialog() -> Path | None:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        root.update()
-        selected = filedialog.askopenfilename(
-            title="Select Patch.json",
-            initialdir=str(script_dir()),
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        root.destroy()
-    except Exception as exc:
-        UI.warn(f"Could not open file picker: {exc}")
-        return None
-
-    if not selected:
-        return None
-    return Path(selected).resolve(strict=False)
-
-
-
-def load_github_patch_payload(bundle: PatchLookup) -> tuple[str | None, dict | list | None]:
-    global _CURRENT_GITHUB_PATCH_BRANCH
-    _CURRENT_GITHUB_PATCH_BRANCH = None
-
-    UI.section("GitHub Patch Lookup")
-    if not bundle.found:
-        UI.warn("Manifest folder was not found in the GitHub repo. Download will continue without patch instructions.")
-        return None, None
-
-    if bundle.patch_path is None:
-        UI.warn("Manifest folder exists, but Patch.json was not found there. Download will continue without patch instructions.")
-        return None, None
-
-    if bundle.patch_payload is None:
-        UI.warn("Patch.json was found on GitHub, but it could not be loaded. Download will continue without patch instructions.")
-        return bundle.patch_path, None
-
-    _CURRENT_GITHUB_PATCH_BRANCH = bundle.branch
-    UI.ok(f"GitHub patch loaded: {bundle.patch_path}")
-    return bundle.patch_path, bundle.patch_payload
-
-
-
-def get_repo_tree(branch: str) -> list[str]:
-    cache_key = f"{PATCH_REPO_OWNER}/{PATCH_REPO_NAME}:{branch}"
-    if cache_key in _TREE_CACHE:
-        return _TREE_CACHE[cache_key]
-
-    url = GITHUB_TREE_API.format(owner=PATCH_REPO_OWNER, repo=PATCH_REPO_NAME, branch=branch)
-    payload = request_json(url)
-    paths = [str(item.get("path", "")) for item in payload.get("tree", []) if item.get("path")]
-    _TREE_CACHE[cache_key] = paths
-    return paths
-
-
-
-def choose_manifest_folder(manifest_id: str, folders: list[str]) -> str:
-    exact = [folder for folder in folders if folder == manifest_id]
-    if exact:
-        return exact[0]
-
-    startswith = [folder for folder in folders if folder.startswith(manifest_id + " ")]
-    if startswith:
-        startswith.sort(key=len)
-        return startswith[0]
-
-    folders.sort(key=lambda item: (len(item), item.lower()))
-    return folders[0]
-
-
-
-def parse_date_json_text(text: str) -> str:
-    value = json.loads(text)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    if isinstance(value, dict):
-        for key in ("date", "label", "name", "title"):
-            current = value.get(key)
-            if isinstance(current, str) and current.strip():
-                return current.strip()
-    raise PatchError("Date.json exists, but it does not contain a usable date string.")
-
-
-
-def fetch_repo_file(branch: str, path: str) -> str:
-    url = GITHUB_RAW_FILE_URL.format(owner=PATCH_REPO_OWNER, repo=PATCH_REPO_NAME, branch=branch, path=path)
-    return request_text(url)
-
-
-
-def lookup_manifest_bundle(manifest_id: str) -> PatchLookup:
-    for branch in PATCH_BRANCHES:
-        try:
-            paths = get_repo_tree(branch)
-        except Exception:
-            continue
-
-        date_paths = [
-            path for path in paths
-            if path.startswith("manifest/") and path.endswith("/Date.json") and manifest_id in Path(path).parent.name
-        ]
-        if not date_paths:
-            continue
-
-        folders = [Path(path).parent.name for path in date_paths]
-        folder_name = choose_manifest_folder(manifest_id, folders)
-        date_path = f"manifest/{folder_name}/Date.json"
-
-        try:
-            raw_label = parse_date_json_text(fetch_repo_file(branch, date_path))
-        except Exception as exc:
-            return PatchLookup(
-                manifest_id=manifest_id,
-                found=True,
-                folder_name=folder_name,
-                branch=branch,
-                warning=f"Found manifest folder, but Date.json could not be read: {exc}",
-            )
-
-        patch_path = None
-        for candidate in (
-            f"manifest/{folder_name}/Patch.json",
-            f"manifest/{folder_name}/patch.json",
-        ):
-            if candidate in paths:
-                patch_path = candidate
-                break
-
-        patch_payload: dict | list | None = None
-        if patch_path is not None:
+        if prompt_choice({"y", "n"}, "Reuse saved Steam login? y/n") == "y":
             try:
-                patch_payload = json.loads(fetch_repo_file(branch, patch_path))
-            except Exception as exc:
-                return PatchLookup(
-                    manifest_id=manifest_id,
-                    found=True,
-                    folder_name=folder_name,
-                    raw_label=raw_label,
-                    safe_label=make_windows_safe(raw_label),
-                    branch=branch,
-                    patch_path=patch_path,
-                    warning=f"Patch.json exists, but it could not be parsed: {exc}",
-                )
+                return read_saved_credentials(state)
+            except CredentialError as exc:
+                Noir.warn(str(exc))
+                return prompt_for_credentials()
 
-        return PatchLookup(
-            manifest_id=manifest_id,
-            found=True,
-            folder_name=folder_name,
-            raw_label=raw_label,
-            safe_label=make_windows_safe(raw_label),
-            branch=branch,
-            patch_path=patch_path,
-            patch_payload=patch_payload,
-        )
+        state["reuse_credentials"] = False
+        save_credential_state(state)
+        Noir.warn("Saved login reuse disabled. Re-enable it in Settings.")
+        return None
 
-    return PatchLookup(
-        manifest_id=manifest_id,
-        found=False,
-        safe_label=manifest_id,
-        warning=(
-            f"Manifest not indexed in {PATCH_REPO_NAME}: could not find any manifest folder containing {manifest_id}."
-        ),
-    )
+    return prompt_for_credentials()
 
 
-
-def save_process_log(lines: list[str]) -> None:
-    log_path().write_text("\n".join(lines), encoding="utf-8", errors="replace")
-
-
-
-def stream_process(args: list[str]) -> tuple[int, list[str]]:
-    UI.section("Running DepotDownloader")
-    UI.info(mask_command(args))
-    process = subprocess.Popen(
-        args,
-        cwd=str(script_dir()),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=None,
-        text=True,
-        bufsize=1,
-    )
-    captured: list[str] = []
-    assert process.stdout is not None
-    for raw_line in process.stdout:
-        line = raw_line.rstrip("\r\n")
-        captured.append(line)
-        print(line)
-    return process.wait(), captured
-
-
-
-def snapshot_depot_dirs() -> set[str]:
-    root = depot_root()
-    if not root.exists():
-        return set()
-    return {child.name for child in root.iterdir() if child.is_dir()}
-
-
-
-def locate_downloaded_folder(before_dirs: set[str]) -> Path:
-    root = depot_root()
-    if not root.exists():
-        raise FileNotFoundError(f"Expected depot directory was not created: {root}")
-
-    current_dirs = [child for child in root.iterdir() if child.is_dir()]
-    new_dirs = [child for child in current_dirs if child.name not in before_dirs]
-
-    if len(new_dirs) == 1:
-        return new_dirs[0]
-    if len(current_dirs) == 1:
-        return current_dirs[0]
-
-    raise FileNotFoundError(
-        "DepotDownloader finished, but the script could not uniquely determine the inner depot folder to rename."
-    )
-
-
-
-def finalize_downloaded_folder(
-    before_dirs: set[str],
-    label: str,
-    destination_root: Path,
-    on_existing: str = "replace",
-) -> Path:
-    source = locate_downloaded_folder(before_dirs)
-    destination_root.mkdir(parents=True, exist_ok=True)
-    target = destination_root / make_windows_safe(label)
-
-    try:
-        same_target = source.resolve() == target.resolve()
-    except FileNotFoundError:
-        same_target = False
-
-    if same_target:
-        return source
-
-    if target.exists():
-        if on_existing == "replace":
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-        elif on_existing == "keep_both":
-            target = make_unique_path(target, force_full_name=True)
+def mask_command(args: list[str]) -> str:
+    masked: list[str] = []
+    hide_next = False
+    for index, part in enumerate(args):
+        if hide_next:
+            masked.append("********")
+            hide_next = False
+            continue
+        if index == 0 and Path(part) == depotdownloader_exe_path():
+            masked.append(".\\DepotDownloader.exe")
         else:
-            raise RuntimeError(f"Unknown existing-build action: {on_existing}")
-
-    moved_path = Path(shutil.move(str(source), str(target)))
-    return moved_path
-
-
+            masked.append(part)
+        if part in {"-username", "-password"}:
+            hide_next = True
+    return " ".join(masked)
 
 
-DOTNET_USER_STRING_PATCH_KINDS = {
-    "replace_dotnet_user_strings",
-    "replace_dotnet_user_string",
-    "replace_managed_strings",
-    "replace_managed_string",
-    "replace_csharp_string",
-    "replace_csharp_strings",
-}
+def parse_percent(line: str) -> float | None:
+    matches = PERCENT_RE.findall(line)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
 
 
-def _read_u16_le(data: bytes | bytearray, offset: int) -> int:
-    return int.from_bytes(data[offset:offset + 2], "little")
+def format_percent(percent: float | None) -> str:
+    if percent is None:
+        return ""
+    return f"{percent:.2f}%"
 
 
-def _read_u32_le(data: bytes | bytearray, offset: int) -> int:
-    return int.from_bytes(data[offset:offset + 4], "little")
+def remove_leading_percent(line: str) -> str:
+    return LEADING_PERCENT_RE.sub("", line, count=1).strip()
 
 
-def _write_u32_le(data: bytearray, offset: int, value: int) -> None:
-    data[offset:offset + 4] = int(value).to_bytes(4, "little")
+def dash_variants(text: str) -> set[str]:
+    variants = {text}
+    dash_pairs = [
+        (" - ", " \u2013 "),
+        (" - ", " \u2014 "),
+        (" - ", " \u2212 "),
+    ]
+    for plain, fancy in dash_pairs:
+        if plain in text:
+            variants.add(text.replace(plain, fancy))
+        if fancy in text:
+            variants.add(text.replace(fancy, plain))
+    return variants
 
 
-def _align_up(value: int, alignment: int) -> int:
-    if alignment <= 0:
-        return value
-    return (value + alignment - 1) & ~(alignment - 1)
-
-
-def _decode_compressed_uint(buffer: bytes | bytearray, start: int) -> tuple[int, int]:
-    first = buffer[start]
-    if (first & 0x80) == 0:
-        return first, 1
-    if (first & 0xC0) == 0x80:
-        if start + 1 >= len(buffer):
-            raise PatchError("Compressed integer is truncated.")
-        return ((first & 0x3F) << 8) | buffer[start + 1], 2
-    if (first & 0xE0) == 0xC0:
-        if start + 3 >= len(buffer):
-            raise PatchError("Compressed integer is truncated.")
-        return (
-            ((first & 0x1F) << 24)
-            | (buffer[start + 1] << 16)
-            | (buffer[start + 2] << 8)
-            | buffer[start + 3]
-        ), 4
-    raise PatchError("Unsupported compressed integer encoding in .NET metadata.")
-
-
-def _encode_compressed_uint(value: int) -> bytes:
-    if value < 0:
-        raise PatchError("Compressed integer cannot be negative.")
-    if value <= 0x7F:
-        return bytes([value])
-    if value <= 0x3FFF:
-        return bytes([
-            0x80 | ((value >> 8) & 0x3F),
-            value & 0xFF,
-        ])
-    if value <= 0x1FFFFFFF:
-        return bytes([
-            0xC0 | ((value >> 24) & 0x1F),
-            (value >> 16) & 0xFF,
-            (value >> 8) & 0xFF,
-            value & 0xFF,
-        ])
-    raise PatchError("Compressed integer is too large for .NET metadata.")
-
-
-def _dotnet_user_string_needs_special_handling(text: str) -> int:
-    for ch in text:
-        code = ord(ch)
-        if code > 0x7F:
-            return 1
-        if 0x01 <= code <= 0x08:
-            return 1
-        if 0x0E <= code <= 0x1F:
-            return 1
-        if code in {0x27, 0x2D, 0x7F}:
-            return 1
-    return 0
-
-
-def _build_dotnet_user_string_entry(text: str) -> bytes:
-    utf16 = text.encode("utf-16le")
-    trailing_flag = _dotnet_user_string_needs_special_handling(text)
-    payload_len = len(utf16) + 1
-    return _encode_compressed_uint(payload_len) + utf16 + bytes([trailing_flag])
-
-
-def _parse_dotnet_metadata(file_bytes: bytes | bytearray) -> dict:
-    if file_bytes[0:2] != b"MZ":
-        raise PatchError("Managed-string patching requires a PE/.NET assembly file.")
-
-    pe_offset = _read_u32_le(file_bytes, 0x3C)
-    if file_bytes[pe_offset:pe_offset + 4] != b"PE\0\0":
-        raise PatchError("Invalid PE signature while parsing managed assembly.")
-
-    number_of_sections = _read_u16_le(file_bytes, pe_offset + 6)
-    size_of_optional_header = _read_u16_le(file_bytes, pe_offset + 20)
-    optional_header_offset = pe_offset + 24
-    optional_magic = _read_u16_le(file_bytes, optional_header_offset)
-
-    if optional_magic == 0x10B:
-        data_directories_offset = optional_header_offset + 96
-        size_of_image_offset = optional_header_offset + 56
-        section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
-        file_alignment = _read_u32_le(file_bytes, optional_header_offset + 36)
-    elif optional_magic == 0x20B:
-        data_directories_offset = optional_header_offset + 112
-        size_of_image_offset = optional_header_offset + 56
-        section_alignment = _read_u32_le(file_bytes, optional_header_offset + 32)
-        file_alignment = _read_u32_le(file_bytes, optional_header_offset + 36)
-    else:
-        raise PatchError("Unsupported PE optional-header format for managed patching.")
-
-    section_table_offset = optional_header_offset + size_of_optional_header
-    sections: list[dict] = []
-    for index in range(number_of_sections):
-        header_offset = section_table_offset + (index * 40)
-        name = bytes(file_bytes[header_offset:header_offset + 8]).split(b"\0", 1)[0].decode("ascii", errors="replace")
-        virtual_size = _read_u32_le(file_bytes, header_offset + 8)
-        virtual_address = _read_u32_le(file_bytes, header_offset + 12)
-        raw_size = _read_u32_le(file_bytes, header_offset + 16)
-        raw_ptr = _read_u32_le(file_bytes, header_offset + 20)
-        sections.append(
-            {
-                "name": name,
-                "virtual_size": virtual_size,
-                "virtual_address": virtual_address,
-                "raw_size": raw_size,
-                "raw_ptr": raw_ptr,
-                "header_offset": header_offset,
-            }
-        )
-
-    def rva_to_offset(rva: int) -> tuple[int, dict]:
-        for section in sections:
-            start = section["virtual_address"]
-            span = max(section["virtual_size"], section["raw_size"])
-            if start <= rva < start + span:
-                return section["raw_ptr"] + (rva - start), section
-        raise PatchError(f"RVA {hex(rva)} could not be mapped into a file offset.")
-
-    cli_dir_offset = data_directories_offset + (14 * 8)
-    cli_rva = _read_u32_le(file_bytes, cli_dir_offset)
-    if cli_rva == 0:
-        raise PatchError("Assembly does not expose a .NET CLI header.")
-    cli_offset, _ = rva_to_offset(cli_rva)
-
-    metadata_rva = _read_u32_le(file_bytes, cli_offset + 8)
-    metadata_size = _read_u32_le(file_bytes, cli_offset + 12)
-    metadata_offset, metadata_section = rva_to_offset(metadata_rva)
-    metadata_size_offset = cli_offset + 12
-
-    if _read_u32_le(file_bytes, metadata_offset) != 0x424A5342:
-        raise PatchError("Invalid .NET metadata signature.")
-
-    version_length = _read_u32_le(file_bytes, metadata_offset + 12)
-    stream_count_offset = metadata_offset + 16 + _align_up(version_length, 4) + 2
-    stream_count = _read_u16_le(file_bytes, stream_count_offset)
-
-    stream_header_offset = metadata_offset + 16 + _align_up(version_length, 4) + 4
-    stream_headers: list[dict] = []
-    cursor = stream_header_offset
-    for _ in range(stream_count):
-        relative_offset = _read_u32_le(file_bytes, cursor)
-        size = _read_u32_le(file_bytes, cursor + 4)
-        name_end = bytes(file_bytes).find(b"\0", cursor + 8)
-        name = bytes(file_bytes[cursor + 8:name_end]).decode("ascii", errors="replace")
-        header_len = 8 + _align_up((name_end - (cursor + 8)) + 1, 4)
-        stream_headers.append(
-            {
-                "name": name,
-                "offset": relative_offset,
-                "size": size,
-                "header_offset": cursor,
-            }
-        )
-        cursor += header_len
-
-    stream_map = {item["name"]: item for item in stream_headers}
-    if "#US" not in stream_map:
-        raise PatchError("Managed assembly does not contain a #US user-string stream.")
-
-    return {
-        "metadata_offset": metadata_offset,
-        "metadata_size": metadata_size,
-        "metadata_size_offset": metadata_size_offset,
-        "metadata_section": metadata_section,
-        "stream_headers": stream_headers,
-        "stream_map": stream_map,
-        "section_alignment": section_alignment,
-        "file_alignment": file_alignment,
-        "size_of_image_offset": size_of_image_offset,
-        "sections": sections,
-    }
-
-
-def _find_dotnet_user_string_entry_start(us_data: bytes | bytearray, utf16_offset: int, utf16_len: int) -> int:
-    expected_payload_len = utf16_len + 1
-    for prefix_len in (1, 2, 4):
-        start = utf16_offset - prefix_len
-        if start < 0:
-            continue
-        try:
-            value, actual_len = _decode_compressed_uint(us_data, start)
-        except PatchError:
-            continue
-        if actual_len == prefix_len and value == expected_payload_len and start + actual_len == utf16_offset:
-            return start
-    raise PatchError("Could not resolve the .NET user-string heap entry for the requested text.")
-
-
-def _find_all_occurrences(haystack: bytes | bytearray, needle: bytes) -> list[int]:
-    if not needle:
+def path_display_roots(root: Path | None) -> list[str]:
+    if root is None:
         return []
-    positions: list[int] = []
-    start = 0
-    haystack_bytes = bytes(haystack)
-    while True:
-        index = haystack_bytes.find(needle, start)
-        if index < 0:
-            return positions
-        positions.append(index)
-        start = index + 1
 
-
-def _find_dotnet_user_string_tokens(us_data: bytes | bytearray, text: str) -> list[int]:
-    utf16 = text.encode("utf-16le")
-    matches = _find_all_occurrences(us_data, utf16)
-    valid_tokens: list[int] = []
-    for match_offset in matches:
+    roots: list[str] = []
+    for candidate in (root, root.resolve()):
+        text = str(candidate)
+        roots.extend((text, text.replace("\\", "/")))
         try:
-            entry_start = _find_dotnet_user_string_entry_start(us_data, match_offset, len(utf16))
-        except PatchError:
+            relative = candidate.relative_to(script_dir())
+        except ValueError:
             continue
-        valid_tokens.append(0x70000000 + entry_start)
-    return sorted(set(valid_tokens))
+        relative_text = str(relative)
+        roots.extend((relative_text, relative_text.replace("\\", "/")))
+    roots.append(root.name)
+
+    expanded_roots: set[str] = set()
+    for item in roots:
+        for variant in dash_variants(item):
+            expanded_roots.add(variant)
+            expanded_roots.add(variant.replace("\\", "/"))
+
+    deduped = {item.rstrip("\\/") for item in expanded_roots if item and item not in {".", "./"}}
+    return sorted(deduped, key=len, reverse=True)
 
 
-def _find_unique_dotnet_user_string_token(us_data: bytes | bytearray, text: str) -> int | None:
-    unique_tokens = _find_dotnet_user_string_tokens(us_data, text)
-    if not unique_tokens:
+def find_path_start(text: str, index: int) -> int:
+    drive_matches = list(re.finditer(r"[A-Za-z]:[/\\]", text[:index]))
+    if drive_matches:
+        return drive_matches[-1].start()
+
+    start = index
+    while start > 0 and text[start - 1] not in {" ", "\t", "\"", "'", "(", "[", "<"}:
+        start -= 1
+    return start
+
+
+def shorten_depot_prefixed_paths(line: str) -> tuple[str, bool]:
+    result = line
+    shortened = False
+    marker = f"depots/{DEPOT_ID}/"
+
+    while True:
+        normalized = result.replace("\\", "/")
+        index = normalized.lower().find(marker)
+        if index < 0:
+            return result, shortened
+
+        folder_start = index + len(marker)
+        folder_end = normalized.find("/", folder_start)
+        if folder_end < 0:
+            folder_end = len(result)
+        else:
+            folder_end += 1
+
+        path_start = find_path_start(result, index)
+        result = result[:path_start] + ".\\" + result[folder_end:]
+        shortened = True
+
+
+def shorten_known_inner_paths(line: str) -> tuple[str, bool]:
+    result = line
+    shortened = False
+    markers = (
+        ".depotdownloader/",
+        "recroom_release_data/",
+        "recroom_data/",
+        "recroom_release.exe",
+        "recroom.exe",
+    )
+
+    while True:
+        normalized = result.replace("\\", "/")
+        lower = normalized.lower()
+        found = [(lower.find(marker), marker) for marker in markers if lower.find(marker) >= 0]
+        if not found:
+            return result, shortened
+
+        marker_index, _ = min(found, key=lambda item: item[0])
+        if marker_index >= 2 and result[marker_index - 2:marker_index] in {"./", ".\\"}:
+            return result, shortened
+
+        path_start = find_path_start(result, marker_index)
+        result = result[:path_start] + ".\\" + result[marker_index:]
+        shortened = True
+
+
+def arg_value(args: list[str], flag: str) -> str | None:
+    try:
+        index = args.index(flag)
+    except ValueError:
         return None
-    if len(unique_tokens) > 1:
-        raise PatchError(f"Managed string '{text}' appears multiple times in the #US heap. Refusing to guess.")
-    return unique_tokens[0]
+    if index + 1 >= len(args):
+        return None
+    return args[index + 1]
 
 
-
-
-def _build_dotnet_blob_entry(text: str) -> bytes:
-    utf16 = text.encode("utf-16le")
-    return _encode_compressed_uint(len(utf16)) + utf16
-
-
-def _find_dotnet_blob_tokens(blob_data: bytes | bytearray, text: str) -> list[int]:
-    utf16 = text.encode("utf-16le")
-    matches = _find_all_occurrences(blob_data, utf16)
-    valid_tokens: list[int] = []
-    for match_offset in matches:
-        for prefix_len in (1, 2, 4):
-            start = match_offset - prefix_len
-            if start < 0:
-                continue
-            try:
-                value, actual_len = _decode_compressed_uint(blob_data, start)
-            except PatchError:
-                continue
-            if actual_len == prefix_len and value == len(utf16) and start + actual_len == match_offset:
-                valid_tokens.append(start)
+def shorten_depot_detail(line: str, display_root: Path | None) -> str:
+    result = line
+    shortened = False
+    for root_text in path_display_roots(display_root):
+        needle = root_text.lower()
+        search_from = 0
+        while True:
+            lower = result.lower()
+            index = lower.find(needle, search_from)
+            if index < 0:
                 break
-    return sorted(set(valid_tokens))
-
-
-def _get_table_index_size(row_count: int) -> int:
-    return 2 if row_count < 0x10000 else 4
-
-
-def _get_coded_index_size(row_counts: dict[int, int], table_ids: list[int], tag_bits: int) -> int:
-    max_rows = max((row_counts.get(table_id, 0) for table_id in table_ids), default=0)
-    return 2 if max_rows < (1 << (16 - tag_bits)) else 4
-
-
-def _get_dotnet_tables_stream_info(data: bytes | bytearray, meta: dict) -> dict:
-    tables_stream = meta["stream_map"].get("#~")
-    if tables_stream is None:
-        raise PatchError("Managed assembly does not contain a #~ tables stream.")
-
-    tables_offset = meta["metadata_offset"] + tables_stream["offset"]
-    heap_sizes = data[tables_offset + 6]
-    valid_mask = int.from_bytes(data[tables_offset + 8:tables_offset + 16], "little")
-
-    row_counts: dict[int, int] = {}
-    present_tables: list[int] = []
-    cursor = tables_offset + 24
-    for table_id in range(64):
-        if (valid_mask >> table_id) & 1:
-            row_counts[table_id] = _read_u32_le(data, cursor)
-            present_tables.append(table_id)
-            cursor += 4
-
-    string_index_size = 4 if (heap_sizes & 0x01) else 2
-    guid_index_size = 4 if (heap_sizes & 0x02) else 2
-    blob_index_size = 4 if (heap_sizes & 0x04) else 2
-
-    def row_size(table_id: int) -> int:
-        if table_id == 0:
-            return 2 + string_index_size + guid_index_size + guid_index_size + guid_index_size
-        if table_id == 1:
-            return _get_coded_index_size(row_counts, [0, 26, 35, 1], 2) + string_index_size + string_index_size
-        if table_id == 2:
-            return (
-                4
-                + string_index_size
-                + string_index_size
-                + _get_coded_index_size(row_counts, [2, 1, 27], 2)
-                + _get_table_index_size(row_counts.get(4, 0))
-                + _get_table_index_size(row_counts.get(6, 0))
-            )
-        if table_id == 3:
-            return _get_table_index_size(row_counts.get(4, 0))
-        if table_id == 4:
-            return 2 + string_index_size + blob_index_size
-        if table_id == 5:
-            return _get_table_index_size(row_counts.get(6, 0))
-        if table_id == 6:
-            return 4 + 2 + 2 + string_index_size + blob_index_size + _get_table_index_size(row_counts.get(8, 0))
-        if table_id == 7:
-            return _get_table_index_size(row_counts.get(8, 0))
-        if table_id == 8:
-            return 2 + 2 + string_index_size
-        if table_id == 9:
-            return _get_table_index_size(row_counts.get(2, 0)) + _get_coded_index_size(row_counts, [2, 1, 27], 2)
-        if table_id == 10:
-            return _get_coded_index_size(row_counts, [2, 1, 26, 6, 27], 3) + string_index_size + blob_index_size
-        if table_id == 11:
-            return 1 + 1 + _get_coded_index_size(row_counts, [4, 8, 23], 2) + blob_index_size
-        raise PatchError(f"Metadata table {table_id} is not supported for managed string constant patching.")
-
-    return {
-        "tables_data_offset": cursor,
-        "row_counts": row_counts,
-        "present_tables": present_tables,
-        "blob_index_size": blob_index_size,
-        "constant_parent_size": _get_coded_index_size(row_counts, [4, 8, 23], 2),
-        "row_size": row_size,
-    }
-
-
-def _get_dotnet_constant_table_info(data: bytes | bytearray, meta: dict) -> dict:
-    tables = _get_dotnet_tables_stream_info(data, meta)
-    if 11 not in tables["row_counts"]:
-        raise PatchError("Managed assembly does not contain a Constant table.")
-
-    offset = tables["tables_data_offset"]
-    for table_id in tables["present_tables"]:
-        if table_id == 11:
-            return {
-                **tables,
-                "constant_table_offset": offset,
-                "constant_row_count": tables["row_counts"][11],
-                "constant_row_size": tables["row_size"](11),
-            }
-        offset += tables["row_counts"][table_id] * tables["row_size"](table_id)
-
-    raise PatchError("Could not locate the Constant table in the managed metadata.")
-
-
-def _grow_dotnet_metadata_stream(data: bytearray, meta: dict, stream_name: str, entry_bytes: bytes) -> None:
-    stream = meta["stream_map"].get(stream_name)
-    if stream is None:
-        raise PatchError(f"Managed assembly does not contain a {stream_name} stream.")
-
-    insertion_offset = meta["metadata_offset"] + stream["offset"] + stream["size"]
-    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
-
-    delta = _align_up(len(entry_bytes), 4)
-    _ensure_metadata_growth_capacity(data, meta, delta)
-
-    move_size = metadata_end - insertion_offset
-    if move_size > 0:
-        data[insertion_offset + delta:insertion_offset + delta + move_size] = data[insertion_offset:metadata_end]
-
-    padded_entry = entry_bytes + (b"\x00" * (delta - len(entry_bytes)))
-    data[insertion_offset:insertion_offset + delta] = padded_entry
-
-    for stream_header in meta["stream_headers"]:
-        if stream_header["name"] == stream_name:
-            _write_u32_le(data, stream_header["header_offset"] + 4, stream_header["size"] + delta)
-        elif stream_header["offset"] > stream["offset"]:
-            _write_u32_le(data, stream_header["header_offset"], stream_header["offset"] + delta)
-
-    _write_u32_le(data, meta["metadata_size_offset"], meta["metadata_size"] + delta)
-
-    section = meta["metadata_section"]
-    section_relative_end = (metadata_end + delta) - section["raw_ptr"]
-    if section_relative_end > section["virtual_size"]:
-        _write_u32_le(data, section["header_offset"] + 8, section_relative_end)
-        size_of_image = _read_u32_le(data, meta["size_of_image_offset"])
-        section_alignment = max(meta["section_alignment"], 1)
-        section_end_rva = section["virtual_address"] + _align_up(section_relative_end, section_alignment)
-        if section_end_rva > size_of_image:
-            _write_u32_le(data, meta["size_of_image_offset"], section_end_rva)
-
-
-def _grow_dotnet_blob_heap(data: bytearray, meta: dict, entry_bytes: bytes) -> None:
-    _grow_dotnet_metadata_stream(data, meta, "#Blob", entry_bytes)
-
-def _expand_metadata_section_raw_space(data: bytearray, meta: dict, delta: int) -> None:
-    if delta <= 0:
-        return
-
-    section = meta["metadata_section"]
-    sections = sorted(meta.get("sections", []), key=lambda item: item["raw_ptr"])
-    file_alignment = max(int(meta.get("file_alignment") or 0), 1)
-    growth_raw = _align_up(delta, file_alignment)
-
-    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
-    raw_end = section["raw_ptr"] + section["raw_size"]
-    if metadata_end > raw_end:
-        raise PatchError(".NET metadata extends beyond the containing section's raw size.")
-
-    next_sections = [item for item in sections if item["raw_ptr"] > section["raw_ptr"]]
-    if next_sections:
-        next_virtual_start = min(item["virtual_address"] for item in next_sections)
-        grown_virtual_end = section["virtual_address"] + max(section["virtual_size"], section["raw_size"] + growth_raw)
-        if grown_virtual_end > next_virtual_start:
-            raise PatchError(
-                "Managed-string replacement needs more section space than this build can safely expose without moving RVAs."
-            )
-
-    insert_at = raw_end
-    data[insert_at:insert_at] = b"\x00" * growth_raw
-
-    _write_u32_le(data, section["header_offset"] + 16, section["raw_size"] + growth_raw)
-    section["raw_size"] += growth_raw
-
-    for item in next_sections:
-        item["raw_ptr"] += growth_raw
-        _write_u32_le(data, item["header_offset"] + 20, item["raw_ptr"])
-
-
-def _ensure_metadata_growth_capacity(data: bytearray, meta: dict, delta: int) -> None:
-    if delta <= 0:
-        return
-    section = meta["metadata_section"]
-    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
-    raw_end = section["raw_ptr"] + section["raw_size"]
-    if metadata_end + delta > raw_end:
-        _expand_metadata_section_raw_space(data, meta, (metadata_end + delta) - raw_end)
-
-
-def _grow_dotnet_user_string_heap(data: bytearray, meta: dict, entry_bytes: bytes) -> None:
-    us_stream = meta["stream_map"]["#US"]
-    insertion_offset = meta["metadata_offset"] + us_stream["offset"] + us_stream["size"]
-    metadata_end = meta["metadata_offset"] + meta["metadata_size"]
-
-    delta = _align_up(len(entry_bytes), 4)
-    _ensure_metadata_growth_capacity(data, meta, delta)
-
-    move_size = metadata_end - insertion_offset
-    if move_size > 0:
-        data[insertion_offset + delta:insertion_offset + delta + move_size] = data[insertion_offset:metadata_end]
-
-    padded_entry = entry_bytes + (b"\x00" * (delta - len(entry_bytes)))
-    data[insertion_offset:insertion_offset + delta] = padded_entry
-
-    for stream in meta["stream_headers"]:
-        if stream["name"] == "#US":
-            _write_u32_le(data, stream["header_offset"] + 4, stream["size"] + delta)
-        elif stream["offset"] > us_stream["offset"]:
-            _write_u32_le(data, stream["header_offset"], stream["offset"] + delta)
-
-    _write_u32_le(data, meta["metadata_size_offset"], meta["metadata_size"] + delta)
-
-    section = meta["metadata_section"]
-    section_relative_end = (metadata_end + delta) - section["raw_ptr"]
-    if section_relative_end > section["virtual_size"]:
-        _write_u32_le(data, section["header_offset"] + 8, section_relative_end)
-        size_of_image = _read_u32_le(data, meta["size_of_image_offset"])
-        section_alignment = max(meta["section_alignment"], 1)
-        section_end_rva = section["virtual_address"] + _align_up(section_relative_end, section_alignment)
-        if section_end_rva > size_of_image:
-            _write_u32_le(data, meta["size_of_image_offset"], section_end_rva)
-
-
-def apply_dotnet_user_string_replacements(file_path: Path, replacements: list[dict]) -> int:
-    data = bytearray(file_path.read_bytes())
-    total_reference_rewrites = 0
-    modified = False
-
-    for index, replacement in enumerate(replacements, start=1):
-        if not isinstance(replacement, dict):
-            raise PatchError(f"Replacement #{index} is not a JSON object.")
-
-        find_value = replacement.get("find")
-        replace_value = replacement.get("replace")
-        if not isinstance(find_value, str) or not isinstance(replace_value, str):
-            raise PatchError(f"Replacement #{index} needs string find and replace values.")
-
-        meta = _parse_dotnet_metadata(data)
-        us_stream = meta["stream_map"]["#US"]
-        us_offset = meta["metadata_offset"] + us_stream["offset"]
-        us_size = us_stream["size"]
-        us_data = data[us_offset:us_offset + us_size]
-
-        old_tokens = _find_dotnet_user_string_tokens(us_data, find_value)
-        if not old_tokens:
-            raise PatchError(f"Replacement #{index} could not find managed string '{find_value}' inside {file_path.name}.")
-
-        new_tokens = _find_dotnet_user_string_tokens(us_data, replace_value)
-        if new_tokens:
-            new_token = new_tokens[0]
-        else:
-            new_token = 0x70000000 + us_size
-            _grow_dotnet_user_string_heap(data, meta, _build_dotnet_user_string_entry(replace_value))
-            modified = True
-            meta = _parse_dotnet_metadata(data)
-
-        new_sig = b"\x72" + int(new_token).to_bytes(4, "little")
-        code_search_end = meta["metadata_offset"]
-        data_bytes = bytes(data)
-
-        ldstr_count = 0
-        for old_token in old_tokens:
-            if old_token == new_token:
+            before = result[index - 1] if index > 0 else ""
+            after_index = index + len(root_text)
+            after = result[after_index] if after_index < len(result) else ""
+            if before and before not in {" ", "\t", "\"", "'", "(", "["}:
+                search_from = index + len(root_text)
                 continue
-
-            old_sig = b"\x72" + int(old_token).to_bytes(4, "little")
-            cursor = 0
-            while True:
-                hit = data_bytes.find(old_sig, cursor, code_search_end)
-                if hit < 0:
-                    break
-                data[hit:hit + 5] = new_sig
-                ldstr_count += 1
-                cursor = hit + 5
-
-        blob_stream = meta["stream_map"].get("#Blob")
-        if blob_stream is None:
-            raise PatchError(f"Managed assembly does not contain a #Blob stream in {file_path.name}.")
-
-        blob_offset = meta["metadata_offset"] + blob_stream["offset"]
-        blob_size = blob_stream["size"]
-        blob_data = data[blob_offset:blob_offset + blob_size]
-
-        old_blob_tokens = _find_dotnet_blob_tokens(blob_data, find_value)
-        if not old_blob_tokens:
-            raise PatchError(
-                f"Replacement #{index} found managed string '{find_value}' in #US, but not in the #Blob heap of {file_path.name}."
-            )
-
-        new_blob_tokens = _find_dotnet_blob_tokens(blob_data, replace_value)
-        if new_blob_tokens:
-            new_blob_token = new_blob_tokens[0]
-        else:
-            new_blob_token = blob_size
-            _grow_dotnet_blob_heap(data, meta, _build_dotnet_blob_entry(replace_value))
-            modified = True
-            meta = _parse_dotnet_metadata(data)
-
-        constant_info = _get_dotnet_constant_table_info(data, meta)
-        constant_table_offset = constant_info["constant_table_offset"]
-        constant_row_size = constant_info["constant_row_size"]
-        constant_parent_size = constant_info["constant_parent_size"]
-        blob_index_size = constant_info["blob_index_size"]
-
-        constant_count = 0
-        for row_index in range(constant_info["constant_row_count"]):
-            row_offset = constant_table_offset + (row_index * constant_row_size)
-            constant_type = data[row_offset]
-            if constant_type != 0x0E:
+            if after and after not in {"\\", "/", " ", "\t", "\"", "'", ")", "]", ".", ","}:
+                search_from = index + len(root_text)
                 continue
+            tail_index = after_index + 1 if after in {"\\", "/"} else after_index
+            result = result[:index] + ".\\" + result[tail_index:]
+            shortened = True
+            search_from = index + 2
+    result, depot_shortened = shorten_depot_prefixed_paths(result)
+    result, inner_shortened = shorten_known_inner_paths(result)
+    shortened = shortened or depot_shortened or inner_shortened
+    return result.replace("/", "\\") if shortened else result
 
-            blob_value_offset = row_offset + 2 + constant_parent_size
-            blob_token = int.from_bytes(data[blob_value_offset:blob_value_offset + blob_index_size], "little")
-            if blob_token in old_blob_tokens and blob_token != new_blob_token:
-                data[blob_value_offset:blob_value_offset + blob_index_size] = int(new_blob_token).to_bytes(
-                    blob_index_size,
-                    "little",
-                )
-                constant_count += 1
 
-        if ldstr_count <= 0 and constant_count <= 0:
-            raise PatchError(
-                f"Replacement #{index} found managed string '{find_value}', but no ldstr or Constant metadata references were found "
-                f"in {file_path.name}."
-            )
+def stream_depotdownloader(args: list[str], display_root: Path | None = None) -> int:
+    if display_root is None:
+        dir_arg = arg_value(args, "-dir")
+        if dir_arg:
+            display_root = Path(dir_arg)
 
-        total_reference_rewrites += ldstr_count + constant_count
-        modified = True
-        UI.ok(
-            f"{file_path.name}: managed replacement #{index} rewired {ldstr_count} ldstr reference(s) "
-            f"from {len(old_tokens)} matching #US token(s) and {constant_count} Constant row(s)"
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=str(script_dir()),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=None,
+            text=True,
+            bufsize=0,
+            errors="replace",
         )
+    except FileNotFoundError as exc:
+        raise DownloadError(f"Could not start DepotDownloader: {args[0]}") from exc
+    assert process.stdout is not None
 
-    if modified:
-        ensure_backup(file_path)
-        file_path.write_bytes(data)
+    captured = [mask_command(args)]
+    buffer = ""
+    spinner_index = 0
+    last_percent: float | None = None
+    last_len = 0
 
-    return total_reference_rewrites
+    def flush_line(raw: str) -> None:
+        nonlocal spinner_index, last_percent, last_len
+        line = " ".join(raw.strip().split())
+        if not line:
+            return
+        percent = parse_percent(line)
+        if percent is not None and percent != last_percent:
+            spinner_index = (spinner_index + 1) % len(SPINNER)
+            last_percent = percent
+        spin = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
+        percent_text = format_percent(percent)
+        detail = remove_leading_percent(line) if percent is not None else line
+        detail = shorten_depot_detail(detail, display_root)
+        parts = [spin]
+        if percent_text:
+            parts.append(percent_text)
+        if detail:
+            parts.append(detail)
+        last_len = render_one_line(" ".join(parts), last_len)
+        captured.append(line)
+
+    while True:
+        char = process.stdout.read(1)
+        if char == "":
+            if buffer:
+                flush_line(buffer)
+            if process.poll() is not None:
+                break
+            time.sleep(0.01)
+            continue
+        if char in {"\r", "\n"}:
+            flush_line(buffer)
+            buffer = ""
+            continue
+        buffer += char
+
+    exit_code = process.wait()
+    sys.stdout.write("\n")
+    captured.append(f"exit_code={exit_code}")
+    log_path().write_text("\n".join(captured), encoding="utf-8", errors="replace")
+    return exit_code
 
 
 def get_instruction_base_dir(item: dict) -> str | None:
@@ -1629,11 +1351,10 @@ def get_instruction_base_dir(item: dict) -> str | None:
         if value is None:
             continue
         if not isinstance(value, str):
-            raise PatchError(f"{key} must be a string when provided.")
+            raise PatchError(f"{key} must be a string.")
         cleaned = value.strip()
         return cleaned or None
     return None
-
 
 
 def normalize_patch_instructions(payload: dict | list) -> list[dict]:
@@ -1652,41 +1373,38 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
     normalized: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
-            raise PatchError("Every patch instruction must be a JSON object.")
+            raise PatchError("Every patch instruction must be an object.")
 
         kind = str(item.get("type") or item.get("kind") or "replace_bytes").strip().lower()
         file_value = item.get("file") or item.get("path") or item.get("target") or item.get("destination") or item.get("to")
         source_value = item.get("source") or item.get("src") or item.get("from")
+        base_dir_value = get_instruction_base_dir(item)
 
         if kind in {"copy_patch_file", "copy_file_from_patch", "install_patch_file", "move_patch_file", "move_file_from_patch"}:
             if not isinstance(file_value, str) or not file_value.strip():
-                raise PatchError("Patch file move/copy instructions need a target file/path string.")
+                raise PatchError("Patch file install instructions need a target file.")
             if not isinstance(source_value, str) or not source_value.strip():
-                raise PatchError("Patch file move/copy instructions need a source/src/from string.")
-
+                raise PatchError("Patch file install instructions need a source file.")
             normalized.append(
                 {
                     "type": kind,
                     "file": file_value.strip(),
                     "source": source_value.strip(),
                     "overwrite": bool(item.get("overwrite", True)),
-                    "base_dir": get_instruction_base_dir(item),
+                    "base_dir": base_dir_value,
                 }
             )
             continue
 
         if not isinstance(file_value, str) or not file_value.strip():
-            raise PatchError("Each patch instruction needs a file/path string.")
-
-        base_dir_value = get_instruction_base_dir(item)
+            raise PatchError("Patch instruction needs a target file.")
 
         if kind in {"write_text_file", "create_text_file", "write_text"}:
             content = item.get("content")
             if content is None:
                 content = item.get("text", item.get("value"))
             if not isinstance(content, str):
-                raise PatchError("Text-file patch instructions need a string content/text/value field.")
-
+                raise PatchError("Text-file patch instructions need string content.")
             normalized.append(
                 {
                     "type": kind,
@@ -1705,11 +1423,8 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
             replace_value = item.get("replace")
             if isinstance(find_value, str) and isinstance(replace_value, str):
                 replacements = [{"find": find_value, "replace": replace_value}]
-            else:
-                raise PatchError("Each patch instruction needs replacements or find/replace values.")
-
         if not isinstance(replacements, list) or not replacements:
-            raise PatchError("replacements must be a non-empty list.")
+            raise PatchError("Patch instruction needs replacements.")
 
         normalized.append(
             {
@@ -1724,24 +1439,29 @@ def normalize_patch_instructions(payload: dict | list) -> list[dict]:
     return normalized
 
 
-def release_data_dir(build_dir: Path) -> Path:
-    data_dir = build_dir / RELEASE_DATA_DIR_NAME
-    if data_dir.exists() and data_dir.is_dir():
-        return data_dir
-    raise PatchError(
-        f"{RELEASE_DATA_DIR_NAME} was not found in the build folder: {build_dir}. "
-        f"Use base_dir in Patch.json."
-    )
+def resolve_base_dir(build_dir: Path, base_dir: str | None, *, allow_create: bool = False) -> Path:
+    if base_dir is None or not base_dir.strip() or base_dir.strip() == ".":
+        return build_dir
+    relative = Path(base_dir.strip())
+    if relative.is_absolute():
+        raise PatchError(f"base_dir must be relative: {base_dir}")
+    candidate = build_dir / relative
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+    if allow_create:
+        return candidate
+    raise PatchError(f"Patch base directory was not found: {base_dir}")
 
 
-def resolve_target_file(base_dir: Path, file_value: str) -> Path:
-    relative_path = Path(file_value)
-    direct = base_dir / relative_path
+def resolve_existing_target(base_dir: Path, file_value: str) -> Path:
+    relative = Path(file_value)
+    if relative.is_absolute():
+        raise PatchError(f"Patch target must be relative: {file_value}")
+    direct = base_dir / relative
     if direct.exists() and direct.is_file():
         return direct
 
-    name = relative_path.name
-    matches = [path for path in base_dir.rglob(name) if path.is_file()]
+    matches = [path for path in base_dir.rglob(relative.name) if path.is_file()]
     if len(matches) == 1:
         return matches[0]
     if not matches:
@@ -1749,257 +1469,340 @@ def resolve_target_file(base_dir: Path, file_value: str) -> Path:
     raise PatchError(f"Patch target file is ambiguous: {file_value}")
 
 
+def resolve_patch_target(build_dir: Path, file_value: str, kind: str, base_dir: str | None) -> Path:
+    if kind in {"write_text_file", "create_text_file", "write_text", "install_patch_file", "copy_patch_file", "copy_file_from_patch", "move_patch_file", "move_file_from_patch"}:
+        base = resolve_base_dir(build_dir, base_dir, allow_create=kind in {"write_text_file", "create_text_file", "write_text"})
+        relative = Path(file_value)
+        if relative.is_absolute():
+            raise PatchError(f"Patch target must be relative: {file_value}")
+        return base / relative
 
-def resolve_patch_base_dir(build_dir: Path, base_dir_value: str | None, *, allow_create: bool = False) -> Path | None:
-    if base_dir_value is None:
-        return None
-
-    cleaned = base_dir_value.strip()
-    if not cleaned or cleaned == ".":
-        return build_dir
-
-    relative_path = Path(cleaned)
-    if relative_path.is_absolute():
-        raise PatchError(f"Patch instruction base_dir must be relative to the build folder: {base_dir_value}")
-
-    candidate = build_dir / relative_path
-    if candidate.exists() and candidate.is_dir():
-        return candidate
-
-    if allow_create:
-        return candidate
-
-    raise PatchError(f"Patch base directory was not found: {base_dir_value}")
+    base = resolve_base_dir(build_dir, base_dir)
+    return resolve_existing_target(base, file_value)
 
 
-def resolve_patch_target_file(build_dir: Path, file_value: str, kind: str, base_dir_value: str | None = None) -> Path:
-    relative_path = Path(file_value)
-    explicit_base_dir = resolve_patch_base_dir(
-        build_dir,
-        base_dir_value,
-        allow_create=kind in {"write_text_file", "create_text_file", "write_text"},
-    )
-    if explicit_base_dir is not None:
-        if kind in {"write_text_file", "create_text_file", "write_text"}:
-            return explicit_base_dir / relative_path
-        return resolve_target_file(explicit_base_dir, file_value)
+def resolve_patch_source(bundle: ManifestBundle, source_value: str) -> bytes:
+    relative = Path(source_value)
+    if relative.is_absolute():
+        raise PatchError(f"Patch source must be relative: {source_value}")
 
-    if kind in {"write_text_file", "create_text_file", "write_text"}:
-        return build_dir / relative_path
+    if bundle.local_folder is not None:
+        source_path = bundle.local_folder / relative
+        if not source_path.exists() or not source_path.is_file():
+            raise PatchError(f"Patch source file was not found: {source_value}")
+        return source_path.read_bytes()
 
-    base_dir = release_data_dir(build_dir)
-    parts_lower = [part.lower() for part in relative_path.parts]
-    if any(part.lower() == RELEASE_DATA_DIR_NAME.lower() for part in parts_lower):
-        return resolve_target_file(build_dir, file_value)
-    return resolve_target_file(base_dir, file_value)
-
-
-def ensure_backup(path: Path) -> None:
-    return
-
+    if bundle.branch is None:
+        raise PatchError(f"Patch source file cannot be resolved: {source_value}")
+    source_path = (Path("manifest") / bundle.folder_name / relative).as_posix()
+    try:
+        return fetch_repo_bytes(bundle.branch, source_path)
+    except Exception as exc:
+        raise PatchError(f"Patch source file could not be downloaded: {source_value}") from exc
 
 
 def apply_replace_bytes(file_path: Path, replacements: list[dict], encoding: str) -> int:
     data = file_path.read_bytes()
-    total_applied = 0
-
+    total = 0
     for index, replacement in enumerate(replacements, start=1):
         if not isinstance(replacement, dict):
-            raise PatchError(f"Replacement #{index} is not a JSON object.")
-
+            raise PatchError(f"Replacement #{index} is not an object.")
         find_value = replacement.get("find")
         replace_value = replacement.get("replace")
         if not isinstance(find_value, str) or not isinstance(replace_value, str):
             raise PatchError(f"Replacement #{index} needs string find and replace values.")
-
         find_bytes = find_value.encode(encoding)
         replace_bytes = replace_value.encode(encoding)
         if len(find_bytes) != len(replace_bytes):
-            raise PatchError(
-                f"Replacement #{index} changes byte length for {file_path.name}. That is blocked by default."
-            )
-
+            raise PatchError(f"Replacement #{index} changes byte length in {file_path.name}.")
         count = data.count(find_bytes)
         if count <= 0:
-            raise PatchError(f"Replacement #{index} could not find its target inside {file_path.name}.")
-
+            raise PatchError(f"Replacement #{index} was not found in {file_path.name}.")
         data = data.replace(find_bytes, replace_bytes)
-        total_applied += count
-        UI.ok(f"{file_path.name}: replacement #{index} applied {count} time(s)")
-
-    ensure_backup(file_path)
+        total += count
     file_path.write_bytes(data)
-    return total_applied
-
+    return total
 
 
 def write_text_file(target_path: Path, content: str, encoding: str, overwrite: bool) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists() and target_path.is_dir():
-        raise PatchError(f"Patch target path is a directory, not a file: {target_path}")
-    if target_path.exists():
-        if not overwrite:
-            raise PatchError(f"Patch target file already exists and overwrite is disabled: {target_path.name}")
-        ensure_backup(target_path)
-
-    with target_path.open("w", encoding=encoding, newline="") as handle:
-        handle.write(content)
+        raise PatchError(f"Patch target is a directory: {target_path}")
+    if target_path.exists() and not overwrite:
+        raise PatchError(f"Patch target already exists: {target_path.name}")
+    target_path.write_text(content, encoding=encoding, newline="")
 
 
-def resolve_patch_source_bytes(patch_file_path: str | None, source_value: str) -> bytes:
-    if not patch_file_path:
-        raise PatchError("Patch file copy/move instructions need a real Patch.json source path.")
-
-    source_relative = Path(source_value)
-    if source_relative.is_absolute():
-        raise PatchError(f"Patch source path must be relative to the Patch.json folder: {source_value}")
-
-    local_patch_path = Path(patch_file_path)
-    if local_patch_path.is_absolute() or local_patch_path.exists():
-        source_path = local_patch_path.parent / source_relative
-        if not source_path.exists() or not source_path.is_file():
-            raise PatchError(f"Patch source file was not found next to Patch.json: {source_value}")
-        return source_path.read_bytes()
-
-    if _CURRENT_GITHUB_PATCH_BRANCH is None:
-        raise PatchError("Patch source file could not be resolved because the GitHub patch branch is unknown.")
-
-    patch_posix = Path(patch_file_path).as_posix()
-    source_posix = (Path(patch_posix).parent / source_relative).as_posix()
-    try:
-        return request_bytes(
-            GITHUB_RAW_FILE_URL.format(
-                owner=PATCH_REPO_OWNER,
-                repo=PATCH_REPO_NAME,
-                branch=_CURRENT_GITHUB_PATCH_BRANCH,
-                path=source_posix,
-            )
-        )
-    except Exception as exc:
-        raise PatchError(f"Patch source file could not be downloaded from GitHub: {source_value} ({exc})") from exc
-
-
-def install_patch_source_file(
-    build_dir: Path,
-    patch_file_path: str | None,
-    source_value: str,
-    target_value: str,
-    overwrite: bool,
-    base_dir_value: str | None = None,
-    delete_local_source: bool = False,
-) -> Path:
-    target_path = resolve_patch_target_file(build_dir, target_value, "write_text_file", base_dir_value)
-    source_bytes = resolve_patch_source_bytes(patch_file_path, source_value)
-
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+def install_patch_file(build_dir: Path, bundle: ManifestBundle, instruction: dict) -> Path:
+    target_path = resolve_patch_target(
+        build_dir,
+        instruction["file"],
+        instruction["type"],
+        instruction.get("base_dir"),
+    )
     if target_path.exists() and target_path.is_dir():
-        raise PatchError(f"Patch target path is a directory, not a file: {target_path}")
-    if target_path.exists():
-        if not overwrite:
-            raise PatchError(f"Patch target file already exists and overwrite is disabled: {target_path.name}")
-        ensure_backup(target_path)
-
+        raise PatchError(f"Patch target is a directory: {target_path}")
+    if target_path.exists() and not instruction.get("overwrite", True):
+        raise PatchError(f"Patch target already exists: {target_path.name}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    source_bytes = resolve_patch_source(bundle, instruction["source"])
     target_path.write_bytes(source_bytes)
-
-    if delete_local_source and patch_file_path:
-        local_patch_path = Path(patch_file_path)
-        if local_patch_path.is_absolute() or local_patch_path.exists():
-            source_path = local_patch_path.parent / Path(source_value)
-            try:
-                if source_path.exists() and source_path.is_file():
-                    source_path.unlink()
-            except Exception as exc:
-                UI.warn(f"Could not remove moved patch source file {source_path.name}: {exc}")
-
     return target_path
 
 
+def apply_patch_payload(build_dir: Path, bundle: ManifestBundle) -> list[PatchResult]:
+    if bundle.patch_error:
+        Noir.section("Patch")
+        raise PatchError(bundle.patch_error)
 
-def apply_patch_payload(build_dir: Path, payload: dict | list, patch_file_path: str | None = None) -> list[PatchResult]:
-    instructions = normalize_patch_instructions(payload)
+    if bundle.patch_payload is None:
+        Noir.section("Patch")
+        Noir.warn("No Patch.json found. Download kept as-is.")
+        return []
+
+    instructions = normalize_patch_instructions(bundle.patch_payload)
     results: list[PatchResult] = []
+    if not instructions:
+        raise PatchError("Patch.json did not contain any instructions.")
 
-    UI.section("Applying Patch Instructions")
-    UI.info(f"write_text_file target root : {build_dir}")
-
-    needs_default_data_root = any(
-        instruction["type"] not in {"write_text_file", "create_text_file", "write_text"}
-        and not (isinstance(instruction.get("base_dir"), str) and instruction.get("base_dir").strip())
-        for instruction in instructions
-    )
-    if needs_default_data_root:
-        UI.info(f"replace_bytes target root   : {release_data_dir(build_dir)}")
-    else:
-        UI.info("replace_bytes target root   : using instruction base_dir values")
-
+    Noir.section("Patch")
     for instruction in instructions:
         kind = instruction["type"]
-
         if kind in {"copy_patch_file", "copy_file_from_patch", "install_patch_file", "move_patch_file", "move_file_from_patch"}:
-            target_file = install_patch_source_file(
-                build_dir,
-                patch_file_path,
-                instruction["source"],
-                instruction["file"],
-                instruction["overwrite"],
-                instruction.get("base_dir"),
-                delete_local_source=kind in {"move_patch_file", "move_file_from_patch"},
-            )
-            action = "moved" if kind in {"move_patch_file", "move_file_from_patch"} else "copied"
-            UI.ok(f"{target_file.relative_to(build_dir)}: patch source file {action} in")
-            results.append(PatchResult(file_path=target_file, summary=f"patch source file {action} in"))
+            target = install_patch_file(build_dir, bundle, instruction)
+            Noir.ok(f"{target.relative_to(build_dir)}")
+            results.append(PatchResult(target, "patch file installed"))
             continue
 
-        target_file = resolve_patch_target_file(
-            build_dir,
-            instruction["file"],
-            kind,
-            instruction.get("base_dir"),
-        )
-
+        target = resolve_patch_target(build_dir, instruction["file"], kind, instruction.get("base_dir"))
         if kind in {"write_text_file", "create_text_file", "write_text"}:
-            write_text_file(
-                target_file,
-                instruction["content"],
-                instruction["encoding"],
-                instruction["overwrite"],
-            )
-            UI.ok(f"{target_file.relative_to(build_dir)}: text file written")
-            results.append(PatchResult(file_path=target_file, summary="text file written"))
-            continue
-
-        if kind in DOTNET_USER_STRING_PATCH_KINDS:
-            replacements_applied = apply_dotnet_user_string_replacements(
-                target_file,
-                instruction["replacements"],
-            )
-            results.append(
-                PatchResult(
-                    file_path=target_file,
-                    summary=f"{replacements_applied} managed string reference(s) updated",
-                )
-            )
+            write_text_file(target, instruction["content"], instruction["encoding"], instruction["overwrite"])
+            Noir.ok(f"{target.relative_to(build_dir)}")
+            results.append(PatchResult(target, "text file written"))
             continue
 
         if kind not in {"replace_bytes", "replace_text", "replace_strings"}:
             raise PatchError(f"Unsupported patch type: {kind}")
 
-        replacements_applied = apply_replace_bytes(
-            target_file,
-            instruction["replacements"],
-            instruction["encoding"],
-        )
-        results.append(PatchResult(file_path=target_file, summary=f"{replacements_applied} replacement(s) applied"))
+        count = apply_replace_bytes(target, instruction["replacements"], instruction["encoding"])
+        Noir.ok(f"{target.relative_to(build_dir)} ({count})")
+        results.append(PatchResult(target, f"{count} replacement(s)"))
 
     return results
 
 
+def append_unique_recent(settings: dict, manifest_id: str) -> None:
+    recent = [item for item in settings.get("recent_manifests", []) if item != manifest_id]
+    recent.insert(0, manifest_id)
+    settings["recent_manifests"] = recent[:8]
 
-def open_path(path: Path) -> None:
-    if os.name != "nt":
-        raise RuntimeError("Opening paths is only wired for Windows here.")
-    os.startfile(str(path))
 
+def prompt(label: str, default: str | None = None) -> str:
+    suffix = f" [{default}]" if default else ""
+    try:
+        value = input(Noir.c(Noir.ORANGE_SOFT, f"{label}{suffix}: ")).strip()
+    except EOFError:
+        return default or ""
+    return value or default or ""
+
+
+def prompt_choice(valid: set[str], label: str = "Select") -> str:
+    while True:
+        value = prompt(label).lower()
+        if value in valid:
+            return value
+        Noir.warn("That option is not available.")
+
+
+def press_enter(message: str = "Press Enter to continue") -> None:
+    try:
+        input(Noir.c(Noir.GRAY, f"\n{message} . . ."))
+    except EOFError:
+        pass
+
+
+def safe_name(value: str) -> str:
+    cleaned = []
+    for ch in value.strip():
+        if ch.isalnum() or ch in {" ", ".", "-", "_", "(", ")"}:
+            cleaned.append(ch)
+        else:
+            cleaned.append("-")
+    final = "".join(cleaned).strip(" .-_")
+    while "  " in final:
+        final = final.replace("  ", " ")
+    return final or "UnknownBuild"
+
+
+def make_unique_dir(path: Path) -> Path:
+    if not path.exists():
+        return path
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.name} ({counter})")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def manifest_download_path(settings: dict, bundle: ManifestBundle) -> Path:
+    return depot_root(settings) / bundle.safe_label
+
+
+def remembered_manifest_path(settings: dict, manifest_id: str) -> Path | None:
+    record = settings.get("manifests", {}).get(manifest_id)
+    if not isinstance(record, dict):
+        return None
+    path_value = record.get("path")
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    return Path(path_value)
+
+
+def is_within_directory(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def existing_manifest_paths(settings: dict, bundle: ManifestBundle) -> list[Path]:
+    candidates = [
+        manifest_download_path(settings, bundle),
+        depot_root(settings) / bundle.manifest_id,
+        depot_root(settings) / bundle.folder_name,
+    ]
+    remembered = remembered_manifest_path(settings, bundle.manifest_id)
+    if remembered is not None:
+        candidates.append(remembered)
+
+    found: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        key = str(candidate.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(candidate)
+    return found
+
+
+def existing_manifest_menu(settings: dict, bundle: ManifestBundle) -> str:
+    paths = existing_manifest_paths(settings, bundle)
+    if not paths:
+        return "download"
+
+    Noir.section("Already Downloaded")
+    Noir.kv("Manifest", bundle.manifest_id)
+    Noir.kv("Date", bundle.date_label)
+    Noir.kv("Path", str(paths[0]))
+    if len(paths) > 1:
+        Noir.kv("Also", f"{len(paths) - 1} more")
+    Noir.menu(
+        [
+            ("R", "Replace"),
+            ("B", "Back"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    while True:
+        choice = prompt("Select").lower()
+        if choice == "r":
+            return "replace"
+        if choice in {"0", "b", "back"}:
+            return "back"
+        Noir.warn("Choose R or Back.")
+
+
+def replace_manifest_download(settings: dict, bundle: ManifestBundle) -> None:
+    root = depot_root(settings)
+    for path in existing_manifest_paths(settings, bundle):
+        if not is_within_directory(path, root):
+            raise DownloadError(f"Refusing to replace a path outside storage: {path}")
+        if path.resolve() == root.resolve():
+            raise DownloadError(f"Refusing to replace storage root: {path}")
+        if not path.is_dir():
+            raise DownloadError(f"Manifest path is not a folder: {path}")
+        shutil.rmtree(path)
+
+
+def files_are_identical(left: Path, right: Path) -> bool:
+    try:
+        if left.stat().st_size != right.stat().st_size:
+            return False
+        with left.open("rb") as left_handle, right.open("rb") as right_handle:
+            while True:
+                left_chunk = left_handle.read(DOWNLOAD_CHUNK)
+                right_chunk = right_handle.read(DOWNLOAD_CHUNK)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError:
+        return False
+
+
+def move_directory_contents(source_dir: Path, target_dir: Path) -> None:
+    for item in list(source_dir.iterdir()):
+        target = target_dir / item.name
+        if target.exists():
+            if item.is_dir() and target.is_dir():
+                move_directory_contents(item, target)
+                try:
+                    item.rmdir()
+                except OSError as exc:
+                    raise DownloadError(f"Could not remove merged folder: {item}") from exc
+                continue
+            if item.is_file() and target.is_file() and files_are_identical(item, target):
+                item.unlink()
+                continue
+            raise DownloadError(f"Beta layout conflict while moving {item.name}.")
+        shutil.move(str(item), str(target))
+
+
+def normalize_beta_download_layout(build_dir: Path, bundle: ManifestBundle) -> None:
+    if not bundle.beta_branch:
+        return
+
+    zero_dir = build_dir / "0"
+    if not zero_dir.exists():
+        return
+    if not zero_dir.is_dir():
+        raise DownloadError(f"Beta layout path is not a folder: {zero_dir}")
+
+    Noir.section("Layout")
+    Noir.info("Moving beta files out of .\\0")
+    move_directory_contents(zero_dir, build_dir)
+    try:
+        zero_dir.rmdir()
+    except OSError as exc:
+        raise DownloadError(f"Could not remove empty beta folder: {zero_dir}") from exc
+    Noir.ok("Beta layout normalized.")
+
+
+def clean_build_metadata(build_dir: Path) -> None:
+    metadata_dir = build_dir / ".DepotDownloader"
+    if metadata_dir.exists():
+        if not metadata_dir.is_dir():
+            raise DownloadError(f"Build metadata path is not a folder: {metadata_dir}")
+        shutil.rmtree(metadata_dir)
+
+    for marker_name in (".release_noir_manifest.json", ".release_noir_preview.json"):
+        marker = build_dir / marker_name
+        if marker.exists():
+            if marker.is_dir():
+                raise DownloadError(f"Build metadata path is a folder: {marker}")
+            marker.unlink()
+
+
+def find_launcher_name(build_dir: Path) -> str:
+    launcher = find_launch_executable(build_dir)
+    if launcher is not None:
+        return launcher.name
+    return "pending"
 
 
 def score_executable(path: Path, build_dir: Path) -> tuple[int, int, str]:
@@ -2023,7 +1826,6 @@ def score_executable(path: Path, build_dir: Path) -> tuple[int, int, str]:
     return score, len(path.parts), str(path).lower()
 
 
-
 def find_launch_executable(build_dir: Path) -> Path | None:
     if not build_dir.exists():
         return None
@@ -2040,72 +1842,24 @@ def find_launch_executable(build_dir: Path) -> Path | None:
     return best
 
 
-
-def count_local_builds() -> int:
-    return len(scan_local_builds())
-
-
-
-def scan_local_builds() -> list[LocalBuild]:
-    root = build_storage_root()
-    if not root.exists():
-        return []
-
-    builds: list[LocalBuild] = []
-    for child in root.iterdir():
-        if not child.is_dir():
-            continue
-        try:
-            modified_ts = child.stat().st_mtime
-        except OSError:
-            modified_ts = 0.0
-        builds.append(
-            LocalBuild(
-                path=child,
-                name=child.name,
-                exe_path=find_launch_executable(child),
-                modified_ts=modified_ts,
-            )
-        )
-
-    builds.sort(key=lambda item: (-item.modified_ts, item.name.lower()))
-    return builds
-
-
-
-def print_local_builds(builds: list[LocalBuild]) -> None:
-    UI.section("Local Builds")
-    if not builds:
-        UI.warn("No local builds were found yet.")
-        return
-
-    for index, build in enumerate(builds, start=1):
-        exe_name = build.exe_path.name if build.exe_path else "no launcher found"
-        print(f"{index:>2}. {build.name}")
-        print(f"    path : {build.path}")
-        print(f"    run  : {exe_name}")
-        UI.line(width=48)
-
-
-
-def choose_local_build(builds: list[LocalBuild], label: str = "Build number") -> LocalBuild | None:
-    if not builds:
-        return None
-    while True:
-        raw = input(f"{label} (or B to go back): ").strip().lower()
-        if raw in {"b", "back", "0"}:
-            return None
-        if raw.isdigit():
-            index = int(raw)
-            if 1 <= index <= len(builds):
-                return builds[index - 1]
-        UI.warn("That build number is not valid.")
-
+def desktop_dir() -> Path:
+    home = Path(os.environ.get("USERPROFILE") or Path.home())
+    return home / "Desktop"
 
 
 def powershell_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
+
+def make_unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{path.stem} ({counter}){path.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def create_windows_shortcut(shortcut_path: Path, target_path: Path, working_dir: Path, description: str, icon_path: Path | None = None) -> Path:
@@ -2121,7 +1875,6 @@ def create_windows_shortcut(shortcut_path: Path, target_path: Path, working_dir:
         parts.append(f"$S.IconLocation = {powershell_quote(str(icon_path))}")
     parts.append("$S.Save()")
     script = "; ".join(parts)
-
     try:
         subprocess.run(
             [
@@ -2139,338 +1892,479 @@ def create_windows_shortcut(shortcut_path: Path, target_path: Path, working_dir:
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or exc.stdout or "").strip()
         raise ShortcutError(stderr or "PowerShell could not create the shortcut.") from exc
-
     return shortcut_path
 
 
-
 def create_build_shortcut(build: LocalBuild) -> Path:
+    exe_path = find_launch_executable(build.path)
+    if exe_path is None:
+        raise ShortcutError(f"No launchable .exe was found in {build.path}")
     desktop = desktop_dir()
     desktop.mkdir(parents=True, exist_ok=True)
-    target = build.exe_path or build.path
-    working_dir = build.exe_path.parent if build.exe_path else build.path
-    icon_path = build.exe_path if build.exe_path else None
-    shortcut_name = make_windows_safe(build.name) + ".lnk"
-    shortcut_path = desktop / shortcut_name
-    description = f"Rec Room build: {build.name}"
-    return create_windows_shortcut(shortcut_path, target, working_dir, description, icon_path)
+    shortcut_path = desktop / f"{make_windows_safe(build.name)}.lnk"
+    return create_windows_shortcut(
+        shortcut_path,
+        exe_path,
+        exe_path.parent,
+        f"Rec Room build: {build.name}",
+        exe_path,
+    )
 
 
+def scan_local_builds(settings: dict) -> list[LocalBuild]:
+    root = depot_root(settings)
+    if not root.exists():
+        return []
 
-def launch_build(build: LocalBuild) -> None:
-    target = build.exe_path or build.path
-    open_path(target)
+    builds: list[LocalBuild] = []
+    manifests = settings.get("manifests", {})
+    if not isinstance(manifests, dict):
+        return []
+
+    for manifest_id, record in manifests.items():
+        if not isinstance(record, dict):
+            continue
+        path_value = record.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        child = Path(path_value)
+        if not child.exists() or not child.is_dir() or not is_within_directory(child, root):
+            continue
+        try:
+            modified_ts = child.stat().st_mtime
+        except OSError:
+            modified_ts = 0.0
+        builds.append(
+            LocalBuild(
+                path=child,
+                name=child.name,
+                manifest_id=str(manifest_id),
+                launcher=find_launcher_name(child),
+                modified_ts=modified_ts,
+                preview=False,
+            )
+        )
+
+    builds.sort(key=lambda item: (-item.modified_ts, item.name.lower()))
+    return builds
 
 
+def render_home(settings: dict) -> None:
+    builds = scan_local_builds(settings)
+    Noir.header(len(builds), bool(settings.get("fake_mode", True)), depot_root(settings))
+    Noir.section("Menu")
+    Noir.menu(
+        [
+            ("1", "Download build"),
+            ("2", "Local builds"),
+            ("3", "Settings"),
+            ("0", "Exit"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
 
-def handle_build_actions(build: LocalBuild) -> None:
+
+def status_checks(settings: dict) -> None:
+    Noir.section("Checks")
+    app_update = settings.get("app_update", {})
+    app_status = str(app_update.get("status") or "unknown")
+    latest = str(app_update.get("latest") or "?")
+    if app_status == "outdated":
+        Noir.step("GitHub", "UPDATE", f"latest v{latest}")
+    elif app_status == "check_failed":
+        Noir.step("GitHub", "WARN", "check failed")
+    elif app_status == "dev":
+        Noir.step("GitHub", "OK", f"dev / latest v{latest}")
+    else:
+        Noir.step("GitHub", "OK", f"v{latest}")
+    Noir.step("Depot", "OK", str(DEPOT_ID))
+    info = settings.get("depotdownloader", {})
+    version = str(info.get("version") or "local")
+    Noir.step("DepotDownloader", "OK", version)
+
+
+def remember_manifest(settings: dict, bundle: ManifestBundle, build_dir: Path) -> None:
+    manifests = settings.setdefault("manifests", {})
+    record = {
+        "path": str(build_dir),
+        "updated_at": now_iso(),
+    }
+    if bundle.beta_branch:
+        record["beta_branch"] = bundle.beta_branch
+    manifests[bundle.manifest_id] = record
+    append_unique_recent(settings, bundle.manifest_id)
+    settings["last_manifest"] = bundle.manifest_id
+    prune_remembered_manifests(settings)
+    save_settings(settings)
+
+
+def write_error_log(exc: BaseException) -> None:
+    error_log_path().write_text(
+        "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def download_build_workflow(settings: dict) -> None:
+    Noir.clear()
+    Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
+    Noir.section("Download")
+    raw_manifest_id = prompt("Manifest ID")
+    if not raw_manifest_id:
+        Noir.warn("No manifest entered.")
+        press_enter()
+        return
+    manifest_id = normalize_manifest_id(raw_manifest_id)
+    if manifest_id is None:
+        Noir.warn("Manifest ID must be numbers only.")
+        press_enter()
+        return
+
+    Noir.section("Lookup")
+    bundle = lookup_manifest_bundle(manifest_id)
+    build_dir = manifest_download_path(settings, bundle)
+    Noir.kv("Date", bundle.date_label)
+    if bundle.beta_branch:
+        Noir.kv("Beta", bundle.beta_branch)
+    patch_status = "invalid" if bundle.patch_error else bundle.patch_path or "none"
+    Noir.kv("Patch", patch_status)
+    Noir.kv("Folder", str(build_dir))
+
+    existing_action = existing_manifest_menu(settings, bundle)
+    if existing_action == "back":
+        return
+    if existing_action == "replace":
+        try:
+            replace_manifest_download(settings, bundle)
+        except DownloadError as exc:
+            Noir.err(str(exc))
+            press_enter()
+            return
+        Noir.ok("Existing manifest folder removed.")
+
+    credentials = ensure_credentials_for_download()
+    if credentials is None:
+        press_enter()
+        return
+    username, password = credentials
+
+    exe_path = depotdownloader_exe_path()
+    if not exe_path.exists():
+        try:
+            ensure_depotdownloader(settings)
+        except DownloadError as exc:
+            Noir.err(str(exc))
+            press_enter()
+            return
+        if not exe_path.exists():
+            Noir.err(f"DepotDownloader was not found: {exe_path}")
+            press_enter()
+            return
+
+    build_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        str(exe_path),
+        "-app", str(APP_ID),
+        "-depot", str(DEPOT_ID),
+        "-manifest", manifest_id,
+    ]
+    if bundle.beta_branch:
+        cmd.extend(["-beta", bundle.beta_branch])
+    cmd.extend(
+        [
+            "-dir", str(build_dir),
+            "-username", username,
+            "-password", password,
+        ]
+    )
+
+    Noir.section("DepotDownloader")
+    Noir.kv("Manifest", manifest_id)
+    if bundle.beta_branch:
+        Noir.kv("Beta", bundle.beta_branch)
+    Noir.kv("Folder", str(build_dir))
+    try:
+        exit_code = stream_depotdownloader(cmd, display_root=build_dir)
+    except DownloadError as exc:
+        Noir.err(str(exc))
+        Noir.kv("Path", str(exe_path))
+        press_enter()
+        return
+
+    if exit_code != 0:
+        Noir.section("Done")
+        Noir.err(f"DepotDownloader exited with code {exit_code}.")
+        Noir.kv("Log", str(log_path()))
+        press_enter()
+        return
+
+    Noir.ok("Download finished.")
+    normalize_beta_download_layout(build_dir, bundle)
+    clean_build_metadata(build_dir)
+    apply_patch_payload(build_dir, bundle)
+    remember_manifest(settings, bundle, build_dir)
+
+    Noir.section("Done")
+    Noir.ok(str(build_dir))
+    Noir.kv("Log", str(log_path()))
+    press_enter()
+
+
+def print_builds(builds: list[LocalBuild]) -> None:
+    Noir.section("Local Builds")
+    if not builds:
+        Noir.warn("No local builds were found.")
+        return
+    for index, build in enumerate(builds, start=1):
+        tag = "local" if build.preview else "folder"
+        print(
+            Noir.c(Noir.ORANGE, f"{index:>2}. ")
+            + Noir.c(Noir.WHITE, build.name)
+            + Noir.c(Noir.GRAY, f"  {tag}")
+        )
+        Noir.kv("manifest", build.manifest_id)
+        Noir.kv("launcher", build.launcher)
+        Noir.kv("path", str(build.path))
+        Noir.line(color=Noir.DARK)
+
+
+def choose_build(builds: list[LocalBuild]) -> LocalBuild | None:
+    if not builds:
+        return None
     while True:
-        UI.clear()
-        print_intro(count_local_builds())
-        UI.section(f"Build: {build.name}")
-        print(f"Path   : {build.path}")
-        print(f"Launch : {build.exe_path if build.exe_path else 'No executable found'}")
-        UI.line(color=UI.MAGENTA)
-        print("1. Open build folder")
-        print("2. Launch build")
-        print("3. Create desktop shortcut")
-        print("0. Back")
-        UI.line(color=UI.MAGENTA)
+        raw = prompt("Build number or B", "b").lower()
+        if raw in {"b", "back", "0"}:
+            return None
+        if raw.isdigit():
+            index = int(raw)
+            if 1 <= index <= len(builds):
+                return builds[index - 1]
+        Noir.warn("That build number is not valid.")
 
-        choice = prompt_menu_choice({"1", "2", "3", "0"})
+
+def open_path(path: Path) -> None:
+    if os.name == "nt":
+        os.startfile(str(path))
+        return
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
+
+
+def build_actions(build: LocalBuild) -> None:
+    while True:
+        Noir.clear()
+        Noir.header(1, build.preview, build.path.parent)
+        Noir.section(build.name)
+        Noir.kv("Path", str(build.path))
+        Noir.kv("Manifest", build.manifest_id)
+        Noir.kv("Launcher", build.launcher)
+        Noir.menu(
+            [
+                ("1", "Open folder"),
+                ("2", "Launch"),
+                ("0", "Back"),
+            ]
+        )
+        Noir.line(color=Noir.DARK)
+        choice = prompt_choice({"1", "2", "0"})
         if choice == "0":
             return
         if choice == "1":
             open_path(build.path)
-            UI.ok("Build folder opened.")
+            Noir.ok("Build folder opened.")
             press_enter()
         elif choice == "2":
-            if build.exe_path is None:
-                UI.warn("No launchable .exe was found for this build.")
+            exe_path = find_launch_executable(build.path)
+            if exe_path is None:
+                Noir.warn("No launchable .exe was found.")
             else:
-                launch_build(build)
-                UI.ok(f"Launched: {build.exe_path.name}")
-            press_enter()
-        elif choice == "3":
-            shortcut = create_build_shortcut(build)
-            UI.ok(f"Desktop shortcut created: {shortcut}")
+                open_path(exe_path)
+                Noir.ok(f"Launched: {exe_path.name}")
             press_enter()
 
 
-
-def browse_local_builds() -> None:
+def browse_local_builds(settings: dict) -> None:
     while True:
-        UI.clear()
-        builds = scan_local_builds()
-        print_intro(len(builds))
-        print_local_builds(builds)
+        Noir.clear()
+        builds = scan_local_builds(settings)
+        Noir.header(len(builds), bool(settings.get("fake_mode", True)), depot_root(settings))
+        print_builds(builds)
         if not builds:
             press_enter()
             return
-        build = choose_local_build(builds)
+        build = choose_build(builds)
         if build is None:
             return
-        handle_build_actions(build)
+        build_actions(build)
 
 
-
-def manage_credentials_menu(config: dict) -> None:
-    while True:
-        UI.clear()
-        print_intro(count_local_builds())
-        UI.section("Steam Login Settings")
-        stored_user = config.get("steam_username")
-        if stored_user:
-            UI.ok(f"Saved username: {stored_user}")
-        else:
-            UI.warn("No Steam credentials are saved yet.")
-        UI.line(color=UI.MAGENTA)
-        print("1. Save / replace credentials")
-        print("2. Remove saved credentials")
-        print("0. Back")
-        UI.line(color=UI.MAGENTA)
-
-        choice = prompt_menu_choice({"1", "2", "0"})
-        if choice == "0":
-            return
-        if choice == "1":
-            ensure_credentials(config)
-            press_enter()
-        elif choice == "2":
-            if not stored_user:
-                UI.warn("There are no saved credentials to remove.")
-            else:
-                clear_saved_credentials(config)
-                UI.ok("Saved Steam credentials removed.")
-            press_enter()
-
-
-
-def download_build_workflow(config: dict) -> None:
-    UI.clear()
-    print_intro(count_local_builds())
-    depot_cmd = ensure_depotdownloader()
-    steam_user, steam_password = ensure_credentials(config)
-    manifest_id = prompt_manifest()
-
-    UI.section("Build Label Lookup")
-    UI.info(f"Checking {PATCH_REPO_NAME} for the manifest date label and Patch.json . . .")
-    bundle = lookup_manifest_bundle(manifest_id)
-
-    if bundle.warning:
-        UI.huge_warning([bundle.warning])
-    elif bundle.found and bundle.raw_label:
-        UI.ok(f"GitHub date label found: {bundle.raw_label}")
-
-    patch_file_path, patch_payload = load_github_patch_payload(bundle)
-
-    raw_label = bundle.raw_label or parse_optional_patch_label(patch_payload) or manifest_id
-    final_label = make_windows_safe(raw_label)
-
-    UI.section("Build Label")
-    UI.info(f"Final folder label: {raw_label}")
-
-    if patch_file_path is not None and patch_payload is not None:
-        UI.ok(f"Patch file in use: {patch_file_path}")
-    elif patch_file_path is not None:
-        UI.warn(f"Patch file was found but is not usable: {patch_file_path}")
-    else:
-        UI.warn("No patch instructions will be applied.")
-
-    storage_root = build_storage_root(config)
-    existing_build_path = storage_root / make_windows_safe(final_label)
-    on_existing = "replace"
-    if existing_build_path.exists():
-        UI.huge_warning([
-            "This build already exists locally.",
-            f"Existing folder: {existing_build_path}",
-            "R = replace existing build",
-            "K = keep both copies",
-            "C = cancel download",
-        ])
-        on_existing_choice = prompt_menu_choice({"r", "k", "c"}, "Choose R, K, or C")
-        if on_existing_choice == "c":
-            UI.info("Download cancelled. Returning to main menu . . .")
-            return
-        if on_existing_choice == "k":
-            on_existing = "keep_both"
-
-    before_dirs = snapshot_depot_dirs()
-    cmd = [
-        *depot_cmd,
-        "-app", str(APP_ID),
-        "-depot", str(DEPOT_ID),
-        "-manifest", manifest_id,
-        "-username", steam_user,
-        "-password", steam_password,
-    ]
-
-    exit_code, output = stream_process(cmd)
-    save_process_log(output)
-    if exit_code != 0:
-        UI.err(f"DepotDownloader exited with code {exit_code}")
-        UI.warn(f"Full output saved to: {log_path()}")
-        press_enter()
-        return
-
-    renamed_dir = finalize_downloaded_folder(before_dirs, final_label, storage_root, on_existing=on_existing)
-    UI.section("Download Complete")
-    UI.ok(f"Final folder: {renamed_dir}")
-
-    if patch_payload is not None:
-        try:
-            results = apply_patch_payload(renamed_dir, patch_payload, patch_file_path)
-        except Exception as exc:
-            UI.huge_warning([
-                "GitHub Patch.json was loaded, but patching failed.",
-                str(exc),
-                f"Build folder: {renamed_dir}",
-            ])
-            press_enter()
-            return
-
-        UI.section("Patch Complete")
-        for result in results:
-            try:
-                relative_name = result.file_path.relative_to(renamed_dir)
-            except ValueError:
-                relative_name = result.file_path
-            UI.ok(f"{relative_name}: {result.summary}")
-    else:
-        UI.warn("No patch instructions were applied.")
-
-    build = LocalBuild(
-        path=renamed_dir,
-        name=renamed_dir.name,
-        exe_path=find_launch_executable(renamed_dir),
-        modified_ts=renamed_dir.stat().st_mtime if renamed_dir.exists() else 0.0,
-    )
-
-    if prompt_yes_no("Create a desktop shortcut for this build", True):
-        shortcut = create_build_shortcut(build)
-        UI.ok(f"Desktop shortcut created: {shortcut}")
-
-    if prompt_yes_no("Open this build now", False):
-        open_path(build.path)
-        UI.ok(f"Opened: {build.path}")
-
-    UI.info("Returning to main menu . . .")
-
-
-def create_shortcut_from_menu() -> None:
-    UI.clear()
-    builds = scan_local_builds()
-    print_intro(len(builds))
-    print_local_builds(builds)
-    if not builds:
-        press_enter()
-        return
-    build = choose_local_build(builds, "Build number for desktop shortcut")
+def create_shortcut_from_menu(settings: dict) -> None:
+    Noir.clear()
+    builds = scan_local_builds(settings)
+    Noir.header(len(builds), False, depot_root(settings))
+    print_builds(builds)
+    build = choose_build(builds)
     if build is None:
         return
-    shortcut = create_build_shortcut(build)
-    UI.ok(f"Desktop shortcut created: {shortcut}")
+    try:
+        shortcut = create_build_shortcut(build)
+    except ShortcutError as exc:
+        Noir.err(str(exc))
+    else:
+        Noir.ok(f"Desktop shortcut created: {shortcut}")
     press_enter()
 
 
-
-def open_build_storage() -> None:
-    root = build_storage_root()
+def open_build_storage(settings: dict) -> None:
+    root = depot_root(settings)
     root.mkdir(parents=True, exist_ok=True)
     open_path(root)
-    UI.ok(f"Opened build storage: {root}")
+    Noir.ok(f"Opened build storage: {root}")
     press_enter()
 
 
-
-def build_storage_settings_menu(config: dict) -> None:
+def steam_settings(settings: dict) -> None:
     while True:
-        UI.clear()
-        current_root = build_storage_root(config)
-        print_intro(count_local_builds())
-        UI.section("Build Storage Settings")
-        print(f"Current storage : {current_root}")
-        print("Downloads are forced to stay beside this script or .exe.")
-        UI.line(color=UI.MAGENTA)
-        print("1. Open current storage folder")
-        print("2. Remove any old custom storage setting from config")
-        print("0. Back")
-        UI.line(color=UI.MAGENTA)
+        Noir.clear()
+        Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
+        Noir.section("Steam")
+        try:
+            state = load_credential_state()
+        except CredentialError as exc:
+            Noir.warn(str(exc))
+            state = {"version": 1, "reuse_credentials": True}
 
-        choice = prompt_menu_choice({"1", "2", "0"})
+        saved = has_saved_credentials(state)
+        reuse = bool(state.get("reuse_credentials", True))
+        if saved:
+            Noir.ok("Saved login found.")
+            Noir.kv("Reuse", "on" if reuse else "off")
+        else:
+            Noir.warn("No saved login.")
+        Noir.menu(
+            [
+                ("1", "Replace login" if saved else "Set login"),
+                ("2", "Enable reuse" if not reuse else "Disable reuse"),
+                ("3", "Clear login"),
+                ("0", "Back"),
+            ]
+        )
+        Noir.line(color=Noir.DARK)
+        choice = prompt_choice({"1", "2", "3", "0"})
         if choice == "0":
             return
         if choice == "1":
-            current_root.mkdir(parents=True, exist_ok=True)
-            open_path(current_root)
-            UI.ok(f"Opened build storage: {current_root}")
+            try:
+                prompt_for_credentials()
+                Noir.ok("Login saved.")
+            except CredentialError as exc:
+                Noir.err(str(exc))
             press_enter()
         elif choice == "2":
-            removed = config.pop("build_storage_dir", None)
-            save_config(config)
-            if removed is None:
-                UI.ok("No old custom storage setting was found.")
+            if not saved:
+                Noir.warn("Save a login first.")
             else:
-                UI.ok("Old custom storage setting removed. Storage stays beside the script or .exe.")
+                state["reuse_credentials"] = not reuse
+                save_credential_state(state)
+                Noir.ok(f"Reuse {'enabled' if state['reuse_credentials'] else 'disabled'}.")
+            press_enter()
+        elif choice == "3":
+            if credentials_path().exists():
+                credentials_path().unlink()
+            Noir.ok("Login cleared.")
             press_enter()
 
+
+def preview_settings(settings: dict) -> None:
+    while True:
+        Noir.clear()
+        Noir.header(len(scan_local_builds(settings)), bool(settings.get("fake_mode", True)), depot_root(settings))
+        Noir.section("Settings")
+        Noir.menu(
+            [
+                ("1", "Steam"),
+                ("2", "Open storage"),
+                ("3", "Shortcut"),
+                ("4", "Status"),
+                ("5", "Raw settings"),
+                ("0", "Back"),
+            ]
+        )
+        Noir.line(color=Noir.DARK)
+        choice = prompt_choice({"1", "2", "3", "4", "5", "0"})
+        if choice == "0":
+            return
+        if choice == "1":
+            steam_settings(settings)
+        elif choice == "2":
+            open_build_storage(settings)
+        elif choice == "3":
+            create_shortcut_from_menu(settings)
+        elif choice == "4":
+            system_check(settings)
+        elif choice == "5":
+            print(json.dumps(settings, indent=2))
+            press_enter()
+
+
+def system_check(settings: dict) -> None:
+    Noir.clear()
+    Noir.header(len(scan_local_builds(settings)), bool(settings.get("fake_mode", True)), depot_root(settings))
+    status_checks(settings)
+    Noir.section("Files")
+    Noir.kv("Settings", str(settings_path()))
+    Noir.kv("Storage", str(depot_root(settings)))
+    press_enter()
 
 
 def main() -> int:
-    UI.enable_ansi()
-    if os.name != "nt":
-        UI.err("This script is Windows-only because credential storage and shortcut creation use Windows features.")
-        return 1
+    Noir.configure()
+    settings = load_settings()
+    settings["last_launch"] = now_iso()
+    settings["fake_mode"] = False
+    save_settings(settings)
 
-    update_exit_code = enforce_latest_release()
+    update_exit_code = check_app_release(settings, enforce=bool(getattr(sys, "frozen", False)))
     if update_exit_code != 0:
         return update_exit_code
+    settings = load_settings()
 
-    config = load_config()
+    try:
+        ensure_depotdownloader(settings)
+    except DownloadError as exc:
+        Noir.err(str(exc))
+        return 1
+    settings = load_settings()
 
     while True:
-        UI.clear()
-        print_intro(count_local_builds())
-        UI.section("Welcome")
-        print("1. Download and patch a build")
-        print("2. Browse local builds")
-        print("3. Create desktop shortcut")
-        print("4. Open build storage folder")
-        print("5. Steam login settings")
-        print("6. Build storage settings")
-        print("0. Exit")
-        UI.line(color=UI.MAGENTA)
-
-        choice = prompt_menu_choice({"1", "2", "3", "4", "5", "6", "0"})
+        Noir.clear()
+        render_home(settings)
+        choice = prompt_choice({"1", "2", "3", "0"})
         if choice == "0":
+            Noir.ok("Bye.")
             return 0
-        if choice == "1":
-            download_build_workflow(config)
-        elif choice == "2":
-            browse_local_builds()
-        elif choice == "3":
-            create_shortcut_from_menu()
-        elif choice == "4":
-            open_build_storage()
-        elif choice == "5":
-            manage_credentials_menu(config)
-        elif choice == "6":
-            build_storage_settings_menu(config)
+        try:
+            if choice == "1":
+                download_build_workflow(settings)
+            elif choice == "2":
+                browse_local_builds(settings)
+            elif choice == "3":
+                preview_settings(settings)
+        except Exception as exc:
+            write_error_log(exc)
+            Noir.err(str(exc))
+            Noir.kv("Log", str(error_log_path()))
+            press_enter()
+        settings = load_settings()
 
 
 if __name__ == "__main__":
-    code = 1
     try:
-        code = main()
+        raise SystemExit(main())
     except KeyboardInterrupt:
         print()
-        UI.warn("Cancelled by user.")
-        code = 130
-    except Exception as exc:
-        UI.err(str(exc))
-        UI.warn("Detailed traceback:")
-        traceback.print_exc()
-        code = 1
-    finally:
-        pause_close()
-    raise SystemExit(code)
+        Noir.warn("Cancelled.")
+        raise SystemExit(130)
