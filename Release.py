@@ -14,7 +14,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib import error, request
+from urllib import error, parse, request
 
 
 APP_ID = 471710
@@ -267,6 +267,12 @@ def error_log_path() -> Path:
 
 def depotdownloader_exe_path() -> Path:
     return script_dir() / "DepotDownloader.exe"
+
+
+def remove_depotdownloader_package_dir() -> None:
+    package_dir = script_dir() / "DepotDownloader"
+    if package_dir.exists() and package_dir.is_dir():
+        shutil.rmtree(package_dir, ignore_errors=True)
 
 
 def depot_root(settings: dict | None = None) -> Path:
@@ -549,15 +555,28 @@ def check_app_release(settings: dict, *, enforce: bool) -> int:
     return 2
 
 
+def quote_repo_path(path: str) -> str:
+    return parse.quote(path.replace("\\", "/"), safe="/")
+
+
 def fetch_repo_file(branch: str, path: str) -> str:
     return request_text(
         GITHUB_RAW_FILE_URL.format(
             owner=PATCH_REPO_OWNER,
             repo=PATCH_REPO_NAME,
             branch=branch,
-            path=path,
+            path=quote_repo_path(path),
         )
     )
+
+
+def try_fetch_repo_file(branch: str, path: str) -> str | None:
+    try:
+        return fetch_repo_file(branch, path)
+    except error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
 
 
 def fetch_repo_bytes(branch: str, path: str) -> bytes:
@@ -566,7 +585,7 @@ def fetch_repo_bytes(branch: str, path: str) -> bytes:
             owner=PATCH_REPO_OWNER,
             repo=PATCH_REPO_NAME,
             branch=branch,
-            path=path,
+            path=quote_repo_path(path),
         )
     )
 
@@ -744,19 +763,27 @@ def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
         return local_bundle
 
     beta_branch = beta_branch_for_manifest(manifest_id)
+    exact_folder_name = manifest_lookup_name(manifest_id, beta_branch)
     for branch in PATCH_BRANCHES:
         try:
-            tree = get_repo_tree(branch)
-            folders = manifest_folder_names(tree)
-            folder_name = choose_manifest_folder(manifest_id, folders, beta_branch)
+            folder_name = exact_folder_name
             date_path = f"manifest/{folder_name}/Date.json"
             patch_path = f"manifest/{folder_name}/Patch.json"
-            raw_date = parse_date_json_optional(fetch_repo_file(branch, date_path)) if date_path in tree else ""
+            date_text = try_fetch_repo_file(branch, date_path)
+            if date_text is None:
+                tree = get_repo_tree(branch)
+                folders = manifest_folder_names(tree)
+                folder_name = choose_manifest_folder(manifest_id, folders, beta_branch)
+                date_path = f"manifest/{folder_name}/Date.json"
+                patch_path = f"manifest/{folder_name}/Patch.json"
+                date_text = fetch_repo_file(branch, date_path) if date_path in tree else None
+            raw_date = parse_date_json_optional(date_text) if date_text is not None else ""
             patch_payload: dict | list | None = None
             patch_error: str | None = None
-            if patch_path in tree:
+            patch_text = try_fetch_repo_file(branch, patch_path)
+            if patch_text is not None:
                 try:
-                    patch_payload = json.loads(fetch_repo_file(branch, patch_path))
+                    patch_payload = json.loads(patch_text)
                 except json.JSONDecodeError as exc:
                     patch_error = f"Patch.json was invalid for manifest {folder_name}: {exc}"
             return make_manifest_bundle(
@@ -765,7 +792,7 @@ def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
                 branch=branch,
                 folder_name=folder_name,
                 raw_date=raw_date,
-                patch_path=patch_path if patch_path in tree else None,
+                patch_path=patch_path if patch_text is not None else None,
                 patch_payload=patch_payload,
                 patch_error=patch_error,
                 local_folder=None,
@@ -873,6 +900,7 @@ def install_depotdownloader_release(settings: dict, tag: str, asset_name: str, a
             raise DownloadError("DepotDownloader.exe was not found in the release archive.")
 
         shutil.copy2(matches[0], depotdownloader_exe_path())
+        remove_depotdownloader_package_dir()
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -888,6 +916,7 @@ def install_depotdownloader_release(settings: dict, tag: str, asset_name: str, a
 
 
 def ensure_depotdownloader(settings: dict) -> None:
+    remove_depotdownloader_package_dir()
     try:
         release = request_json(DEPOTDOWNLOADER_RELEASE_API)
         tag, asset_name, asset_url = choose_depotdownloader_asset(release)
