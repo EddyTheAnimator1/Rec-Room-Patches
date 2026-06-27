@@ -772,16 +772,11 @@ async def _handle_remove_setting(request: Request, context) -> Response:
     return Response(status_code=204)
 
 
-def _request_app_version(request: Request) -> str:
-    return str(request.headers.get("X-Rec-Room-Version") or request.headers.get("x-rec-room-version") or "").strip()
-
-
-def _default_presence(player_id: int, app_version: str = "") -> dict[str, Any]:
+def _default_presence(player_id: int) -> dict[str, Any]:
     return {
         "PlayerId": player_id,
-        "IsOnline": True,
         "GameSessionId": "",
-        "AppVersion": app_version,
+        "AppVersion": "",
         "LastUpdateTime": _dotnet_utc_ticks(),
         "Activity": "",
         "Private": True,
@@ -790,26 +785,24 @@ def _default_presence(player_id: int, app_version: str = "") -> dict[str, Any]:
     }
 
 
-def _presence_for_player(context, player_id: int, app_version: str = "") -> dict[str, Any]:
+def _presence_for_player(context, player_id: int) -> dict[str, Any]:
     presence = _get_json_setting(context, _setting_key("presence", player_id), {})
     if not presence:
-        return _default_presence(player_id, app_version)
-    result = _default_presence(player_id, app_version)
+        return _default_presence(player_id)
+    result = _default_presence(player_id)
     result.update({key: value for key, value in presence.items() if key in result})
     result["PlayerId"] = player_id
-    if not result.get("AppVersion"):
-        result["AppVersion"] = app_version
     result["LastUpdateTime"] = int(result.get("LastUpdateTime") or _dotnet_utc_ticks())
     return result
 
 
-async def _handle_get_presence(request: Request, route_path: str, context) -> Response:
+async def _handle_get_presence(route_path: str, context) -> Response:
     match = re.fullmatch(r"api/presence/v1/(\d+)/?", route_path.strip("/"), flags=re.IGNORECASE)
     if not match:
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
     player_id = int(match.group(1))
     _ensure_existing_profile(context, player_id)
-    return JSONResponse(_presence_for_player(context, player_id, _request_app_version(request)))
+    return JSONResponse(_presence_for_player(context, player_id))
 
 
 async def _handle_update_presence(request: Request, route_path: str, context) -> Response:
@@ -819,14 +812,12 @@ async def _handle_update_presence(request: Request, route_path: str, context) ->
     player_id = int(match.group(1))
     _ensure_existing_profile(context, player_id)
     payload = await _parse_client_payload(request)
-    app_version = _str_field(payload, "AppVersion", "appVersion") or _request_app_version(request)
-    presence = _default_presence(player_id, app_version)
+    presence = _default_presence(player_id)
     presence.update(
         {
             "PlayerId": player_id,
-            "IsOnline": _bool_field(payload, "IsOnline", "isOnline", "Online", "online", default=True),
             "GameSessionId": _str_field(payload, "GameSessionId", "gameSessionId"),
-            "AppVersion": app_version,
+            "AppVersion": _str_field(payload, "AppVersion", "appVersion"),
             "Activity": _str_field(payload, "Activity", "activity"),
             "Private": _bool_field(payload, "Private", "private", default=False),
             "AvailableSpace": _int_field(payload, "AvailableSpace", "availableSpace", default=0),
@@ -843,14 +834,13 @@ async def _handle_presence_list(request: Request, context) -> Response:
     if not isinstance(payload, list):
         raise HTTPException(status_code=400, detail="Presence list payload must be a JSON list.")
     presences: list[dict[str, Any]] = []
-    app_version = _request_app_version(request)
     for raw_id in payload:
         try:
             player_id = int(raw_id)
         except Exception:
             continue
         if _PLATFORM_BASE._find_player_by_legacy_id(context, player_id) is not None:
-            presences.append(_presence_for_player(context, player_id, app_version))
+            presences.append(_presence_for_player(context, player_id))
     return JSONResponse(presences)
 
 
@@ -1083,7 +1073,7 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         return await _handle_presence_list(request, context)
     if re.fullmatch(r"api/presence/v1/\d+/?", path):
         if method == "GET":
-            return await _handle_get_presence(request, route_path, context)
+            return await _handle_get_presence(route_path, context)
         if method == "POST":
             return await _handle_update_presence(request, route_path, context)
         raise HTTPException(status_code=501, detail="Presence method is not implemented.")
