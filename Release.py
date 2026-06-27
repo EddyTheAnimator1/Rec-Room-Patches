@@ -3,12 +3,10 @@ import ctypes
 import getpass
 import json
 import os
-import queue
 import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
 import traceback
 import webbrowser
@@ -56,12 +54,6 @@ STEAM_GUARD_PROMPT_RE = re.compile(
     r"):\s*",
     re.IGNORECASE,
 )
-STEAM_GUARD_NOTICE = "This account is protected by Steam Guard."
-STEAM_GUARD_FALLBACK_PROMPT = (
-    "This account is protected by Steam Guard. "
-    "Enter the code from Steam or your email:"
-)
-STEAM_GUARD_PROMPT_IDLE_SECONDS = 0.25
 SPINNER = "|/-\\"
 EXE_NAME_PREFERENCES = [
     "RecRoom_Release.exe",
@@ -115,6 +107,13 @@ class DATA_BLOB(ctypes.Structure):
     _fields_ = [
         ("cbData", ctypes.c_uint32),
         ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
+    ]
+
+
+class CONSOLE_CURSOR_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_uint32),
+        ("bVisible", ctypes.c_int),
     ]
 
 
@@ -856,6 +855,31 @@ def terminal_columns() -> int:
     return max(60, shutil.get_terminal_size((Noir.width, 20)).columns)
 
 
+def set_console_cursor_visible(visible: bool) -> bool | None:
+    if os.name == "nt":
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        info = CONSOLE_CURSOR_INFO()
+        if not kernel32.GetConsoleCursorInfo(handle, ctypes.byref(info)):
+            return None
+        previous = bool(info.bVisible)
+        info.bVisible = int(visible)
+        if not kernel32.SetConsoleCursorInfo(handle, ctypes.byref(info)):
+            return None
+        return previous
+
+    sys.stdout.write("\033[?25h" if visible else "\033[?25l")
+    sys.stdout.flush()
+    return None
+
+
+def restore_console_cursor(previous: bool | None) -> None:
+    if previous is None:
+        set_console_cursor_visible(True)
+    else:
+        set_console_cursor_visible(previous)
+
+
 def render_one_line(text: str, last_len: int = 0) -> int:
     width = terminal_columns()
     clean = " ".join(text.replace("\t", " ").split())
@@ -1370,31 +1394,14 @@ def stream_depotdownloader(args: list[str], display_root: Path | None = None) ->
     assert process.stdout is not None
     assert process.stdin is not None
 
-    output_queue: queue.Queue[str | None] = queue.Queue()
-
-    def read_process_output() -> None:
-        try:
-            while True:
-                char = process.stdout.read(1)
-                if char == "":
-                    break
-                output_queue.put(char)
-        finally:
-            output_queue.put(None)
-
-    reader = threading.Thread(target=read_process_output, daemon=True)
-    reader.start()
-
     captured = [mask_command(args)]
     buffer = ""
     spinner_index = 0
     last_percent: float | None = None
     last_len = 0
-    awaiting_steam_guard_prompt = False
-    skip_stale_steam_guard_prompt = False
 
     def flush_line(raw: str) -> None:
-        nonlocal spinner_index, last_percent, last_len, awaiting_steam_guard_prompt
+        nonlocal spinner_index, last_percent, last_len
         line = normalize_console_line(raw)
         if not line:
             return
@@ -1413,15 +1420,17 @@ def stream_depotdownloader(args: list[str], display_root: Path | None = None) ->
             parts.append(detail)
         last_len = render_one_line(" ".join(parts), last_len)
         captured.append(line)
-        if STEAM_GUARD_NOTICE.lower() in line.lower():
-            awaiting_steam_guard_prompt = True
 
-    def submit_steam_guard_code(prompt_text: str, *, from_fallback: bool = False) -> None:
-        nonlocal last_len, awaiting_steam_guard_prompt, skip_stale_steam_guard_prompt
+    def submit_steam_guard_code(prompt_text: str) -> None:
+        nonlocal last_len
         clear_rendered_line(last_len)
         sys.stdout.write("\n")
         sys.stdout.flush()
-        code = prompt_steam_guard_code(prompt_text)
+        typing_cursor_state = set_console_cursor_visible(True)
+        try:
+            code = prompt_steam_guard_code(prompt_text)
+        finally:
+            restore_console_cursor(typing_cursor_state)
         try:
             process.stdin.write(code + "\n")
             process.stdin.flush()
@@ -1430,50 +1439,37 @@ def stream_depotdownloader(args: list[str], display_root: Path | None = None) ->
         captured.append(prompt_text)
         captured.append("Steam Guard code: ********")
         last_len = 0
-        awaiting_steam_guard_prompt = False
-        skip_stale_steam_guard_prompt = from_fallback
 
-    reader_done = False
-    while True:
-        try:
-            char = output_queue.get(timeout=STEAM_GUARD_PROMPT_IDLE_SECONDS)
-        except queue.Empty:
-            if awaiting_steam_guard_prompt and process.poll() is None:
-                submit_steam_guard_code(STEAM_GUARD_FALLBACK_PROMPT, from_fallback=True)
-            if reader_done and process.poll() is not None:
-                break
-            continue
-
-        if char is None:
-            reader_done = True
-            if buffer:
+    cursor_state = set_console_cursor_visible(False)
+    try:
+        while True:
+            char = process.stdout.read(1)
+            if char == "":
+                if buffer:
+                    flush_line(buffer)
+                if process.poll() is not None:
+                    break
+                time.sleep(0.01)
+                continue
+            if char in {"\r", "\n"}:
                 flush_line(buffer)
                 buffer = ""
-            if process.poll() is not None:
-                break
-            continue
-        if char in {"\r", "\n"}:
-            flush_line(buffer)
-            buffer = ""
-            continue
-        buffer += char
-        while True:
-            prompt_parts = split_steam_guard_prompt(buffer)
-            if not prompt_parts:
-                break
-            before_prompt, prompt_text, after_prompt = prompt_parts
-            if before_prompt.strip():
-                flush_line(before_prompt)
-            if skip_stale_steam_guard_prompt:
-                captured.append(prompt_text)
-                skip_stale_steam_guard_prompt = False
-            else:
+                continue
+            buffer += char
+            while True:
+                prompt_parts = split_steam_guard_prompt(buffer)
+                if not prompt_parts:
+                    break
+                before_prompt, prompt_text, after_prompt = prompt_parts
+                if before_prompt.strip():
+                    flush_line(before_prompt)
                 submit_steam_guard_code(prompt_text)
-            buffer = after_prompt
+                buffer = after_prompt
 
-    exit_code = process.wait()
-    reader.join(timeout=1)
-    sys.stdout.write("\n")
+        exit_code = process.wait()
+        sys.stdout.write("\n")
+    finally:
+        restore_console_cursor(cursor_state)
     captured.append(f"exit_code={exit_code}")
     log_path().write_text("\n".join(captured), encoding="utf-8", errors="replace")
     return exit_code
