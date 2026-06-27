@@ -775,6 +775,7 @@ async def _handle_remove_setting(request: Request, context) -> Response:
 def _default_presence(player_id: int) -> dict[str, Any]:
     return {
         "PlayerId": player_id,
+        "IsOnline": False,
         "GameSessionId": "",
         "AppVersion": "",
         "LastUpdateTime": _dotnet_utc_ticks(),
@@ -816,6 +817,7 @@ async def _handle_update_presence(request: Request, route_path: str, context) ->
     presence.update(
         {
             "PlayerId": player_id,
+            "IsOnline": _bool_field(payload, "IsOnline", "isOnline", default=True),
             "GameSessionId": _str_field(payload, "GameSessionId", "gameSessionId"),
             "AppVersion": _str_field(payload, "AppVersion", "appVersion"),
             "Activity": _str_field(payload, "Activity", "activity"),
@@ -864,8 +866,13 @@ def _set_relationship(relationships: dict[str, dict[str, int]], local_id: int, r
         local[str(remote_id)] = int(relationship_type)
 
 
-def _relationship_response(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int) -> dict[str, int]:
-    return {"PlayerID": remote_id, "RelationshipType": _relationship_for(relationships, local_id, remote_id)}
+def _relationship_response(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int) -> dict[str, Any]:
+    return {
+        "PlayerID": remote_id,
+        "RelationshipType": _relationship_for(relationships, local_id, remote_id),
+        "Mute": False,
+        "Ignore": False,
+    }
 
 
 async def _handle_get_relationships(route_path: str, context) -> Response:
@@ -876,7 +883,7 @@ async def _handle_get_relationships(route_path: str, context) -> Response:
     _ensure_existing_profile(context, player_id)
     relationships = _all_relationships(context)
     result = [
-        {"PlayerID": int(remote_id), "RelationshipType": int(rel_type)}
+        {"PlayerID": int(remote_id), "RelationshipType": int(rel_type), "Mute": False, "Ignore": False}
         for remote_id, rel_type in sorted(relationships.get(str(player_id), {}).items(), key=lambda item: int(item[0]))
     ]
     return JSONResponse(result)
