@@ -161,7 +161,12 @@ def _presence_payload_from_client(context, player_id: int, payload: dict[str, An
             "AppVersion": _BASE._str_field(payload, "AppVersion", "appVersion", default=str(current.get("AppVersion") or "")),
             "Activity": _BASE._str_field(payload, "Activity", "activity", default=str(current.get("Activity") or "")),
             "Private": _BASE._bool_field(payload, "Private", "private", default=bool(current.get("Private"))),
-            "AvailableSpace": _BASE._int_field(payload, "AvailableSpace", "availableSpace", default=int(current.get("AvailableSpace") or 0)),
+            "AvailableSpace": _BASE._int_field(
+                payload,
+                "AvailableSpace",
+                "availableSpace",
+                default=int(current.get("AvailableSpace") or 0),
+            ),
             "GameInProgress": _BASE._bool_field(payload, "GameInProgress", "gameInProgress", default=bool(current.get("GameInProgress"))),
             "LastUpdateTime": _BASE._dotnet_utc_ticks(),
         }
@@ -187,10 +192,11 @@ async def _handle_notification_client_message(raw_message: str, player_id: int, 
     await _publish_presence(context, player_id, _coerce_json_object(payload.get("param") or payload.get("Param")))
 
 
-async def _notify_relationship_changed(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int) -> None:
-    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id))
+async def _notify_relationship_changed(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int, context) -> None:
+    flags = _BASE._all_relationship_flags(context)
+    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags))
     if remote_id != local_id:
-        await _send_notification(remote_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, remote_id, local_id))
+        await _send_notification(remote_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, remote_id, local_id, flags))
 
 
 async def _notify_message_received(message: dict[str, Any]) -> None:
@@ -388,8 +394,27 @@ async def _handle_relationship_action_v2(request: Request, action: str, context)
     else:
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
     _BASE._save_relationships(context, relationships)
-    await _notify_relationship_changed(relationships, local_id, remote_id)
-    return JSONResponse(_BASE._relationship_response(relationships, local_id, remote_id))
+    await _notify_relationship_changed(relationships, local_id, remote_id, context)
+    return JSONResponse(_BASE._relationship_response(relationships, local_id, remote_id, _BASE._all_relationship_flags(context)))
+
+
+async def _handle_relationship_flag_v1(request: Request, action: str, context) -> Response:
+    local_id = _ensure_local_profile(request, context)
+    payload = await _BASE._parse_client_payload(request)
+    remote_id = _BASE._int_field(payload, "PlayerId", "playerId", "ToPlayerId", "toPlayerId", default=0)
+    if remote_id <= 0:
+        remote_id = _BASE._int_field(dict(request.query_params), "id", "id2", "playerId", default=0)
+    if remote_id <= 0:
+        raise HTTPException(status_code=400, detail="PlayerId is required.")
+    _BASE._ensure_existing_profile(context, remote_id)
+    flag_name = "Mute" if action in {"mute", "unmute"} else "Ignore"
+    enabled = action in {"mute", "ignore"}
+    flags = _BASE._all_relationship_flags(context)
+    _BASE._set_relationship_flag(flags, local_id, remote_id, flag_name, enabled)
+    _BASE._save_relationship_flags(context, flags)
+    relationships = _BASE._all_relationships(context)
+    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags))
+    return Response(status_code=204)
 
 
 async def _handle_get_messages_v2(request: Request, context) -> Response:
@@ -522,6 +547,11 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         if method != "GET":
             raise HTTPException(status_code=501, detail="Relationships method is not implemented.")
         return await _handle_get_relationships_v2(request, context)
+    for action in ("mute", "unmute", "ignore", "unignore"):
+        if path in {f"api/relationships/v1/{action}", f"api/relationships/v1/{action}/"}:
+            if method != "POST":
+                raise HTTPException(status_code=501, detail="Relationship flag method is not implemented.")
+            return await _handle_relationship_flag_v1(request, action, context)
     for action in ("addfriend", "removefriend", "sendfriendrequest", "acceptfriendrequest", "blockplayer", "unblockplayer"):
         if path in {f"api/relationships/v2/{action}", f"api/relationships/v2/{action}/"}:
             if method != "GET":

@@ -23,6 +23,7 @@ Confirmed from decompiled client build 2999110564380282122:
 - POST api/presence/v1/list
 - GET  api/relationships/v1/get/<Id>
 - GET  api/relationships/v1/addfriend|removefriend|sendfriendrequest|acceptfriendrequest|blockplayer|unblockplayer
+- POST api/relationships/v1/mute|unmute|ignore|unignore
 - GET  api/messages/v1/get/<Id>
 - POST api/messages/v1/send
 - POST api/messages/v1/delete
@@ -854,8 +855,24 @@ def _save_relationships(context, relationships: dict[str, dict[str, int]]) -> No
     _set_json_setting(context, _setting_key("relationships"), relationships)
 
 
+def _all_relationship_flags(context) -> dict[str, dict[str, dict[str, bool]]]:
+    return _get_json_setting(context, _setting_key("relationship_flags"), {})
+
+
+def _save_relationship_flags(context, flags: dict[str, dict[str, dict[str, bool]]]) -> None:
+    _set_json_setting(context, _setting_key("relationship_flags"), flags)
+
+
 def _relationship_for(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int) -> int:
     return int(relationships.get(str(local_id), {}).get(str(remote_id), REL_NONE))
+
+
+def _relationship_flags_for(flags: dict[str, dict[str, dict[str, bool]]], local_id: int, remote_id: int) -> dict[str, bool]:
+    raw_flags = flags.get(str(local_id), {}).get(str(remote_id), {})
+    return {
+        "Mute": bool(raw_flags.get("Mute")),
+        "Ignore": bool(raw_flags.get("Ignore")),
+    }
 
 
 def _set_relationship(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int, relationship_type: int) -> None:
@@ -866,12 +883,34 @@ def _set_relationship(relationships: dict[str, dict[str, int]], local_id: int, r
         local[str(remote_id)] = int(relationship_type)
 
 
-def _relationship_response(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int) -> dict[str, Any]:
+def _set_relationship_flag(
+    flags: dict[str, dict[str, dict[str, bool]]],
+    local_id: int,
+    remote_id: int,
+    flag_name: str,
+    enabled: bool,
+) -> None:
+    local = flags.setdefault(str(local_id), {})
+    remote_flags = local.setdefault(str(remote_id), {})
+    remote_flags[flag_name] = bool(enabled)
+    if not bool(remote_flags.get("Mute")) and not bool(remote_flags.get("Ignore")):
+        local.pop(str(remote_id), None)
+    if not local:
+        flags.pop(str(local_id), None)
+
+
+def _relationship_response(
+    relationships: dict[str, dict[str, int]],
+    local_id: int,
+    remote_id: int,
+    flags: dict[str, dict[str, dict[str, bool]]] | None = None,
+) -> dict[str, Any]:
+    flag_payload = _relationship_flags_for(flags or {}, local_id, remote_id)
     return {
         "PlayerID": remote_id,
         "RelationshipType": _relationship_for(relationships, local_id, remote_id),
-        "Mute": False,
-        "Ignore": False,
+        "Mute": flag_payload["Mute"],
+        "Ignore": flag_payload["Ignore"],
     }
 
 
@@ -882,9 +921,11 @@ async def _handle_get_relationships(route_path: str, context) -> Response:
     player_id = int(match.group(1))
     _ensure_existing_profile(context, player_id)
     relationships = _all_relationships(context)
+    flags = _all_relationship_flags(context)
+    remote_ids = set(relationships.get(str(player_id), {}).keys()) | set(flags.get(str(player_id), {}).keys())
     result = [
-        {"PlayerID": int(remote_id), "RelationshipType": int(rel_type), "Mute": False, "Ignore": False}
-        for remote_id, rel_type in sorted(relationships.get(str(player_id), {}).items(), key=lambda item: int(item[0]))
+        _relationship_response(relationships, player_id, int(remote_id), flags)
+        for remote_id in sorted(remote_ids, key=int)
     ]
     return JSONResponse(result)
 
@@ -917,7 +958,33 @@ async def _handle_relationship_action(request: Request, action: str, context) ->
     else:
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
     _save_relationships(context, relationships)
-    return JSONResponse(_relationship_response(relationships, id1, id2))
+    return JSONResponse(_relationship_response(relationships, id1, id2, _all_relationship_flags(context)))
+
+
+async def _handle_relationship_flag(request: Request, action: str, context) -> Response:
+    payload = await _parse_client_payload(request)
+    local_id = _int_field(payload, "LocalPlayerId", "localPlayerId", "FromPlayerId", "fromPlayerId", default=0)
+    if local_id <= 0:
+        local_id = _int_field(dict(request.query_params), "id1", "from", default=0)
+    raw_profile_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
+    if raw_profile_id:
+        try:
+            local_id = int(raw_profile_id)
+        except Exception:
+            pass
+    remote_id = _int_field(payload, "PlayerId", "playerId", "ToPlayerId", "toPlayerId", default=0)
+    if remote_id <= 0:
+        remote_id = _int_field(dict(request.query_params), "id", "id2", "playerId", default=0)
+    if local_id <= 0 or remote_id <= 0:
+        raise HTTPException(status_code=400, detail="PlayerId is required.")
+    _ensure_existing_profile(context, local_id)
+    _ensure_existing_profile(context, remote_id)
+    flag_name = "Mute" if action in {"mute", "unmute"} else "Ignore"
+    enabled = action in {"mute", "ignore"}
+    flags = _all_relationship_flags(context)
+    _set_relationship_flag(flags, local_id, remote_id, flag_name, enabled)
+    _save_relationship_flags(context, flags)
+    return Response(status_code=204)
 
 
 def _all_messages(context) -> list[dict[str, Any]]:
@@ -1094,6 +1161,11 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
             if method != "GET":
                 raise HTTPException(status_code=501, detail="Relationship action method is not implemented.")
             return await _handle_relationship_action(request, action, context)
+    for action in ("mute", "unmute", "ignore", "unignore"):
+        if path in {f"api/relationships/v1/{action}", f"api/relationships/v1/{action}/"}:
+            if method != "POST":
+                raise HTTPException(status_code=501, detail="Relationship flag method is not implemented.")
+            return await _handle_relationship_flag(request, action, context)
 
     if re.fullmatch(r"api/messages/v1/get/\d+/?", path):
         if method != "GET":
