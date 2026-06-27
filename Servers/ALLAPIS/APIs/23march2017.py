@@ -1,6 +1,7 @@
 """23 March 2017 Rec Room HTTP/WebSocket API adapter.
 
-Confirmed from the game build at manifest 4635637071237364407:
+Confirmed from the 23 March 2017 game builds at manifests
+4635637071237364407 and 157323939332896781:
 - RecNet still uses COGCNMJCNKN.
 - HTTP/WebSocket URL fields remain EHBCBOGDLDB and FPGKGDJLOJJ.
 - Login posts /api/platformlogin/v1 with the same form fields as 17 March.
