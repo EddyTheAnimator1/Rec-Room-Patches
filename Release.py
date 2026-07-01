@@ -26,6 +26,14 @@ ERROR_LOG_NAME = "last_release_noir_error.log"
 PREVIEW_STATE_VERSION = 1
 USER_AGENT = "Release-Noir/1.0"
 DEPOTDOWNLOADER_RELEASE_API = "https://api.github.com/repos/SteamRE/DepotDownloader/releases/latest"
+MELONLOADER_RELEASE_TAG = "v0.5.7"
+MELONLOADER_ASSET_NAME = "MelonLoader.x64.zip"
+MELONLOADER_RELEASE_API = "https://api.github.com/repos/LavaGang/MelonLoader/releases/tags/{tag}"
+MELONLOADER_RELEASE_URL = "https://github.com/LavaGang/MelonLoader/releases/download/{tag}/{asset}"
+MELONLOADER_PROMPT_INFO = (
+    "Windows 11 has a 50/50 chance of crashing these builds. "
+    "MelonLoader prevents that, don't ask why. Plus, it doesn't hurt to have it."
+)
 PATCH_REPO_OWNER = "EddyTheAnimator1"
 PATCH_REPO_NAME = "Rec-Room-Patches"
 PATCH_BRANCHES = ("main", "master")
@@ -54,6 +62,7 @@ STEAM_GUARD_PROMPT_RE = re.compile(
     r"):\s*",
     re.IGNORECASE,
 )
+HISTORICAL_BUILD_YEAR_RE = re.compile(r"(?<!\d)(2016|2017)(?!\d)")
 SPINNER = "|/-\\"
 EXE_NAME_PREFERENCES = [
     "RecRoom_Release.exe",
@@ -158,6 +167,7 @@ class Noir:
     ORANGE_SOFT = "\033[38;5;214m"
     GOLD = "\033[38;5;220m"
     GREEN = "\033[38;5;82m"
+    BLUE = "\033[38;5;39m"
     RED = "\033[38;5;196m"
     WHITE = "\033[38;5;255m"
     GRAY = "\033[38;5;245m"
@@ -219,6 +229,10 @@ class Noir:
     @classmethod
     def info(cls, text: str) -> None:
         print(f"{cls.chip('INFO', cls.ORANGE_SOFT)} {text}")
+
+    @classmethod
+    def blue_info(cls, text: str) -> None:
+        print(f"{cls.chip('INFO', cls.BLUE)} {text}")
 
     @classmethod
     def ok(cls, text: str) -> None:
@@ -311,6 +325,7 @@ def default_settings() -> dict:
         "storage_root": str(script_dir() / "depots" / str(DEPOT_ID)),
         "app_update": {},
         "depotdownloader": {},
+        "melonloader": {},
         "recent_manifests": [],
         "manifests": {},
     }
@@ -662,15 +677,7 @@ def parse_date_json_optional(text: str) -> str:
 
 
 def format_manifest_date(raw_date: str) -> str:
-    normalized = " ".join(raw_date.strip().split())
-    marker = " \u2013 "
-    if marker in normalized:
-        date_part, time_part = normalized.split(marker, 1)
-        return f"{date_part.replace(' ', '')}{marker}{time_part.strip()}"
-    parts = normalized.split(" ", 3)
-    if len(parts) >= 4 and parts[0].isdigit():
-        return f"{parts[0]}{parts[1]}{parts[2]}{marker}{parts[3]}"
-    return normalized.replace(" ", "")
+    return raw_date.strip()
 
 
 def make_windows_safe(name: str) -> str:
@@ -851,6 +858,40 @@ def choose_depotdownloader_asset(release: dict) -> tuple[str, str, str]:
     return tag, asset_name, asset_url
 
 
+def melonloader_release_api_url() -> str:
+    return MELONLOADER_RELEASE_API.format(tag=MELONLOADER_RELEASE_TAG)
+
+
+def melonloader_download_url() -> str:
+    return MELONLOADER_RELEASE_URL.format(
+        tag=MELONLOADER_RELEASE_TAG,
+        asset=parse.quote(MELONLOADER_ASSET_NAME),
+    )
+
+
+def choose_melonloader_asset(release: dict) -> tuple[str, str, str]:
+    tag = str(release.get("tag_name") or "").strip()
+    if normalize_version_tag(tag) != normalize_version_tag(MELONLOADER_RELEASE_TAG):
+        raise DownloadError(f"MelonLoader release tag was not {MELONLOADER_RELEASE_TAG}.")
+
+    assets = release.get("assets") or []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        url = str(asset.get("browser_download_url") or "")
+        if name.lower() == MELONLOADER_ASSET_NAME.lower() and url:
+            return tag, name, url
+    raise DownloadError(f"{MELONLOADER_ASSET_NAME} was not found on the MelonLoader release.")
+
+
+def resolve_melonloader_release() -> tuple[str, str, str]:
+    try:
+        return choose_melonloader_asset(request_json(melonloader_release_api_url()))
+    except (error.HTTPError, error.URLError, TimeoutError, DownloadError, json.JSONDecodeError):
+        return MELONLOADER_RELEASE_TAG, MELONLOADER_ASSET_NAME, melonloader_download_url()
+
+
 def terminal_columns() -> int:
     return max(60, shutil.get_terminal_size((Noir.width, 20)).columns)
 
@@ -922,6 +963,63 @@ def download_file(url: str, dest: Path, label: str) -> None:
                     line = f"{spin} {read // 1024:>7} KB {label}"
                 last_len = render_one_line(line, last_len)
     sys.stdout.write("\n")
+
+
+def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for member in zf.infolist():
+            member_name = member.filename.replace("\\", "/")
+            if not member_name or Path(member_name).is_absolute():
+                raise DownloadError("Release archive contained an unsafe path.")
+            destination = (target_dir / member_name).resolve()
+            try:
+                destination.relative_to(target_root)
+            except ValueError as exc:
+                raise DownloadError("Release archive contained an unsafe path.") from exc
+        zf.extractall(target_dir)
+
+
+def clean_work_dir(work_dir: Path) -> None:
+    if not work_dir.exists():
+        return
+    if work_dir.is_dir():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    else:
+        work_dir.unlink()
+
+
+def install_melonloader_to_build(build_dir: Path, settings: dict | None = None) -> None:
+    if not build_dir.exists() or not build_dir.is_dir():
+        raise DownloadError(f"Build folder was not found: {build_dir}")
+
+    tag, asset_name, asset_url = resolve_melonloader_release()
+    work_dir = build_dir / ".melonloader_install"
+    zip_path = work_dir / asset_name
+    clean_work_dir(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    Noir.section("MelonLoader")
+    try:
+        download_file(asset_url, zip_path, asset_name)
+        try:
+            safe_extract_zip(zip_path, build_dir)
+        except zipfile.BadZipFile as exc:
+            raise DownloadError("MelonLoader archive was invalid.") from exc
+    finally:
+        clean_work_dir(work_dir)
+
+    if settings is not None:
+        settings.setdefault("melonloader", {}).update(
+            {
+                "version": tag,
+                "asset": asset_name,
+                "installed_at": now_iso(),
+                "last_build": str(build_dir),
+            }
+        )
+        save_settings(settings)
+    Noir.ok(f"MelonLoader {tag} installed to {build_dir}")
 
 
 def install_depotdownloader_release(settings: dict, tag: str, asset_name: str, asset_url: str) -> None:
@@ -1972,6 +2070,86 @@ def find_launch_executable(build_dir: Path) -> Path | None:
     return best
 
 
+def historical_year_from_text(value: str) -> int | None:
+    match = HISTORICAL_BUILD_YEAR_RE.search(value)
+    return int(match.group(1)) if match else None
+
+
+def historical_build_year(build: LocalBuild) -> int | None:
+    for value in (build.name, build.path.name):
+        year = historical_year_from_text(value)
+        if year is not None:
+            return year
+
+    manifest_id = normalize_manifest_id(build.manifest_id)
+    if manifest_id is None:
+        return None
+    try:
+        bundle = lookup_manifest_bundle(manifest_id)
+    except Exception:
+        return None
+    for value in (bundle.date_raw, bundle.date_label, bundle.safe_label):
+        year = historical_year_from_text(value)
+        if year is not None:
+            return year
+    return None
+
+
+def is_historical_melonloader_build(build: LocalBuild) -> bool:
+    return historical_build_year(build) in {2016, 2017}
+
+
+def melonloader_policy_label(policy: object) -> str:
+    value = melonloader_policy_value(policy)
+    if value == "always_install":
+        return "Install every time"
+    if value == "never_install":
+        return "Reject"
+    return "Ask every time"
+
+
+def melonloader_policy_value(policy: object) -> str:
+    value = str(policy or "ask")
+    if value == "reject":
+        return "never_install"
+    if value == "install":
+        return "always_install"
+    if value in {"always_install", "never_install"}:
+        return value
+    return "ask"
+
+
+def current_melonloader_policy(settings: dict) -> str:
+    melonloader = settings.setdefault("melonloader", {})
+    if "policy" in melonloader:
+        return melonloader_policy_value(melonloader.get("policy"))
+
+    for key in ("post_download_policy", "win11_launch_policy"):
+        value = melonloader_policy_value(melonloader.get(key))
+        if value != "ask":
+            return value
+    return "ask"
+
+
+def save_melonloader_policy(settings: dict, policy: object) -> str:
+    selected = melonloader_policy_value(policy)
+    melonloader = settings.setdefault("melonloader", {})
+    melonloader["policy"] = selected
+    melonloader.pop("post_download_policy", None)
+    melonloader.pop("win11_launch_policy", None)
+    save_settings(settings)
+    return selected
+
+
+def is_windows_11() -> bool:
+    if os.name != "nt" or not hasattr(sys, "getwindowsversion"):
+        return False
+    try:
+        return int(sys.getwindowsversion().build) >= 22000
+    except Exception:
+        return False
+
+
 def desktop_dir() -> Path:
     home = Path(os.environ.get("USERPROFILE") or Path.home())
     return home / "Desktop"
@@ -2234,6 +2412,15 @@ def download_build_workflow(settings: dict) -> None:
     clean_build_metadata(build_dir)
     apply_patch_payload(build_dir, bundle)
     remember_manifest(settings, bundle, build_dir)
+    downloaded_build = LocalBuild(
+        path=build_dir,
+        name=build_dir.name,
+        manifest_id=manifest_id,
+        launcher=find_launcher_name(build_dir),
+        modified_ts=time.time(),
+        preview=False,
+    )
+    prompt_melonloader_after_download(downloaded_build, settings)
 
     Noir.section("Done")
     Noir.ok(str(build_dir))
@@ -2283,7 +2470,105 @@ def open_path(path: Path) -> None:
         subprocess.Popen(["xdg-open", str(path)])
 
 
-def build_actions(build: LocalBuild) -> None:
+def install_melonloader_for_build(build: LocalBuild, settings: dict) -> bool:
+    try:
+        install_melonloader_to_build(build.path, settings)
+        return True
+    except (DownloadError, error.HTTPError, error.URLError, TimeoutError, OSError) as exc:
+        Noir.err(str(exc))
+        return False
+
+
+def prompt_melonloader_after_download(build: LocalBuild, settings: dict) -> None:
+    if not is_historical_melonloader_build(build):
+        return
+
+    policy = current_melonloader_policy(settings)
+    if policy == "always_install":
+        install_melonloader_for_build(build, settings)
+        return
+    if policy == "never_install":
+        return
+
+    Noir.section("MelonLoader")
+    Noir.warn("2016-2017 build downloaded.")
+    Noir.info("Install MelonLoader 0.5.7 x64 into this build?")
+    Noir.blue_info(MELONLOADER_PROMPT_INFO)
+    Noir.menu(
+        [
+            ("1", "Skip"),
+            ("2", "Install every time"),
+            ("3", "Reject"),
+            ("4", "Ask every time"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    choice = prompt_choice({"1", "2", "3", "4"})
+    if choice == "1":
+        return
+    elif choice == "2":
+        save_melonloader_policy(settings, "always_install")
+        install_melonloader_for_build(build, settings)
+    elif choice == "3":
+        save_melonloader_policy(settings, "never_install")
+        Noir.warn("MelonLoader rejected for future 2016-2017 builds.")
+    elif choice == "4":
+        save_melonloader_policy(settings, "ask")
+        Noir.ok("MelonLoader will ask every time.")
+
+
+def handle_windows11_historical_launch(build: LocalBuild, settings: dict) -> bool:
+    if not is_windows_11() or not is_historical_melonloader_build(build):
+        return True
+
+    policy = current_melonloader_policy(settings)
+    if policy == "always_install":
+        return install_melonloader_for_build(build, settings)
+    if policy == "never_install":
+        return True
+
+    Noir.section("Windows 11")
+    Noir.warn("Windows 11 detected on a 2016-2017 build.")
+    Noir.info("MelonLoader 0.5.7 x64 can be installed before launch.")
+    Noir.blue_info(MELONLOADER_PROMPT_INFO)
+    Noir.menu(
+        [
+            ("1", "Skip"),
+            ("2", "Install every time"),
+            ("3", "Reject"),
+            ("4", "Ask every time"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    choice = prompt_choice({"1", "2", "3", "4"})
+    if choice == "1":
+        return True
+    if choice == "2":
+        save_melonloader_policy(settings, "always_install")
+        return install_melonloader_for_build(build, settings)
+    if choice == "3":
+        save_melonloader_policy(settings, "never_install")
+        Noir.warn("MelonLoader rejected for future 2016-2017 builds.")
+        return True
+    save_melonloader_policy(settings, "ask")
+    Noir.ok("MelonLoader will ask every time.")
+    return True
+
+
+def launch_build(build: LocalBuild, settings: dict) -> None:
+    exe_path = find_launch_executable(build.path)
+    if exe_path is None:
+        Noir.warn("No launchable .exe was found.")
+        return
+    if not handle_windows11_historical_launch(build, settings):
+        Noir.warn("Launch canceled.")
+        return
+    open_path(exe_path)
+    Noir.ok(f"Launched: {exe_path.name}")
+
+
+def build_actions(build: LocalBuild, settings: dict) -> None:
+    historical = is_historical_melonloader_build(build)
     while True:
         Noir.clear()
         Noir.header(1, build.preview, build.path.parent)
@@ -2291,15 +2576,18 @@ def build_actions(build: LocalBuild) -> None:
         Noir.kv("Path", str(build.path))
         Noir.kv("Manifest", build.manifest_id)
         Noir.kv("Launcher", build.launcher)
-        Noir.menu(
-            [
-                ("1", "Open folder"),
-                ("2", "Launch"),
-                ("0", "Back"),
-            ]
-        )
+        rows = [
+            ("1", "Open folder"),
+            ("2", "Launch"),
+        ]
+        choices = {"1", "2", "0"}
+        if historical:
+            rows.append(("3", f"Install MelonLoader {MELONLOADER_RELEASE_TAG}"))
+            choices.add("3")
+        rows.append(("0", "Back"))
+        Noir.menu(rows)
         Noir.line(color=Noir.DARK)
-        choice = prompt_choice({"1", "2", "0"})
+        choice = prompt_choice(choices)
         if choice == "0":
             return
         if choice == "1":
@@ -2307,12 +2595,10 @@ def build_actions(build: LocalBuild) -> None:
             Noir.ok("Build folder opened.")
             press_enter()
         elif choice == "2":
-            exe_path = find_launch_executable(build.path)
-            if exe_path is None:
-                Noir.warn("No launchable .exe was found.")
-            else:
-                open_path(exe_path)
-                Noir.ok(f"Launched: {exe_path.name}")
+            launch_build(build, settings)
+            press_enter()
+        elif choice == "3":
+            install_melonloader_for_build(build, settings)
             press_enter()
 
 
@@ -2328,7 +2614,7 @@ def browse_local_builds(settings: dict) -> None:
         build = choose_build(builds)
         if build is None:
             return
-        build_actions(build)
+        build_actions(build, settings)
 
 
 def create_shortcut_from_menu(settings: dict) -> None:
@@ -2345,6 +2631,33 @@ def create_shortcut_from_menu(settings: dict) -> None:
         Noir.err(str(exc))
     else:
         Noir.ok(f"Desktop shortcut created: {shortcut}")
+    press_enter()
+
+
+def melonloader_settings(settings: dict) -> None:
+    Noir.clear()
+    Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
+    Noir.section("MelonLoader")
+    Noir.kv("Current", melonloader_policy_label(current_melonloader_policy(settings)))
+    Noir.menu(
+        [
+            ("1", "Skip"),
+            ("2", "Install every time"),
+            ("3", "Reject"),
+            ("4", "Ask every time"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    choice = prompt_choice({"1", "2", "3", "4"})
+    if choice == "1":
+        return
+    selected = {
+        "2": "always_install",
+        "3": "never_install",
+        "4": "ask",
+    }[choice]
+    save_melonloader_policy(settings, selected)
+    Noir.ok(f"MelonLoader: {melonloader_policy_label(selected)}")
     press_enter()
 
 
@@ -2419,12 +2732,13 @@ def preview_settings(settings: dict) -> None:
                 ("2", "Open storage"),
                 ("3", "Shortcut"),
                 ("4", "Status"),
-                ("5", "Raw settings"),
+                ("5", "MelonLoader"),
+                ("6", "Raw settings"),
                 ("0", "Back"),
             ]
         )
         Noir.line(color=Noir.DARK)
-        choice = prompt_choice({"1", "2", "3", "4", "5", "0"})
+        choice = prompt_choice({"1", "2", "3", "4", "5", "6", "0"})
         if choice == "0":
             return
         if choice == "1":
@@ -2436,6 +2750,8 @@ def preview_settings(settings: dict) -> None:
         elif choice == "4":
             system_check(settings)
         elif choice == "5":
+            melonloader_settings(settings)
+        elif choice == "6":
             print(json.dumps(settings, indent=2))
             press_enter()
 
