@@ -3,8 +3,8 @@
 Confirmed from decompiled client build 8224493981844824938:
 - Startup now probes GET api/versioncheck/v1, downloads GET api/config/v2,
   then creates/loads the local profile through POST api/players/v1/getorcreate.
-- Local-player endpoints accept X-Rec-Room-Profile when present, then fall back
-  to the newest stored legacy profile for clients that omit it.
+- Local-player endpoints accept X-Rec-Room-Profile when present. The localhost
+  bridge can inject that header after login for clients that omit it.
 - Avatar, image upload, settings, relationships, messages, and presence moved
   to v2/v3 routes while keeping the same underlying data shapes.
 - Push notification WebSocket moved to api/notification/v2 and expects a JSON
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -55,35 +56,7 @@ def _clean_route_path(route_path: str) -> str:
 
 
 def _fallback_profile_id(context) -> int:
-    versions = [API_VERSION]
-    state_version = getattr(_PLATFORM_BASE, "STATE_API_VERSION", "")
-    if state_version and state_version not in versions:
-        versions.append(state_version)
-
-    with context.db.connection() as conn:
-        for version in versions:
-            row = conn.execute(
-                """
-                SELECT CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) AS legacy_id
-                FROM player_version_state AS pvs
-                JOIN players AS p ON p.player_id = pvs.player_id
-                WHERE pvs.api_version = ?
-                  AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) > 0
-                  AND COALESCE(p.is_banned, 0) = 0
-                ORDER BY pvs.updated_at DESC,
-                         CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) DESC
-                LIMIT 1
-                """,
-                (version,),
-            ).fetchone()
-            if row is not None:
-                try:
-                    legacy_id = int(row["legacy_id"] or 0)
-                except Exception:
-                    legacy_id = 0
-                if legacy_id > 0:
-                    return legacy_id
-    return 1
+    return 0
 
 
 def _local_profile_id(request: Request | WebSocket, context=None) -> int:
@@ -117,6 +90,83 @@ def _coerce_json_object(payload: Any) -> dict[str, Any]:
     if isinstance(payload, str):
         return _json_object_from_text(payload)
     return {}
+
+
+def _notification_param(payload: dict[str, Any]) -> Any:
+    for name in ("param", "Param", "PARAM", "params", "Params", "body", "Body", "data", "Data"):
+        if name in payload:
+            return payload[name]
+    return None
+
+
+def _coerce_subscription_ids(payload: Any) -> list[int]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return []
+    if isinstance(payload, dict):
+        single_id = payload.get("PlayerId") or payload.get("playerId") or payload.get("Id") or payload.get("id")
+        payload = (
+            payload.get("PlayerIds")
+            or payload.get("playerIds")
+            or payload.get("PlayerIDs")
+            or payload.get("Ids")
+            or payload.get("ids")
+            or ([single_id] if single_id is not None else [])
+        )
+    if not isinstance(payload, list):
+        return []
+
+    player_ids: list[int] = []
+    for value in payload:
+        try:
+            player_id = int(value)
+        except Exception:
+            continue
+        if player_id > 0:
+            player_ids.append(player_id)
+    return player_ids
+
+
+def _subscription_key(player_id: int) -> str:
+    owner = player_id if player_id > 0 else "anonymous"
+    return _BASE._setting_key("player_subscriptions", owner)
+
+
+def _stored_subscription_ids(context, player_id: int) -> set[int]:
+    subscribed: set[int] = set()
+    for value in _BASE._get_json_setting(context, _subscription_key(player_id), []):
+        try:
+            stored_id = int(value)
+        except Exception:
+            continue
+        if stored_id > 0:
+            subscribed.add(stored_id)
+    return subscribed
+
+
+def _handle_player_subscription_notification(api: str, param: Any, player_id: int, context) -> bool:
+    match = re.fullmatch(r"(?:api/)?playersubscriptions/v1(?:/(init|add|remove))?/?", api, flags=re.IGNORECASE)
+    if not match:
+        return False
+
+    raw_action = match.group(1)
+    if raw_action is None and isinstance(param, dict):
+        raw_action = str(param.get("Action") or param.get("action") or param.get("Operation") or param.get("operation") or "")
+    action = str(raw_action or "").strip("/").casefold()
+    if action not in {"init", "add", "remove"}:
+        return False
+    requested_ids = set(_coerce_subscription_ids(param))
+    subscribed = _stored_subscription_ids(context, player_id)
+    if action == "init":
+        subscribed = requested_ids
+    elif action == "add":
+        subscribed.update(requested_ids)
+    elif action == "remove":
+        subscribed.difference_update(requested_ids)
+    _BASE._set_json_setting(context, _subscription_key(player_id), sorted(subscribed))
+    return True
 
 
 def _notification_payload(event_id: int, message: dict[str, Any]) -> str:
@@ -220,9 +270,13 @@ async def _publish_presence(context, player_id: int, payload: dict[str, Any], *,
 async def _handle_notification_client_message(raw_message: str, player_id: int, context) -> None:
     payload = _json_object_from_text(raw_message)
     api = str(payload.get("api") or payload.get("Api") or payload.get("API") or "").strip("/")
+    param = _notification_param(payload)
     if api.casefold() != "presence/v1":
+        if param is None:
+            param = payload
+        _handle_player_subscription_notification(api, param, player_id, context)
         return
-    await _publish_presence(context, player_id, _coerce_json_object(payload.get("param") or payload.get("Param")))
+    await _publish_presence(context, player_id, _coerce_json_object(param))
 
 
 async def _notify_relationship_changed(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int, context) -> None:

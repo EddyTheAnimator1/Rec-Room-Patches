@@ -106,9 +106,9 @@ async def _handle_objectives_v1(request: Request, context) -> Response:
     additional_xp = sum(_objective_additional_xp(item) for item in objectives)
     completed_count = max(1, len(objectives))
     delta_xp = (_BASE.DEFAULT_XP_REWARD * completed_count) + additional_xp
-    current_xp_total = max(0, int(player.get("canonical_xp") or 0)) + delta_xp
-    current_level = max(1, current_xp_total // _BASE.XP_PER_LEVEL + 1)
-    current_xp = current_xp_total % _BASE.XP_PER_LEVEL
+    current_level, current_xp = _BASE._level_progress_from_total_xp(
+        _BASE._total_xp_from_level_progress(player) + delta_xp
+    )
     with context.db.transaction() as conn:
         conn.execute(
             """

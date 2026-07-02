@@ -217,6 +217,19 @@ def _bool_field(payload: dict[str, Any], *names: str, default: bool = False) -> 
     return default
 
 
+def _level_progress_from_total_xp(total_xp: int, xp_per_level: int = XP_PER_LEVEL) -> tuple[int, int]:
+    total_xp = max(0, int(total_xp or 0))
+    xp_per_level = max(1, int(xp_per_level or XP_PER_LEVEL))
+    return max(1, total_xp // xp_per_level + 1), total_xp % xp_per_level
+
+
+def _total_xp_from_level_progress(player: dict[str, Any], xp_per_level: int = XP_PER_LEVEL) -> int:
+    level = max(1, _int_field(player, "canonical_level", default=1))
+    xp = max(0, _int_field(player, "canonical_xp", default=0))
+    xp_per_level = max(1, int(xp_per_level or XP_PER_LEVEL))
+    return ((level - 1) * xp_per_level) + xp
+
+
 def _parse_multipart_fields(body: bytes, content_type: str) -> dict[str, str]:
     match = re.search(r"boundary=([^;]+)", content_type, flags=re.IGNORECASE)
     if not match:
@@ -547,9 +560,7 @@ async def _handle_complete_objective(request: Request, route_path: str, context)
     payload = await _parse_client_payload(request)
     additional_xp = max(0, _int_field(payload, "additionalXp", "AdditionalXp", default=0))
     delta_xp = DEFAULT_XP_REWARD + additional_xp
-    current_xp_total = max(0, int(player.get("canonical_xp") or 0)) + delta_xp
-    current_level = max(1, current_xp_total // XP_PER_LEVEL + 1)
-    current_xp = current_xp_total % XP_PER_LEVEL
+    current_level, current_xp = _level_progress_from_total_xp(_total_xp_from_level_progress(player) + delta_xp)
     with context.db.transaction() as conn:
         conn.execute(
             """

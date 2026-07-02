@@ -156,12 +156,16 @@ async def _publish_presence_to_peers(context, player_id: int, payload: dict, *, 
 async def _handle_notification_client_message(raw_message: str, player_id: int, context) -> None:
     payload = _NOTIFICATION_BASE._json_object_from_text(raw_message)
     api = str(payload.get("api") or payload.get("Api") or payload.get("API") or "").strip("/")
+    param = _NOTIFICATION_BASE._notification_param(payload)
     if api.casefold() != "presence/v1":
+        if param is None:
+            param = payload
+        _NOTIFICATION_BASE._handle_player_subscription_notification(api, param, player_id, context)
         return
     await _publish_presence_to_peers(
         context,
         player_id,
-        _NOTIFICATION_BASE._coerce_json_object(payload.get("param") or payload.get("Param")),
+        _NOTIFICATION_BASE._coerce_json_object(param),
     )
 
 
