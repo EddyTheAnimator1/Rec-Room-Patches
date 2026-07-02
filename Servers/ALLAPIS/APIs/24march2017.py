@@ -127,6 +127,33 @@ async def _close_websocket(websocket, code: int, reason: str = "") -> None:
         pass
 
 
+def _registered_peer_ids(player_id: int) -> list[int]:
+    # Keep 24 March startup quiet for the connecting client; peers still need presence updates.
+    return [registered_id for registered_id in _NOTIFICATION_BASE._registered_player_ids() if registered_id != player_id]
+
+
+async def _publish_presence_to_peers(context, player_id: int, payload: dict, *, default_online: bool = True) -> None:
+    presence = _NOTIFICATION_BASE._presence_payload_from_client(context, player_id, payload, default_online=default_online)
+    _NOTIFICATION_BASE._save_presence(context, player_id, presence)
+    await _NOTIFICATION_BASE._broadcast_notification(
+        _registered_peer_ids(player_id),
+        _NOTIFICATION_BASE._SUBSCRIPTION_UPDATE_PRESENCE,
+        presence,
+    )
+
+
+async def _handle_notification_client_message(raw_message: str, player_id: int, context) -> None:
+    payload = _NOTIFICATION_BASE._json_object_from_text(raw_message)
+    api = str(payload.get("api") or payload.get("Api") or payload.get("API") or "").strip("/")
+    if api.casefold() != "presence/v1":
+        return
+    await _publish_presence_to_peers(
+        context,
+        player_id,
+        _NOTIFICATION_BASE._coerce_json_object(payload.get("param") or payload.get("Param")),
+    )
+
+
 async def handle_websocket(*, websocket, route_path: str, context) -> None:
     path = _clean_route_path(route_path).casefold()
     if path not in {"api/notification/v2", "api/notification/v2/"}:
@@ -145,9 +172,9 @@ async def handle_websocket(*, websocket, route_path: str, context) -> None:
         await _NOTIFICATION_BASE._register_notification_client(websocket, player_id)
         session_id = int(time.time() * 1000)
         await websocket.send_text(json.dumps({"SessionId": session_id}))
-        await _NOTIFICATION_BASE._publish_presence(context, player_id, handshake)
+        await _publish_presence_to_peers(context, player_id, handshake)
         while True:
-            await _NOTIFICATION_BASE._handle_notification_client_message(
+            await _handle_notification_client_message(
                 await websocket.receive_text(),
                 player_id,
                 context,
