@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import time
 from pathlib import Path
 
@@ -20,17 +21,12 @@ from fastapi.responses import JSONResponse
 API_VERSION = "24march2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Fri, 24 Mar 2017 00:50:23 GMT"
 DEFAULT_SAFE_AVATAR = {
-    "OutfitSelections": (
-        "06306723-ca20-4aa6-b7b3-917113f41ac3,,,,0;"
-        "8d10cc78-6b00-45f3-affb-205e9cc5b03f,,,,0;"
-        "21caa68e-c3fa-474c-af5e-af1e742b7a60,,,,1;"
-        "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,,2;"
-        "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,,3;"
-        "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,dee70c38-7a99-4c2b-9181-665f1bf75aca,018a5c07-e956-457d-a540-a5e2cd68da09,,0"
-    ),
+    "OutfitSelections": "",
     "HairColor": "5ee30295-b05f-4e96-819e-5ac865b2c63d",
     "SkinColor": "2d398478-37c4-4c4a-a471-fbcbe3e5b1f5",
 }
+AVATAR_BODY_PARTS = {"0", "1", "2", "3", "4"}
+GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
 def _retarget_module(module) -> None:
@@ -59,8 +55,6 @@ def _load_shared_adapter():
 
 _SHARED = _load_shared_adapter()
 
-handle_http = _SHARED.handle_http
-
 
 def _find_shared_module(name: str):
     module = _SHARED
@@ -75,10 +69,46 @@ _NOTIFICATION_BASE = _find_shared_module("_json_object_from_text")
 _clean_route_path = _SHARED._clean_route_path
 
 
-def _is_empty_avatar(payload) -> bool:
+def _is_guid(value: str) -> bool:
+    return bool(GUID_RE.fullmatch(value.strip()))
+
+
+def _clean_guid(value: object, default: str = "") -> str:
+    text = str(value or "").strip()
+    return text if _is_guid(text) else default
+
+
+def _normalize_outfit_selections(value: object) -> str:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_selection in str(value or "").split(";"):
+        parts = [part.strip() for part in raw_selection.split(",")]
+        if len(parts) != 5:
+            continue
+        outfit, swatch, mask, decal, body_part = parts
+        if not _is_guid(outfit) or body_part not in AVATAR_BODY_PARTS:
+            continue
+        if swatch and not _is_guid(swatch):
+            continue
+        if mask and not _is_guid(mask):
+            continue
+        if decal and not _is_guid(decal):
+            continue
+        selection = ",".join([outfit, swatch, mask, decal, body_part])
+        if selection not in seen:
+            normalized.append(selection)
+            seen.add(selection)
+    return ";".join(normalized)
+
+
+def _normalize_avatar_payload(payload) -> dict[str, str]:
     if not isinstance(payload, dict):
-        return False
-    return not any(str(payload.get(key) or "").strip() for key in ("OutfitSelections", "HairColor", "SkinColor"))
+        payload = {}
+    return {
+        "OutfitSelections": _normalize_outfit_selections(payload.get("OutfitSelections")),
+        "HairColor": _clean_guid(payload.get("HairColor"), DEFAULT_SAFE_AVATAR["HairColor"]),
+        "SkinColor": _clean_guid(payload.get("SkinColor"), DEFAULT_SAFE_AVATAR["SkinColor"]),
+    }
 
 
 async def handle_http(*, request, route_path: str, context):
@@ -86,8 +116,7 @@ async def handle_http(*, request, route_path: str, context):
     path = _clean_route_path(route_path).casefold()
     if request.method.upper() == "GET" and path in {"api/avatar/v2", "api/avatar/v2/"}:
         payload = _NOTIFICATION_BASE._BASE._load_response_json(response)
-        if _is_empty_avatar(payload):
-            return JSONResponse(dict(DEFAULT_SAFE_AVATAR), status_code=getattr(response, "status_code", 200))
+        return JSONResponse(_normalize_avatar_payload(payload), status_code=getattr(response, "status_code", 200))
     return response
 
 
