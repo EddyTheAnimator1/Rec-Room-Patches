@@ -21,9 +21,17 @@ from fastapi.responses import JSONResponse
 API_VERSION = "24march2017"
 DEFAULT_PROFILE_IMAGE_LAST_MODIFIED = "Fri, 24 Mar 2017 00:50:23 GMT"
 DEFAULT_SAFE_AVATAR = {
-    "OutfitSelections": "",
-    "HairColor": "5ee30295-b05f-4e96-819e-5ac865b2c63d",
-    "SkinColor": "2d398478-37c4-4c4a-a471-fbcbe3e5b1f5",
+    "OutfitSelections": (
+        "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,dee70c38-7a99-4c2b-9181-665f1bf75aca,"
+        "0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,,2;"
+        "b33dbeee-5bdd-443d-aa6a-761248054e08,,,,1;"
+        "6d48c545-22bb-46c1-a29d-0a38af387143,,,,2;"
+        "6d48c545-22bb-46c1-a29d-0a38af387143,,,,3;"
+        "d0a9262f-5504-46a7-bb10-7507503db58e,,,,1;"
+        "193a3bf9-abc0-4d78-8d63-92046908b1c5,,,,0"
+    ),
+    "HairColor": "f9a50d3d-a6e0-42a4-a4e3-42dc89f84a2e",
+    "SkinColor": "85343b16-d58a-4091-96d8-083a81fb03ae",
 }
 AVATAR_BODY_PARTS = {"0", "1", "2", "3", "4"}
 GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
@@ -104,8 +112,11 @@ def _normalize_outfit_selections(value: object) -> str:
 def _normalize_avatar_payload(payload) -> dict[str, str]:
     if not isinstance(payload, dict):
         payload = {}
+    outfit_selections = _normalize_outfit_selections(payload.get("OutfitSelections"))
+    if not outfit_selections:
+        outfit_selections = DEFAULT_SAFE_AVATAR["OutfitSelections"]
     return {
-        "OutfitSelections": _normalize_outfit_selections(payload.get("OutfitSelections")),
+        "OutfitSelections": outfit_selections,
         "HairColor": _clean_guid(payload.get("HairColor"), DEFAULT_SAFE_AVATAR["HairColor"]),
         "SkinColor": _clean_guid(payload.get("SkinColor"), DEFAULT_SAFE_AVATAR["SkinColor"]),
     }
