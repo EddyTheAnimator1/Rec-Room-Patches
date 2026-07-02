@@ -57,21 +57,22 @@ def _find_attr(module, attr: str):
 _SHARED = _load_shared_adapter()
 _BASE = _find_attr(_SHARED, "_BASE")
 _PLATFORM_BASE = _find_attr(_BASE, "_PLATFORM_BASE")
+_fallback_profile_id = _find_attr(_SHARED, "_fallback_profile_id")
 
 
 def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
 
 
-def _local_profile_id(request: Request) -> int:
+def _local_profile_id(request: Request, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
     except Exception:
         player_id = 0
-    if player_id <= 0:
-        raise HTTPException(status_code=400, detail="X-Rec-Room-Profile is required.")
-    return player_id
+    if player_id > 0:
+        return player_id
+    return _fallback_profile_id(context) if context is not None else 1
 
 
 def _objective_additional_xp(item: Any) -> int:
@@ -96,7 +97,7 @@ async def _parse_objectives_payload(request: Request) -> list[dict[str, Any]]:
 
 
 async def _handle_objectives_v1(request: Request, context) -> Response:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found.")

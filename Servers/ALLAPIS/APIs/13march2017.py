@@ -55,7 +55,7 @@ _PLATFORM_BASE = _SHARED._PLATFORM_BASE
 
 
 def _ensure_local_profile(request: Request, context) -> int:
-    player_id = _SHARED._local_profile_id(request)
+    player_id = _SHARED._local_profile_id(request, context)
     player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found.")

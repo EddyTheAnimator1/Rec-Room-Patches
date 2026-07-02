@@ -5,8 +5,8 @@ Confirmed from decompiled client build 1355637356417786081:
 - Startup probes api/versioncheck/v1, creates/loads the local profile through
   api/players/v1/getorcreate, and downloads api/config/v2.
 - This adapter also accepts the static Basic auth header used by this client.
-- Local-player routes use X-Rec-Room-Profile, the local bearer token, or the
-  7 January static Basic auth fallback.
+- Local-player routes accept X-Rec-Room-Profile, the local bearer token, the
+  7 January static Basic auth fallback, or the newest stored legacy profile.
 - Game session lookups use api/gamesessions/v1/ and api/gamesessions/v1/<Id>.
 - Push notifications use api/notification/v2.
 """
@@ -87,7 +87,7 @@ def _player_id_from_authorization(request: Request | WebSocket) -> int:
     return 0
 
 
-def _local_profile_id(request: Request | WebSocket) -> int:
+def _local_profile_id(request: Request | WebSocket, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
@@ -100,11 +100,11 @@ def _local_profile_id(request: Request | WebSocket) -> int:
     if player_id > 0:
         return player_id
 
-    raise HTTPException(status_code=400, detail="X-Rec-Room-Profile or 7 January auth is required.")
+    return _SHARED._fallback_profile_id(context) if context is not None else DEFAULT_BASIC_AUTH_PROFILE_ID
 
 
 def _ensure_local_profile(request: Request | WebSocket, context) -> int:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     _BASE._ensure_existing_profile(context, player_id)
     return player_id
 
@@ -125,7 +125,7 @@ def _profile_response(player: dict[str, Any], *, status_code: int = 200) -> Resp
 
 
 async def _handle_local_profile(request: Request, context) -> Response:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found.")

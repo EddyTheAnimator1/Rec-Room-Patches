@@ -61,6 +61,7 @@ def _find_attr(module, attr: str):
 _SHARED = _load_shared_adapter()
 _BASE = _find_attr(_SHARED, "_BASE")
 _PLATFORM_BASE = _find_attr(_BASE, "_PLATFORM_BASE")
+_fallback_profile_id = _find_attr(_SHARED, "_fallback_profile_id")
 PROFILE_REQUIRED_KEYS = {"Id", "Username", "DisplayName", "XP", "Level", "Reputation", "Verified"}
 PROFILE_DEFAULTS = {
     "Developer": True,
@@ -142,7 +143,7 @@ async def _handle_config_v2(request: Request, route_path: str, context) -> Respo
     return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
 
 
-def _local_profile_id(request: Request) -> int:
+def _local_profile_id(request: Request, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
@@ -156,11 +157,11 @@ def _local_profile_id(request: Request) -> int:
     if match:
         return int(match.group(1))
 
-    raise HTTPException(status_code=400, detail="X-Rec-Room-Profile is required.")
+    return _fallback_profile_id(context) if context is not None else 1
 
 
 async def _handle_local_profile(request: Request, context) -> Response:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found.")

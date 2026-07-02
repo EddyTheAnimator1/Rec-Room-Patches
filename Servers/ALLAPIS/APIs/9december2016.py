@@ -3,7 +3,8 @@
 Confirmed from decompiled client build 8224493981844824938:
 - Startup now probes GET api/versioncheck/v1, downloads GET api/config/v2,
   then creates/loads the local profile through POST api/players/v1/getorcreate.
-- Local-player endpoints now infer the player from X-Rec-Room-Profile.
+- Local-player endpoints accept X-Rec-Room-Profile when present, then fall back
+  to the newest stored legacy profile for clients that omit it.
 - Avatar, image upload, settings, relationships, messages, and presence moved
   to v2/v3 routes while keeping the same underlying data shapes.
 - Push notification WebSocket moved to api/notification/v2 and expects a JSON
@@ -53,19 +54,51 @@ def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
 
 
-def _local_profile_id(request: Request) -> int:
+def _fallback_profile_id(context) -> int:
+    versions = [API_VERSION]
+    state_version = getattr(_PLATFORM_BASE, "STATE_API_VERSION", "")
+    if state_version and state_version not in versions:
+        versions.append(state_version)
+
+    with context.db.connection() as conn:
+        for version in versions:
+            row = conn.execute(
+                """
+                SELECT CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) AS legacy_id
+                FROM player_version_state AS pvs
+                JOIN players AS p ON p.player_id = pvs.player_id
+                WHERE pvs.api_version = ?
+                  AND CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) > 0
+                  AND COALESCE(p.is_banned, 0) = 0
+                ORDER BY pvs.updated_at DESC,
+                         CAST(json_extract(pvs.state_json, '$.legacy_player_id') AS INTEGER) DESC
+                LIMIT 1
+                """,
+                (version,),
+            ).fetchone()
+            if row is not None:
+                try:
+                    legacy_id = int(row["legacy_id"] or 0)
+                except Exception:
+                    legacy_id = 0
+                if legacy_id > 0:
+                    return legacy_id
+    return 1
+
+
+def _local_profile_id(request: Request | WebSocket, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
     except Exception:
         player_id = 0
-    if player_id <= 0:
-        raise HTTPException(status_code=400, detail="X-Rec-Room-Profile is required.")
-    return player_id
+    if player_id > 0:
+        return player_id
+    return _fallback_profile_id(context) if context is not None else 1
 
 
-def _ensure_local_profile(request: Request, context) -> int:
-    player_id = _local_profile_id(request)
+def _ensure_local_profile(request: Request | WebSocket, context) -> int:
+    player_id = _local_profile_id(request, context)
     _BASE._ensure_existing_profile(context, player_id)
     return player_id
 

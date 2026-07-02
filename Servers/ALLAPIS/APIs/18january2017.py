@@ -75,19 +75,19 @@ async def _handle_shared_http(request: Request, route_path: str, context) -> Res
     return JSONResponse(payload, status_code=getattr(response, "status_code", 200))
 
 
-def _local_profile_id(request: Request) -> int:
+def _local_profile_id(request: Request, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
     except Exception:
         player_id = 0
-    if player_id <= 0:
-        raise HTTPException(status_code=400, detail="X-Rec-Room-Profile is required.")
-    return player_id
+    if player_id > 0:
+        return player_id
+    return _SHARED._fallback_profile_id(context) if context is not None else 1
 
 
 async def _handle_reputation_heal(request: Request, context) -> Response:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     player = _PLATFORM_BASE._find_player_by_legacy_id(context, player_id)
     if player is None:
         raise HTTPException(status_code=404, detail="Player not found.")
@@ -112,7 +112,7 @@ async def _handle_reputation_heal(request: Request, context) -> Response:
 
 
 async def _handle_player_report(request: Request, context) -> Response:
-    reporter_id = _local_profile_id(request)
+    reporter_id = _local_profile_id(request, context)
     reporter = _PLATFORM_BASE._find_player_by_legacy_id(context, reporter_id)
     if reporter is None:
         raise HTTPException(status_code=404, detail="Reporter not found.")

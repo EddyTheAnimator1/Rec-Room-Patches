@@ -4,7 +4,8 @@ Confirmed from decompiled client build 8356502470941083689:
 - The HTTP/WebSocket route surface matches the 9 December 2016 client family.
 - Startup probes api/versioncheck/v1, downloads api/config/v2, then calls
   api/players/v1/getorcreate.
-- Local-player routes use X-Rec-Room-Profile and the v2/v3 endpoint family.
+- Local-player routes accept X-Rec-Room-Profile when present and otherwise
+  fall back to the newest stored legacy profile.
 - Push notifications use api/notification/v2.
 """
 

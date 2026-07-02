@@ -58,18 +58,22 @@ def _find_attr(module, attr: str):
 
 _SHARED = _load_shared_adapter()
 _BASE = _find_attr(_SHARED, "_BASE")
+_fallback_profile_id = _find_attr(_SHARED, "_fallback_profile_id")
 
 
 def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
 
 
-def _local_profile_id(request: Request) -> int:
+def _local_profile_id(request: Request, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
-        return max(0, int(raw_id or 0))
+        player_id = int(raw_id or 0)
     except Exception:
-        return 0
+        player_id = 0
+    if player_id > 0:
+        return player_id
+    return _fallback_profile_id(context) if context is not None else 1
 
 
 def _subscription_key(player_id: int) -> str:
@@ -96,7 +100,7 @@ async def _handle_leaderboard(request: Request, context) -> Response:
     payload = await _BASE._parse_client_payload(request)
     limit = _BASE._int_field(payload, "Limit", "limit", default=0)
     limit = max(0, min(limit, 100))
-    local_id = _local_profile_id(request)
+    local_id = _local_profile_id(request, context)
     response = _empty_leaderboard_payload()
     if local_id > 0 and limit > 0:
         row = _leaderboard_row(local_id, 0, 1)
@@ -129,7 +133,7 @@ async def _parse_subscription_ids(request: Request) -> list[int]:
 
 
 async def _handle_player_subscriptions(request: Request, action: str, context) -> Response:
-    player_id = _local_profile_id(request)
+    player_id = _local_profile_id(request, context)
     requested_ids = await _parse_subscription_ids(request)
     key = _subscription_key(player_id)
     subscribed: set[int] = set()

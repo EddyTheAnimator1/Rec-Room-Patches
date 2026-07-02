@@ -74,6 +74,18 @@ _BASE = _SHARED._BASE
 _PLATFORM_BASE = _SHARED._PLATFORM_BASE
 
 
+def _find_attr(module, attr: str):
+    current = module
+    while current is not None:
+        if hasattr(current, attr):
+            return getattr(current, attr)
+        current = getattr(current, "_SHARED", None)
+    raise RuntimeError(f"Shared adapter does not expose {attr}.")
+
+
+_fallback_profile_id = _find_attr(_SHARED, "_fallback_profile_id")
+
+
 def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
 
@@ -213,7 +225,7 @@ def _add_config_fields(payload: Any, request: Request, context) -> bool:
     return changed
 
 
-def _local_profile_id(request: Request) -> int:
+def _local_profile_id(request, context=None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
@@ -226,7 +238,7 @@ def _local_profile_id(request: Request) -> int:
     match = re.fullmatch(rf"Bearer\s+local-{re.escape(API_VERSION)}-(\d+)", auth.strip(), flags=re.IGNORECASE)
     if match:
         return int(match.group(1))
-    return 0
+    return _fallback_profile_id(context) if context is not None else 1
 
 
 def _level_for_total_xp(total_xp: int) -> tuple[int, int]:
@@ -289,9 +301,7 @@ async def _apply_objective_xp(request: Request, context, player_id: int, objecti
 
 
 async def _handle_objectives_v1(request: Request, context) -> Response:
-    player_id = _local_profile_id(request)
-    if player_id <= 0:
-        return JSONResponse({"Success": False, "Message": "X-Rec-Room-Profile is required."}, status_code=400)
+    player_id = _local_profile_id(request, context)
     objectives = await _parse_objectives_payload(request)
     return await _apply_objective_xp(request, context, player_id, objectives)
 

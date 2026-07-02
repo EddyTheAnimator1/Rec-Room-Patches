@@ -175,9 +175,9 @@ async def handle_websocket(*, websocket, route_path: str, context) -> None:
     player_id = 0
     try:
         handshake = _NOTIFICATION_BASE._json_object_from_text(await websocket.receive_text())
-        player_id = _SHARED._local_profile_id(websocket)
+        player_id = _SHARED._local_profile_id(websocket, context)
         if player_id <= 0:
-            raise HTTPException(status_code=400, detail="X-Rec-Room-Profile is required.")
+            raise HTTPException(status_code=400, detail="Local profile is required.")
 
         _NOTIFICATION_BASE._BASE._ensure_existing_profile(context, player_id)
         await _NOTIFICATION_BASE._register_notification_client(websocket, player_id)

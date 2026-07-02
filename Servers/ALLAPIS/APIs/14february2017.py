@@ -9,8 +9,8 @@ Confirmed from decompiled client build 7452447116407047837:
   api/avatar/v3/items, api/avatar/v2/gifts, api/settings/v2,
   api/presence/v2, api/messages/v2, api/images/v2/profile,
   api/players/v2/objective, and api/relationships/v2.
-- Local-player endpoints correctly return 404 until the client has created or
-  loaded a profile and sends a real X-Rec-Room-Profile id.
+- Local-player endpoints accept X-Rec-Room-Profile when present and otherwise
+  fall back to the newest stored legacy profile for this client family.
 """
 
 from __future__ import annotations
