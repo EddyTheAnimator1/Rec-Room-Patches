@@ -87,12 +87,20 @@ def _player_id_from_authorization(request: Request | WebSocket) -> int:
     return 0
 
 
-def _local_profile_id(request: Request | WebSocket, context=None) -> int:
+def _local_profile_id(request: Request | WebSocket, context=None, handshake: dict[str, Any] | None = None) -> int:
     raw_id = request.headers.get("X-Rec-Room-Profile") or request.headers.get("x-rec-room-profile")
     try:
         player_id = int(raw_id or 0)
     except Exception:
         player_id = 0
+    if player_id > 0:
+        return player_id
+
+    player_id = _player_id_from_authorization(request)
+    if player_id > 0 and not _is_static_basic_auth(request):
+        return player_id
+
+    player_id = _SHARED._player_id_from_handshake(handshake)
     if player_id > 0:
         return player_id
 
@@ -103,8 +111,8 @@ def _local_profile_id(request: Request | WebSocket, context=None) -> int:
     return _SHARED._fallback_profile_id(context) if context is not None else DEFAULT_BASIC_AUTH_PROFILE_ID
 
 
-def _ensure_local_profile(request: Request | WebSocket, context) -> int:
-    player_id = _local_profile_id(request, context)
+def _ensure_local_profile(request: Request | WebSocket, context, handshake: dict[str, Any] | None = None) -> int:
+    player_id = _local_profile_id(request, context, handshake)
     _BASE._ensure_existing_profile(context, player_id)
     return player_id
 
@@ -249,7 +257,7 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
     await websocket.accept()
     try:
         handshake = _SHARED._json_object_from_text(await websocket.receive_text())
-        player_id = _ensure_local_profile(websocket, context)
+        player_id = _ensure_local_profile(websocket, context, handshake)
         await _SHARED._register_notification_client(websocket, player_id)
         session_id = int(time.time() * 1000)
         await websocket.send_text(json.dumps({"SessionId": session_id}))
