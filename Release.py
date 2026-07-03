@@ -2738,8 +2738,18 @@ def stop_local_bridge(*, announce: bool = False) -> None:
 
 
 def server_policy_value(policy: object) -> str:
-    value = str(policy or "ask").strip().lower()
-    if value in {"always", "everytime", "launch_everytime", "launch_every_time"}:
+    value = re.sub(r"[^a-z0-9]+", "_", str(policy or "ask").strip().lower()).strip("_")
+    if value in {
+        "always",
+        "everytime",
+        "every_time",
+        "launch_everytime",
+        "launch_every_time",
+        "launch_everytime_in_the_background",
+        "launch_every_time_in_the_background",
+        "always_run_in_the_background",
+        "run_in_the_background",
+    }:
         return "always"
     if value in {"ignore", "ignored", "never"}:
         return "ignore"
@@ -2767,6 +2777,13 @@ def server_policy_label(policy: object) -> str:
 
 
 def prompt_server_after_download(settings: dict) -> None:
+    policy = current_server_policy(settings)
+    if policy == "always":
+        start_local_bridge_background(settings, announce=True)
+        return
+    if policy == "ignore":
+        return
+
     Noir.section("Server")
     Noir.warn("You must run the server in order to connect to my stuff.")
     Noir.menu(

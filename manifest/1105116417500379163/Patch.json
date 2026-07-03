@@ -26,7 +26,7 @@
     {
       "type": "write_text_file",
       "file": "steam_appid.txt",
-      "content": "471710"
+      "content": "480"
     }
   ]
 }
