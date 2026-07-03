@@ -1135,12 +1135,23 @@ def download_recagain_archive(settings: dict, bundle: ManifestBundle, build_dir:
         clean_work_dir(work_dir)
 
 
+def melonloader_is_installed(build_dir: Path) -> bool:
+    return (
+        (build_dir / "version.dll").is_file()
+        and (build_dir / "MelonLoader" / "MelonLoader.dll").is_file()
+    )
+
+
 def install_melonloader_to_build(build_dir: Path, settings: dict | None = None) -> None:
     if not build_dir.exists() or not build_dir.is_dir():
         raise DownloadError(f"Build folder was not found: {build_dir}")
 
-    zip_path = melonloader_zip_path()
     Noir.section("MelonLoader")
+    if melonloader_is_installed(build_dir):
+        Noir.ok(f"MelonLoader {MELONLOADER_RELEASE_TAG} already installed in {build_dir}")
+        return
+
+    zip_path = melonloader_zip_path()
     try:
         safe_extract_zip(zip_path, build_dir)
     except zipfile.BadZipFile as exc:
