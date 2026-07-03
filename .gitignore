@@ -1,1 +1,7 @@
 Servers/ALLAPIS/DATA/database.sqlite3
+__pycache__/
+build/
+dist/
+Builds/
+MelonLoader.x64.zip
+last_recagain_noir.log

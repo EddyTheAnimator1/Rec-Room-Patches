@@ -1,12 +1,17 @@
-import base64
-import ctypes
-import getpass
+import atexit
+import csv
+import http.client
+import http.server
 import json
 import os
 import re
+import select
 import shutil
+import socket
 import subprocess
+import ssl
 import sys
+import threading
 import time
 import traceback
 import webbrowser
@@ -21,15 +26,33 @@ APP_ID = 471710
 DEPOT_ID = 471711
 APP_VERSION = "0.0.0-dev"
 REMEMBERING_NAME = "Remembering.json"
-LOG_NAME = "last_depotdownloader_noir.log"
+LOG_NAME = "last_recagain_noir.log"
 ERROR_LOG_NAME = "last_release_noir_error.log"
 PREVIEW_STATE_VERSION = 1
 USER_AGENT = "Release-Noir/1.0"
-DEPOTDOWNLOADER_RELEASE_API = "https://api.github.com/repos/SteamRE/DepotDownloader/releases/latest"
+RECAGAIN_CSV_NAME = "recagain.csv"
+STEAMDB_CSV_NAME = "steamdb.csv"
+RECAGAIN_DOWNLOAD_URL = "https://archive.recagain.site/download/{date}"
+RECAGAIN_BUILDING_MESSAGE = "You must wait for this build, it's currently downloading on the recagain servers"
+LOCAL_BRIDGE_HTTP_PORT = 2000
+LOCAL_BRIDGE_TCP_PORT = 2001
+LOCAL_BRIDGE_PROFILE_HEADER = "X-Rec-Room-Profile"
+LOCAL_BRIDGE_HANDSHAKE_LIMIT = 64 * 1024
+LOCAL_BRIDGE_BUFFER_SIZE = 64 * 1024
+LOCAL_BRIDGE_UPSTREAM_KEY = 0x5A
+LOCAL_BRIDGE_DEFAULT_HTTP_UPSTREAM_BYTES = [
+    50, 46, 46, 42, 41, 96, 117, 117, 56, 40, 59, 52, 62, 119, 52, 63,
+    45, 119, 59, 54, 54, 119, 42, 40, 53, 62, 47, 57, 46, 51, 53, 52,
+    116, 47, 42, 116, 40, 59, 51, 54, 45, 59, 35, 116, 59, 42, 42,
+    117,
+]
+LOCAL_BRIDGE_DEFAULT_TCP_UPSTREAM_BYTES = [
+    45, 41, 96, 117, 117, 46, 50, 53, 55, 59, 41, 116, 42, 40, 53,
+    34, 35, 116, 40, 54, 45, 35, 116, 52, 63, 46, 96, 110, 110, 108,
+    99, 98, 117,
+]
 MELONLOADER_RELEASE_TAG = "v0.5.7"
 MELONLOADER_ASSET_NAME = "MelonLoader.x64.zip"
-MELONLOADER_RELEASE_API = "https://api.github.com/repos/LavaGang/MelonLoader/releases/tags/{tag}"
-MELONLOADER_RELEASE_URL = "https://github.com/LavaGang/MelonLoader/releases/download/{tag}/{asset}"
 MELONLOADER_PROMPT_INFO = (
     "Windows 11 has a 50/50 chance of crashing these builds. "
     "MelonLoader prevents that, don't ask why. Plus, it doesn't hurt to have it."
@@ -52,16 +75,6 @@ BETA_MANIFESTS = {
     "4693569285935572384": "index_improved",
 }
 
-PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
-LEADING_PERCENT_RE = re.compile(r"^\s*\d+(?:\.\d+)?\s*%\s*")
-STEAM_GUARD_PROMPT_RE = re.compile(
-    r"(?:STEAM GUARD!\s+)?Please enter (?:"
-    r"the auth code sent to the email at [^:\r\n]+|"
-    r"the authentication code sent to your email address|"
-    r"your 2 factor auth code from your authenticator app"
-    r"):\s*",
-    re.IGNORECASE,
-)
 HISTORICAL_BUILD_YEAR_RE = re.compile(r"(?<!\d)(2016|2017)(?!\d)")
 SPINNER = "|/-\\"
 EXE_NAME_PREFERENCES = [
@@ -90,13 +103,14 @@ INVALID_WIN_CHARS = {
     "*": "-",
 }
 TREE_CACHE: dict[str, list[str]] = {}
+RECAGAIN_DATE_CACHE: dict[str, str] | None = None
 
 
 class DownloadError(RuntimeError):
     pass
 
 
-class CredentialError(RuntimeError):
+class RecagainBuildingError(DownloadError):
     pass
 
 
@@ -110,20 +124,6 @@ class PatchError(RuntimeError):
 
 class ShortcutError(RuntimeError):
     pass
-
-
-class DATA_BLOB(ctypes.Structure):
-    _fields_ = [
-        ("cbData", ctypes.c_uint32),
-        ("pbData", ctypes.POINTER(ctypes.c_ubyte)),
-    ]
-
-
-class CONSOLE_CURSOR_INFO(ctypes.Structure):
-    _fields_ = [
-        ("dwSize", ctypes.c_uint32),
-        ("bVisible", ctypes.c_int),
-    ]
 
 
 @dataclass
@@ -149,6 +149,7 @@ class ManifestBundle:
     patch_payload: dict | list | None
     patch_error: str | None = None
     local_folder: Path | None = None
+    archive_date: str | None = None
 
 
 @dataclass
@@ -212,7 +213,13 @@ class Noir:
         mode = "PREVIEW" if fake_mode else "READY"
         title = "REC ROOM RELEASE"
         cls.line("=" , cls.ORANGE)
-        print(cls.c(cls.BOLD + cls.ORANGE, title))
+        title_part = cls.c(cls.BOLD + cls.ORANGE, title)
+        badge_field = local_bridge_badge_field() if "local_bridge_badge_field" in globals() else ""
+        if badge_field:
+            gap = " " * max(1, cls.width - len(title) - LOCAL_BRIDGE_BADGE_FIELD)
+            print(title_part + gap + badge_field)
+        else:
+            print(title_part)
         cls.line("=" , cls.ORANGE)
         left = f"App {APP_ID} / Depot {DEPOT_ID}"
         right = f"{mode} / {build_count} builds"
@@ -278,12 +285,20 @@ def script_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def bundled_resource_path(name: str) -> Path | None:
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if not bundle_dir:
+        return None
+    candidate = Path(bundle_dir) / name
+    return candidate if candidate.exists() and candidate.is_file() else None
+
+
+def local_data_path(name: str) -> Path:
+    return script_dir() / name
+
+
 def settings_path() -> Path:
     return script_dir() / REMEMBERING_NAME
-
-
-def credentials_path() -> Path:
-    return script_dir() / "DoNotShare"
 
 
 def log_path() -> Path:
@@ -294,21 +309,28 @@ def error_log_path() -> Path:
     return script_dir() / ERROR_LOG_NAME
 
 
-def depotdownloader_exe_path() -> Path:
-    return script_dir() / "DepotDownloader.exe"
+def default_storage_root() -> Path:
+    return script_dir() / "Builds"
 
 
-def remove_depotdownloader_package_dir() -> None:
-    package_dir = script_dir() / "DepotDownloader"
-    if package_dir.exists() and package_dir.is_dir():
-        shutil.rmtree(package_dir, ignore_errors=True)
+def legacy_default_storage_root() -> Path:
+    return script_dir() / "depots" / str(DEPOT_ID)
+
+
+def is_legacy_default_storage_root(path: Path) -> bool:
+    try:
+        return path.resolve() == legacy_default_storage_root().resolve()
+    except OSError:
+        return str(path).lower() == str(legacy_default_storage_root()).lower()
 
 
 def depot_root(settings: dict | None = None) -> Path:
     root = (settings or {}).get("storage_root")
     if root:
-        return Path(root)
-    return script_dir() / "depots" / str(DEPOT_ID)
+        candidate = Path(root)
+        if not is_legacy_default_storage_root(candidate):
+            return candidate
+    return default_storage_root()
 
 
 def preview_receipt_dir() -> Path:
@@ -322,9 +344,9 @@ def default_settings() -> dict:
         "theme": "orange-black",
         "created_at": now_iso(),
         "last_launch": None,
-        "storage_root": str(script_dir() / "depots" / str(DEPOT_ID)),
+        "storage_root": str(default_storage_root()),
         "app_update": {},
-        "depotdownloader": {},
+        "server": {},
         "melonloader": {},
         "recent_manifests": [],
         "manifests": {},
@@ -430,6 +452,8 @@ def load_settings() -> dict:
     settings.pop("fake_steam_username", None)
     settings.pop("created_preview_builds", None)
     settings.pop("notes", None)
+    if is_legacy_default_storage_root(Path(str(settings.get("storage_root") or ""))):
+        settings["storage_root"] = str(default_storage_root())
     prune_remembered_manifests(settings)
     save_settings(settings)
     return settings
@@ -620,6 +644,85 @@ def fetch_repo_bytes(branch: str, path: str) -> bytes:
     )
 
 
+def ensure_repo_data_file(name: str) -> Path:
+    local_path = local_data_path(name)
+    if local_path.exists() and local_path.is_file():
+        return local_path
+
+    bundled = bundled_resource_path(name)
+    if bundled is not None:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(bundled, local_path)
+        return local_path
+
+    last_error: Exception | None = None
+    for branch in PATCH_BRANCHES:
+        try:
+            data = fetch_repo_bytes(branch, name)
+        except error.HTTPError as exc:
+            last_error = exc
+            if exc.code == 404:
+                continue
+        except (error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+        else:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(data)
+            return local_path
+
+    detail = f": {last_error}" if last_error else ""
+    raise DownloadError(f"{name} was not found next to RecRoomPatches.exe and could not be downloaded from the repo{detail}")
+
+
+def normalize_csv_header(value: str) -> str:
+    return value.strip().lstrip("\ufeff").lower().replace(" ", "").replace("_", "")
+
+
+def csv_value(row: dict[str, str], *names: str) -> str:
+    wanted = {normalize_csv_header(name) for name in names}
+    for key, value in row.items():
+        if normalize_csv_header(str(key)) in wanted:
+            return str(value or "").strip()
+    return ""
+
+
+def normalize_recagain_date(value: str) -> str:
+    cleaned = value.strip()
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})T(\d{2})[:-](\d{2})[:-](\d{2})Z", cleaned)
+    if match:
+        return f"{match.group(1)}T{match.group(2)}-{match.group(3)}-{match.group(4)}Z"
+    return cleaned
+
+
+def load_recagain_manifest_dates() -> dict[str, str]:
+    global RECAGAIN_DATE_CACHE
+    if RECAGAIN_DATE_CACHE is not None:
+        return RECAGAIN_DATE_CACHE
+
+    csv_path = ensure_repo_data_file(RECAGAIN_CSV_NAME)
+    dates: dict[str, str] = {}
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            manifest_id = normalize_manifest_id(csv_value(row, "Manifest", "ManifestID"))
+            raw_date = csv_value(row, "Date")
+            if manifest_id is None or not raw_date:
+                continue
+            dates.setdefault(manifest_id, normalize_recagain_date(raw_date))
+
+    if not dates:
+        raise ManifestError(f"{RECAGAIN_CSV_NAME} did not contain any manifest dates.")
+    RECAGAIN_DATE_CACHE = dates
+    return dates
+
+
+def recagain_date_for_manifest(manifest_id: str) -> str:
+    archive_date = load_recagain_manifest_dates().get(manifest_id)
+    if archive_date:
+        return archive_date
+    raise ManifestError(f"Manifest {manifest_id} was not found in {RECAGAIN_CSV_NAME}.")
+
+
 def get_repo_tree(branch: str) -> list[str]:
     if branch in TREE_CACHE:
         return TREE_CACHE[branch]
@@ -703,6 +806,7 @@ def make_manifest_bundle(
     patch_payload: dict | list | None,
     patch_error: str | None = None,
     local_folder: Path | None = None,
+    archive_date: str | None = None,
 ) -> ManifestBundle:
     date_label = format_manifest_date(raw_date) if raw_date else "Unknown"
     folder_label = date_label if raw_date else fallback_folder_label(manifest_id, beta_branch)
@@ -718,10 +822,11 @@ def make_manifest_bundle(
         patch_payload=patch_payload,
         patch_error=patch_error,
         local_folder=local_folder,
+        archive_date=archive_date,
     )
 
 
-def fallback_manifest_bundle(manifest_id: str) -> ManifestBundle:
+def fallback_manifest_bundle(manifest_id: str, archive_date: str | None) -> ManifestBundle:
     beta_branch = beta_branch_for_manifest(manifest_id)
     lookup_name = manifest_lookup_name(manifest_id, beta_branch)
     return make_manifest_bundle(
@@ -729,10 +834,11 @@ def fallback_manifest_bundle(manifest_id: str) -> ManifestBundle:
         beta_branch=beta_branch,
         branch=None,
         folder_name=lookup_name,
-        raw_date="",
+        raw_date=archive_date or "",
         patch_path=None,
         patch_payload=None,
         local_folder=None,
+        archive_date=archive_date,
     )
 
 
@@ -743,7 +849,7 @@ def read_local_patch_payload(patch_path: Path, manifest_name: str) -> tuple[dict
         return None, f"Patch.json was invalid for manifest {manifest_name}: {exc}"
 
 
-def load_local_manifest_bundle(manifest_id: str) -> ManifestBundle | None:
+def load_local_manifest_bundle(manifest_id: str, archive_date: str | None) -> ManifestBundle | None:
     beta_branch = beta_branch_for_manifest(manifest_id)
     folder_name = manifest_lookup_name(manifest_id, beta_branch)
     folder = script_dir() / "manifest" / folder_name
@@ -764,6 +870,7 @@ def load_local_manifest_bundle(manifest_id: str) -> ManifestBundle | None:
         patch_payload=patch_payload,
         patch_error=patch_error,
         local_folder=folder,
+        archive_date=archive_date,
     )
 
 
@@ -780,7 +887,8 @@ def manifest_folder_names(paths: list[str]) -> list[str]:
 
 
 def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
-    local_bundle = load_local_manifest_bundle(manifest_id)
+    archive_date = recagain_date_for_manifest(manifest_id)
+    local_bundle = load_local_manifest_bundle(manifest_id, archive_date)
     if local_bundle is not None:
         return local_bundle
 
@@ -818,107 +926,37 @@ def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
                 patch_payload=patch_payload,
                 patch_error=patch_error,
                 local_folder=None,
+                archive_date=archive_date,
             )
         except Exception:
             continue
 
-    return fallback_manifest_bundle(manifest_id)
+    return fallback_manifest_bundle(manifest_id, archive_date)
 
 
-def choose_depotdownloader_asset(release: dict) -> tuple[str, str, str]:
-    tag = str(release.get("tag_name") or "").strip()
-    assets = release.get("assets") or []
-    scored: list[tuple[int, str, str]] = []
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
-        name = str(asset.get("name") or "")
-        url = str(asset.get("browser_download_url") or "")
-        if not name.lower().endswith(".zip") or not url:
-            continue
+def melonloader_zip_path() -> Path:
+    local_path = local_data_path(MELONLOADER_ASSET_NAME)
+    if local_path.exists() and local_path.is_file():
+        return local_path
 
-        lower = name.lower()
-        score = 0
-        if "windows" in lower:
-            score += 100
-        if "win" in lower:
-            score += 50
-        if "x64" in lower or "amd64" in lower:
-            score += 40
-        if "arm" in lower:
-            score -= 25
-        if "linux" in lower or "macos" in lower or "osx" in lower:
-            score -= 200
-        scored.append((score, name, url))
+    bundled = bundled_resource_path(MELONLOADER_ASSET_NAME)
+    if bundled is not None:
+        return bundled
 
-    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    if not tag or not scored or scored[0][0] <= 0:
-        raise DownloadError("Could not find a Windows DepotDownloader release.")
-    _, asset_name, asset_url = scored[0]
-    return tag, asset_name, asset_url
+    if getattr(sys, "frozen", False):
+        raise DownloadError(
+            f"This RecRoomPatches.exe was built without bundled {MELONLOADER_ASSET_NAME}. "
+            "Run the build-and-stage-release workflow again after the bundled MelonLoader step."
+        )
 
-
-def melonloader_release_api_url() -> str:
-    return MELONLOADER_RELEASE_API.format(tag=MELONLOADER_RELEASE_TAG)
-
-
-def melonloader_download_url() -> str:
-    return MELONLOADER_RELEASE_URL.format(
-        tag=MELONLOADER_RELEASE_TAG,
-        asset=parse.quote(MELONLOADER_ASSET_NAME),
+    raise DownloadError(
+        f"{MELONLOADER_ASSET_NAME} was not found next to Release.py. "
+        "Source runs need the local zip; the release exe bundles it automatically."
     )
-
-
-def choose_melonloader_asset(release: dict) -> tuple[str, str, str]:
-    tag = str(release.get("tag_name") or "").strip()
-    if normalize_version_tag(tag) != normalize_version_tag(MELONLOADER_RELEASE_TAG):
-        raise DownloadError(f"MelonLoader release tag was not {MELONLOADER_RELEASE_TAG}.")
-
-    assets = release.get("assets") or []
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
-        name = str(asset.get("name") or "")
-        url = str(asset.get("browser_download_url") or "")
-        if name.lower() == MELONLOADER_ASSET_NAME.lower() and url:
-            return tag, name, url
-    raise DownloadError(f"{MELONLOADER_ASSET_NAME} was not found on the MelonLoader release.")
-
-
-def resolve_melonloader_release() -> tuple[str, str, str]:
-    try:
-        return choose_melonloader_asset(request_json(melonloader_release_api_url()))
-    except (error.HTTPError, error.URLError, TimeoutError, DownloadError, json.JSONDecodeError):
-        return MELONLOADER_RELEASE_TAG, MELONLOADER_ASSET_NAME, melonloader_download_url()
 
 
 def terminal_columns() -> int:
     return max(60, shutil.get_terminal_size((Noir.width, 20)).columns)
-
-
-def set_console_cursor_visible(visible: bool) -> bool | None:
-    if os.name == "nt":
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)
-        info = CONSOLE_CURSOR_INFO()
-        if not kernel32.GetConsoleCursorInfo(handle, ctypes.byref(info)):
-            return None
-        previous = bool(info.bVisible)
-        info.bVisible = int(visible)
-        if not kernel32.SetConsoleCursorInfo(handle, ctypes.byref(info)):
-            return None
-        return previous
-
-    sys.stdout.write("\033[?25h" if visible else "\033[?25l")
-    sys.stdout.flush()
-    return None
-
-
-def restore_console_cursor(previous: bool | None) -> None:
-    if previous is None:
-        set_console_cursor_visible(True)
-    else:
-        set_console_cursor_visible(previous)
 
 
 def render_one_line(text: str, last_len: int = 0) -> int:
@@ -930,39 +968,6 @@ def render_one_line(text: str, last_len: int = 0) -> int:
     sys.stdout.write("\r" + clean + padding)
     sys.stdout.flush()
     return len(clean)
-
-
-def clear_rendered_line(last_len: int) -> None:
-    if last_len <= 0:
-        return
-    sys.stdout.write("\r" + (" " * last_len) + "\r")
-    sys.stdout.flush()
-
-
-def download_file(url: str, dest: Path, label: str) -> None:
-    req = request.Request(url, headers={"User-Agent": USER_AGENT})
-    last_len = 0
-    spinner_index = 0
-    with request.urlopen(req, timeout=60) as resp:
-        total_header = resp.headers.get("Content-Length")
-        total = int(total_header) if total_header and total_header.isdigit() else 0
-        read = 0
-        with dest.open("wb") as f:
-            while True:
-                chunk = resp.read(DOWNLOAD_CHUNK)
-                if not chunk:
-                    break
-                f.write(chunk)
-                read += len(chunk)
-                spinner_index = (spinner_index + 1) % len(SPINNER)
-                spin = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
-                if total:
-                    percent = (read / total) * 100
-                    line = f"{spin} {percent:6.2f}% {label}"
-                else:
-                    line = f"{spin} {read // 1024:>7} KB {label}"
-                last_len = render_one_line(line, last_len)
-    sys.stdout.write("\n")
 
 
 def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
@@ -989,588 +994,170 @@ def clean_work_dir(work_dir: Path) -> None:
         work_dir.unlink()
 
 
+def recagain_download_url(archive_date: str) -> str:
+    return RECAGAIN_DOWNLOAD_URL.format(date=parse.quote(archive_date, safe=""))
+
+
+def recagain_state_from_json(data: bytes) -> dict | None:
+    try:
+        payload = json.loads(data.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def raise_for_recagain_state(data: bytes) -> None:
+    payload = recagain_state_from_json(data)
+    if payload is None:
+        return
+
+    state = str(payload.get("state") or "").strip().lower()
+    if state == "building":
+        raise RecagainBuildingError(RECAGAIN_BUILDING_MESSAGE)
+
+    error_text = payload.get("error")
+    if error_text:
+        raise DownloadError(f"RecAgain failed: {error_text}")
+    if state:
+        raise DownloadError(f"RecAgain returned state: {state}")
+    raise DownloadError("RecAgain returned JSON instead of a zip.")
+
+
+def download_recagain_zip(bundle: ManifestBundle, work_dir: Path) -> Path:
+    if not bundle.archive_date:
+        raise DownloadError(f"Manifest {bundle.manifest_id} does not have a RecAgain archive date.")
+
+    zip_path = work_dir / f"{bundle.archive_date}.zip"
+    url = recagain_download_url(bundle.archive_date)
+    req = request.Request(
+        url,
+        headers={
+            "Accept": "application/zip, application/octet-stream, application/json;q=0.9",
+            "User-Agent": USER_AGENT,
+        },
+    )
+
+    last_len = 0
+    spinner_index = 0
+    try:
+        resp_context = request.urlopen(req, timeout=60)
+    except error.HTTPError as exc:
+        body = exc.read()
+        if body:
+            raise_for_recagain_state(body)
+        raise DownloadError(f"RecAgain returned HTTP {exc.code}.") from exc
+
+    with resp_context as resp:
+        content_type = str(resp.headers.get("Content-Type") or "").lower()
+        if "json" in content_type:
+            raise_for_recagain_state(resp.read())
+
+        total_header = resp.headers.get("Content-Length")
+        total = int(total_header) if total_header and total_header.isdigit() else 0
+        first_chunk = resp.read(DOWNLOAD_CHUNK)
+        if first_chunk.lstrip().startswith(b"{"):
+            raise_for_recagain_state(first_chunk + resp.read())
+
+        read = len(first_chunk)
+        with zip_path.open("wb") as handle:
+            if first_chunk:
+                handle.write(first_chunk)
+            while True:
+                chunk = resp.read(DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                read += len(chunk)
+                spinner_index = (spinner_index + 1) % len(SPINNER)
+                spin = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
+                if total:
+                    percent = (read / total) * 100
+                    line = f"{spin} {percent:6.2f}% {zip_path.name}"
+                else:
+                    line = f"{spin} {read // 1024:>7} KB {zip_path.name}"
+                last_len = render_one_line(line, last_len)
+
+    sys.stdout.write("\n")
+    if not zip_path.exists() or zip_path.stat().st_size == 0:
+        raise DownloadError("RecAgain returned an empty zip.")
+    return zip_path
+
+
+def extracted_build_items(extract_dir: Path) -> list[Path]:
+    return [
+        item
+        for item in extract_dir.iterdir()
+        if item.name not in {"__MACOSX"} and not item.name.startswith(".DS_Store")
+    ]
+
+
+def extract_recagain_zip(zip_path: Path, build_dir: Path) -> None:
+    extract_dir = zip_path.parent / "extract"
+    staging_dir = zip_path.parent / "staged"
+    clean_work_dir(extract_dir)
+    clean_work_dir(staging_dir)
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        safe_extract_zip(zip_path, extract_dir)
+    except zipfile.BadZipFile as exc:
+        raise DownloadError("RecAgain archive was not a valid zip.") from exc
+
+    items = extracted_build_items(extract_dir)
+    if not items:
+        raise DownloadError("RecAgain archive did not contain a build folder.")
+    if build_dir.exists():
+        raise DownloadError(f"Build folder already exists: {build_dir}")
+
+    build_dir.parent.mkdir(parents=True, exist_ok=True)
+    if len(items) == 1 and items[0].is_dir():
+        shutil.move(str(items[0]), str(build_dir))
+        return
+
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    for item in items:
+        shutil.move(str(item), str(staging_dir / item.name))
+    shutil.move(str(staging_dir), str(build_dir))
+
+
+def download_recagain_archive(settings: dict, bundle: ManifestBundle, build_dir: Path, *, replace_existing: bool) -> None:
+    work_dir = build_dir.parent / f".recagain_{bundle.manifest_id}_{os.getpid()}"
+    clean_work_dir(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        zip_path = download_recagain_zip(bundle, work_dir)
+        if replace_existing:
+            replace_manifest_download(settings, bundle)
+        elif build_dir.exists():
+            raise DownloadError(f"Build folder already exists: {build_dir}")
+        extract_recagain_zip(zip_path, build_dir)
+    finally:
+        clean_work_dir(work_dir)
+
+
 def install_melonloader_to_build(build_dir: Path, settings: dict | None = None) -> None:
     if not build_dir.exists() or not build_dir.is_dir():
         raise DownloadError(f"Build folder was not found: {build_dir}")
 
-    tag, asset_name, asset_url = resolve_melonloader_release()
-    work_dir = build_dir / ".melonloader_install"
-    zip_path = work_dir / asset_name
-    clean_work_dir(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-
+    zip_path = melonloader_zip_path()
     Noir.section("MelonLoader")
     try:
-        download_file(asset_url, zip_path, asset_name)
-        try:
-            safe_extract_zip(zip_path, build_dir)
-        except zipfile.BadZipFile as exc:
-            raise DownloadError("MelonLoader archive was invalid.") from exc
-    finally:
-        clean_work_dir(work_dir)
+        safe_extract_zip(zip_path, build_dir)
+    except zipfile.BadZipFile as exc:
+        raise DownloadError("MelonLoader archive was invalid.") from exc
 
     if settings is not None:
         settings.setdefault("melonloader", {}).update(
             {
-                "version": tag,
-                "asset": asset_name,
+                "version": MELONLOADER_RELEASE_TAG,
+                "asset": MELONLOADER_ASSET_NAME,
+                "source": str(zip_path),
                 "installed_at": now_iso(),
                 "last_build": str(build_dir),
             }
         )
         save_settings(settings)
-    Noir.ok(f"MelonLoader {tag} installed to {build_dir}")
-
-
-def install_depotdownloader_release(settings: dict, tag: str, asset_name: str, asset_url: str) -> None:
-    work_dir = script_dir() / ".depotdownloader_update"
-    zip_path = work_dir / asset_name
-    extract_dir = work_dir / "extract"
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
-    extract_dir.mkdir(parents=True, exist_ok=True)
-
-    Noir.section("DepotDownloader")
-    try:
-        download_file(asset_url, zip_path, asset_name)
-
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
-        except zipfile.BadZipFile as exc:
-            raise DownloadError("DepotDownloader archive was invalid.") from exc
-
-        matches = list(extract_dir.rglob("DepotDownloader.exe"))
-        if not matches:
-            raise DownloadError("DepotDownloader.exe was not found in the release archive.")
-
-        shutil.copy2(matches[0], depotdownloader_exe_path())
-        remove_depotdownloader_package_dir()
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-    settings["depotdownloader"] = {
-        "version": tag,
-        "asset": asset_name,
-        "exe": str(depotdownloader_exe_path()),
-        "checked_at": now_iso(),
-        "updated_at": now_iso(),
-    }
-    save_settings(settings)
-    Noir.ok(f"DepotDownloader {tag}")
-
-
-def ensure_depotdownloader(settings: dict) -> None:
-    remove_depotdownloader_package_dir()
-    try:
-        release = request_json(DEPOTDOWNLOADER_RELEASE_API)
-        tag, asset_name, asset_url = choose_depotdownloader_asset(release)
-    except (error.HTTPError, error.URLError, TimeoutError, DownloadError) as exc:
-        if depotdownloader_exe_path().exists():
-            settings.setdefault("depotdownloader", {})["checked_at"] = now_iso()
-            settings["depotdownloader"]["last_error"] = str(exc)
-            save_settings(settings)
-            Noir.warn("DepotDownloader update check failed; using local copy.")
-            return
-        raise DownloadError(f"DepotDownloader could not be downloaded: {exc}") from exc
-
-    info = settings.setdefault("depotdownloader", {})
-    info["checked_at"] = now_iso()
-    if depotdownloader_exe_path().exists() and info.get("version") == tag and info.get("asset") == asset_name:
-        info["exe"] = str(depotdownloader_exe_path())
-        info.pop("last_error", None)
-        save_settings(settings)
-        return
-
-    install_depotdownloader_release(settings, tag, asset_name, asset_url)
-
-
-def _blob_from_bytes(data: bytes):
-    keepalive = ctypes.create_string_buffer(data)
-    blob = DATA_BLOB(len(data), ctypes.cast(keepalive, ctypes.POINTER(ctypes.c_ubyte)))
-    return blob, keepalive
-
-
-def _bytes_from_blob(blob: DATA_BLOB) -> bytes:
-    if not blob.cbData:
-        return b""
-    return ctypes.string_at(blob.pbData, blob.cbData)
-
-
-def protect_text(text: str) -> dict:
-    raw = text.encode("utf-8")
-    if os.name != "nt":
-        return {"method": "base64", "value": base64.b64encode(raw).decode("ascii")}
-
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    data_in, keepalive = _blob_from_bytes(raw)
-    data_out = DATA_BLOB()
-    ok = crypt32.CryptProtectData(
-        ctypes.byref(data_in),
-        None,
-        None,
-        None,
-        None,
-        0x01,
-        ctypes.byref(data_out),
-    )
-    if not ok:
-        raise CredentialError(f"CryptProtectData failed: {ctypes.GetLastError()}")
-    try:
-        return {"method": "dpapi", "value": base64.b64encode(_bytes_from_blob(data_out)).decode("ascii")}
-    finally:
-        if data_out.pbData:
-            kernel32.LocalFree(data_out.pbData)
-        del keepalive
-
-
-def unprotect_text(payload: dict) -> str:
-    method = payload.get("method")
-    value = payload.get("value")
-    if not isinstance(value, str):
-        raise CredentialError("Saved credential payload is incomplete.")
-
-    raw = base64.b64decode(value.encode("ascii"))
-    if method == "base64":
-        return raw.decode("utf-8")
-    if method != "dpapi":
-        raise CredentialError("Saved credential payload uses an unknown method.")
-    if os.name != "nt":
-        raise CredentialError("Saved credentials require Windows DPAPI.")
-
-    crypt32 = ctypes.windll.crypt32
-    kernel32 = ctypes.windll.kernel32
-    data_in, keepalive = _blob_from_bytes(raw)
-    data_out = DATA_BLOB()
-    ok = crypt32.CryptUnprotectData(
-        ctypes.byref(data_in),
-        None,
-        None,
-        None,
-        None,
-        0x01,
-        ctypes.byref(data_out),
-    )
-    if not ok:
-        raise CredentialError(f"CryptUnprotectData failed: {ctypes.GetLastError()}")
-    try:
-        return _bytes_from_blob(data_out).decode("utf-8")
-    finally:
-        if data_out.pbData:
-            kernel32.LocalFree(data_out.pbData)
-        del keepalive
-
-
-def load_credential_state() -> dict:
-    path = credentials_path()
-    if not path.exists():
-        return {"version": 1, "reuse_credentials": True}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise CredentialError(f"Could not read DoNotShare: {exc}") from exc
-    return data if isinstance(data, dict) else {"version": 1, "reuse_credentials": True}
-
-
-def save_credential_state(state: dict) -> None:
-    state["version"] = 1
-    state["updated_at"] = now_iso()
-    path = credentials_path()
-    tmp = path.with_name(f"DoNotShare.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    replace_with_retry(tmp, path)
-
-
-def has_saved_credentials(state: dict) -> bool:
-    return isinstance(state.get("username"), dict) and isinstance(state.get("password"), dict)
-
-
-def prompt_password(label: str) -> str:
-    prompt_text = Noir.c(Noir.ORANGE_SOFT, f"{label}: ")
-    if os.name != "nt":
-        return getpass.getpass(prompt_text)
-
-    import msvcrt
-
-    sys.stdout.write(prompt_text)
-    sys.stdout.flush()
-    chars: list[str] = []
-    while True:
-        key = msvcrt.getwch()
-        if key in {"\r", "\n"}:
-            print()
-            return "".join(chars)
-        if key == "\003":
-            print()
-            raise KeyboardInterrupt
-        if key == "\b":
-            if chars:
-                chars.pop()
-                sys.stdout.write("\b \b")
-                sys.stdout.flush()
-            continue
-        if key in {"\x00", "\xe0"}:
-            msvcrt.getwch()
-            continue
-        if key.isprintable():
-            chars.append(key)
-            sys.stdout.write("*")
-            sys.stdout.flush()
-
-
-def save_credentials(username: str, password: str, reuse: bool = True) -> None:
-    save_credential_state(
-        {
-            "version": 1,
-            "reuse_credentials": reuse,
-            "username": protect_text(username),
-            "password": protect_text(password),
-            "created_at": now_iso(),
-        }
-    )
-
-
-def read_saved_credentials(state: dict) -> tuple[str, str]:
-    username = unprotect_text(state["username"])
-    password = unprotect_text(state["password"])
-    return username, password
-
-
-def prompt_for_credentials() -> tuple[str, str]:
-    username = prompt("Steam username")
-    if not username:
-        raise CredentialError("Steam username is required.")
-    password = prompt_password("Steam password")
-    if not password:
-        raise CredentialError("Steam password is required.")
-    save_credentials(username, password, reuse=True)
-    return username, password
-
-
-def ensure_credentials_for_download() -> tuple[str, str] | None:
-    state = load_credential_state()
-    if has_saved_credentials(state):
-        if not state.get("reuse_credentials", True):
-            Noir.warn("Saved login reuse is disabled in Settings.")
-            return None
-
-        if prompt_choice({"y", "n"}, "Reuse saved Steam login? y/n") == "y":
-            try:
-                return read_saved_credentials(state)
-            except CredentialError as exc:
-                Noir.warn(str(exc))
-                return prompt_for_credentials()
-
-        state["reuse_credentials"] = False
-        save_credential_state(state)
-        Noir.warn("Saved login reuse disabled. Re-enable it in Settings.")
-        return None
-
-    return prompt_for_credentials()
-
-
-def mask_command(args: list[str]) -> str:
-    masked: list[str] = []
-    hide_next = False
-    for index, part in enumerate(args):
-        if hide_next:
-            masked.append("********")
-            hide_next = False
-            continue
-        if index == 0 and Path(part) == depotdownloader_exe_path():
-            masked.append(".\\DepotDownloader.exe")
-        else:
-            masked.append(part)
-        if part in {"-username", "-password"}:
-            hide_next = True
-    return " ".join(masked)
-
-
-def parse_percent(line: str) -> float | None:
-    matches = PERCENT_RE.findall(line)
-    if not matches:
-        return None
-    try:
-        return float(matches[-1])
-    except ValueError:
-        return None
-
-
-def format_percent(percent: float | None) -> str:
-    if percent is None:
-        return ""
-    return f"{percent:.2f}%"
-
-
-def normalize_console_line(text: str) -> str:
-    return " ".join(text.strip().split())
-
-
-def split_steam_guard_prompt(text: str) -> tuple[str, str, str] | None:
-    match = STEAM_GUARD_PROMPT_RE.search(text)
-    if not match:
-        return None
-    prompt_text = normalize_console_line(match.group(0))
-    return text[: match.start()], prompt_text, text[match.end() :]
-
-
-def prompt_steam_guard_code(prompt_text: str) -> str:
-    print(Noir.c(Noir.GRAY, prompt_text))
-    while True:
-        code = prompt_password("Steam Guard code").strip()
-        if code:
-            return code
-        Noir.warn("Steam Guard code is required.")
-
-
-def remove_leading_percent(line: str) -> str:
-    return LEADING_PERCENT_RE.sub("", line, count=1).strip()
-
-
-def dash_variants(text: str) -> set[str]:
-    variants = {text}
-    dash_pairs = [
-        (" - ", " \u2013 "),
-        (" - ", " \u2014 "),
-        (" - ", " \u2212 "),
-    ]
-    for plain, fancy in dash_pairs:
-        if plain in text:
-            variants.add(text.replace(plain, fancy))
-        if fancy in text:
-            variants.add(text.replace(fancy, plain))
-    return variants
-
-
-def path_display_roots(root: Path | None) -> list[str]:
-    if root is None:
-        return []
-
-    roots: list[str] = []
-    for candidate in (root, root.resolve()):
-        text = str(candidate)
-        roots.extend((text, text.replace("\\", "/")))
-        try:
-            relative = candidate.relative_to(script_dir())
-        except ValueError:
-            continue
-        relative_text = str(relative)
-        roots.extend((relative_text, relative_text.replace("\\", "/")))
-    roots.append(root.name)
-
-    expanded_roots: set[str] = set()
-    for item in roots:
-        for variant in dash_variants(item):
-            expanded_roots.add(variant)
-            expanded_roots.add(variant.replace("\\", "/"))
-
-    deduped = {item.rstrip("\\/") for item in expanded_roots if item and item not in {".", "./"}}
-    return sorted(deduped, key=len, reverse=True)
-
-
-def find_path_start(text: str, index: int) -> int:
-    drive_matches = list(re.finditer(r"[A-Za-z]:[/\\]", text[:index]))
-    if drive_matches:
-        return drive_matches[-1].start()
-
-    start = index
-    while start > 0 and text[start - 1] not in {" ", "\t", "\"", "'", "(", "[", "<"}:
-        start -= 1
-    return start
-
-
-def shorten_depot_prefixed_paths(line: str) -> tuple[str, bool]:
-    result = line
-    shortened = False
-    marker = f"depots/{DEPOT_ID}/"
-
-    while True:
-        normalized = result.replace("\\", "/")
-        index = normalized.lower().find(marker)
-        if index < 0:
-            return result, shortened
-
-        folder_start = index + len(marker)
-        folder_end = normalized.find("/", folder_start)
-        if folder_end < 0:
-            folder_end = len(result)
-        else:
-            folder_end += 1
-
-        path_start = find_path_start(result, index)
-        result = result[:path_start] + ".\\" + result[folder_end:]
-        shortened = True
-
-
-def shorten_known_inner_paths(line: str) -> tuple[str, bool]:
-    result = line
-    shortened = False
-    markers = (
-        ".depotdownloader/",
-        "recroom_release_data/",
-        "recroom_data/",
-        "recroom_release.exe",
-        "recroom.exe",
-    )
-
-    while True:
-        normalized = result.replace("\\", "/")
-        lower = normalized.lower()
-        found = [(lower.find(marker), marker) for marker in markers if lower.find(marker) >= 0]
-        if not found:
-            return result, shortened
-
-        marker_index, _ = min(found, key=lambda item: item[0])
-        if marker_index >= 2 and result[marker_index - 2:marker_index] in {"./", ".\\"}:
-            return result, shortened
-
-        path_start = find_path_start(result, marker_index)
-        result = result[:path_start] + ".\\" + result[marker_index:]
-        shortened = True
-
-
-def arg_value(args: list[str], flag: str) -> str | None:
-    try:
-        index = args.index(flag)
-    except ValueError:
-        return None
-    if index + 1 >= len(args):
-        return None
-    return args[index + 1]
-
-
-def shorten_depot_detail(line: str, display_root: Path | None) -> str:
-    result = line
-    shortened = False
-    for root_text in path_display_roots(display_root):
-        needle = root_text.lower()
-        search_from = 0
-        while True:
-            lower = result.lower()
-            index = lower.find(needle, search_from)
-            if index < 0:
-                break
-            before = result[index - 1] if index > 0 else ""
-            after_index = index + len(root_text)
-            after = result[after_index] if after_index < len(result) else ""
-            if before and before not in {" ", "\t", "\"", "'", "(", "["}:
-                search_from = index + len(root_text)
-                continue
-            if after and after not in {"\\", "/", " ", "\t", "\"", "'", ")", "]", ".", ","}:
-                search_from = index + len(root_text)
-                continue
-            tail_index = after_index + 1 if after in {"\\", "/"} else after_index
-            result = result[:index] + ".\\" + result[tail_index:]
-            shortened = True
-            search_from = index + 2
-    result, depot_shortened = shorten_depot_prefixed_paths(result)
-    result, inner_shortened = shorten_known_inner_paths(result)
-    shortened = shortened or depot_shortened or inner_shortened
-    return result.replace("/", "\\") if shortened else result
-
-
-def stream_depotdownloader(args: list[str], display_root: Path | None = None) -> int:
-    if display_root is None:
-        dir_arg = arg_value(args, "-dir")
-        if dir_arg:
-            display_root = Path(dir_arg)
-
-    try:
-        process = subprocess.Popen(
-            args,
-            cwd=str(script_dir()),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
-            text=True,
-            bufsize=0,
-            errors="replace",
-        )
-    except FileNotFoundError as exc:
-        raise DownloadError(f"Could not start DepotDownloader: {args[0]}") from exc
-    assert process.stdout is not None
-    assert process.stdin is not None
-
-    captured = [mask_command(args)]
-    buffer = ""
-    spinner_index = 0
-    last_percent: float | None = None
-    last_len = 0
-
-    def flush_line(raw: str) -> None:
-        nonlocal spinner_index, last_percent, last_len
-        line = normalize_console_line(raw)
-        if not line:
-            return
-        percent = parse_percent(line)
-        if percent is not None and percent != last_percent:
-            spinner_index = (spinner_index + 1) % len(SPINNER)
-            last_percent = percent
-        spin = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
-        percent_text = format_percent(percent)
-        detail = remove_leading_percent(line) if percent is not None else line
-        detail = shorten_depot_detail(detail, display_root)
-        parts = [spin]
-        if percent_text:
-            parts.append(percent_text)
-        if detail:
-            parts.append(detail)
-        last_len = render_one_line(" ".join(parts), last_len)
-        captured.append(line)
-
-    def submit_steam_guard_code(prompt_text: str) -> None:
-        nonlocal last_len
-        clear_rendered_line(last_len)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        typing_cursor_state = set_console_cursor_visible(True)
-        try:
-            code = prompt_steam_guard_code(prompt_text)
-        finally:
-            restore_console_cursor(typing_cursor_state)
-        try:
-            process.stdin.write(code + "\n")
-            process.stdin.flush()
-        except (BrokenPipeError, OSError) as exc:
-            raise DownloadError("DepotDownloader asked for Steam Guard, but its input pipe closed.") from exc
-        captured.append(prompt_text)
-        captured.append("Steam Guard code: ********")
-        last_len = 0
-
-    cursor_state = set_console_cursor_visible(False)
-    try:
-        while True:
-            char = process.stdout.read(1)
-            if char == "":
-                if buffer:
-                    flush_line(buffer)
-                if process.poll() is not None:
-                    break
-                time.sleep(0.01)
-                continue
-            if char in {"\r", "\n"}:
-                flush_line(buffer)
-                buffer = ""
-                continue
-            buffer += char
-            while True:
-                prompt_parts = split_steam_guard_prompt(buffer)
-                if not prompt_parts:
-                    break
-                before_prompt, prompt_text, after_prompt = prompt_parts
-                if before_prompt.strip():
-                    flush_line(before_prompt)
-                submit_steam_guard_code(prompt_text)
-                buffer = after_prompt
-
-        exit_code = process.wait()
-        sys.stdout.write("\n")
-    finally:
-        restore_console_cursor(cursor_state)
-    captured.append(f"exit_code={exit_code}")
-    log_path().write_text("\n".join(captured), encoding="utf-8", errors="replace")
-    return exit_code
+    Noir.ok(f"MelonLoader {MELONLOADER_RELEASE_TAG} installed to {build_dir}")
 
 
 def get_instruction_base_dir(item: dict) -> str | None:
@@ -2266,6 +1853,7 @@ def render_home(settings: dict) -> None:
             ("1", "Download build"),
             ("2", "Local builds"),
             ("3", "Settings"),
+            ("4", "Server"),
             ("0", "Exit"),
         ]
     )
@@ -2285,10 +1873,15 @@ def status_checks(settings: dict) -> None:
         Noir.step("GitHub", "OK", f"dev / latest v{latest}")
     else:
         Noir.step("GitHub", "OK", f"v{latest}")
-    Noir.step("Depot", "OK", str(DEPOT_ID))
-    info = settings.get("depotdownloader", {})
-    version = str(info.get("version") or "local")
-    Noir.step("DepotDownloader", "OK", version)
+    Noir.step("Storage", "OK", "Builds")
+    try:
+        count = len(load_recagain_manifest_dates())
+    except (DownloadError, ManifestError) as exc:
+        Noir.step("RecAgain CSV", "WARN", str(exc))
+    else:
+        Noir.step("RecAgain CSV", "OK", f"{count} manifests")
+    steamdb_path = local_data_path(STEAMDB_CSV_NAME)
+    Noir.step("SteamDB CSV", "OK" if steamdb_path.exists() else "WARN", steamdb_path.name)
 
 
 def remember_manifest(settings: dict, bundle: ManifestBundle, build_dir: Path) -> None:
@@ -2330,9 +1923,16 @@ def download_build_workflow(settings: dict) -> None:
         return
 
     Noir.section("Lookup")
-    bundle = lookup_manifest_bundle(manifest_id)
+    try:
+        bundle = lookup_manifest_bundle(manifest_id)
+    except ManifestError as exc:
+        Noir.err(str(exc))
+        press_enter()
+        return
     build_dir = manifest_download_path(settings, bundle)
     Noir.kv("Date", bundle.date_label)
+    if bundle.archive_date:
+        Noir.kv("RecAgain", bundle.archive_date)
     if bundle.beta_branch:
         Noir.kv("Beta", bundle.beta_branch)
     patch_status = "invalid" if bundle.patch_error else bundle.patch_path or "none"
@@ -2342,68 +1942,21 @@ def download_build_workflow(settings: dict) -> None:
     existing_action = existing_manifest_menu(settings, bundle)
     if existing_action == "back":
         return
-    if existing_action == "replace":
-        try:
-            replace_manifest_download(settings, bundle)
-        except DownloadError as exc:
-            Noir.err(str(exc))
-            press_enter()
-            return
-        Noir.ok("Existing manifest folder removed.")
+    replace_existing = existing_action == "replace"
 
-    credentials = ensure_credentials_for_download()
-    if credentials is None:
-        press_enter()
-        return
-    username, password = credentials
-
-    exe_path = depotdownloader_exe_path()
-    if not exe_path.exists():
-        try:
-            ensure_depotdownloader(settings)
-        except DownloadError as exc:
-            Noir.err(str(exc))
-            press_enter()
-            return
-        if not exe_path.exists():
-            Noir.err(f"DepotDownloader was not found: {exe_path}")
-            press_enter()
-            return
-
-    build_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        str(exe_path),
-        "-app", str(APP_ID),
-        "-depot", str(DEPOT_ID),
-        "-manifest", manifest_id,
-    ]
-    if bundle.beta_branch:
-        cmd.extend(["-beta", bundle.beta_branch])
-    cmd.extend(
-        [
-            "-dir", str(build_dir),
-            "-username", username,
-            "-password", password,
-        ]
-    )
-
-    Noir.section("DepotDownloader")
+    Noir.section("RecAgain")
     Noir.kv("Manifest", manifest_id)
-    if bundle.beta_branch:
-        Noir.kv("Beta", bundle.beta_branch)
+    if bundle.archive_date:
+        Noir.kv("Archive", bundle.archive_date)
     Noir.kv("Folder", str(build_dir))
     try:
-        exit_code = stream_depotdownloader(cmd, display_root=build_dir)
-    except DownloadError as exc:
-        Noir.err(str(exc))
-        Noir.kv("Path", str(exe_path))
+        download_recagain_archive(settings, bundle, build_dir, replace_existing=replace_existing)
+    except RecagainBuildingError as exc:
+        Noir.warn(str(exc))
         press_enter()
         return
-
-    if exit_code != 0:
-        Noir.section("Done")
-        Noir.err(f"DepotDownloader exited with code {exit_code}.")
-        Noir.kv("Log", str(log_path()))
+    except DownloadError as exc:
+        Noir.err(str(exc))
         press_enter()
         return
 
@@ -2412,6 +1965,19 @@ def download_build_workflow(settings: dict) -> None:
     clean_build_metadata(build_dir)
     apply_patch_payload(build_dir, bundle)
     remember_manifest(settings, bundle, build_dir)
+    log_path().write_text(
+        "\n".join(
+            [
+                f"manifest={manifest_id}",
+                f"archive_date={bundle.archive_date or ''}",
+                f"date_label={bundle.date_label}",
+                f"path={build_dir}",
+                f"completed_at={now_iso()}",
+            ]
+        ),
+        encoding="utf-8",
+        errors="replace",
+    )
     downloaded_build = LocalBuild(
         path=build_dir,
         name=build_dir.name,
@@ -2421,6 +1987,7 @@ def download_build_workflow(settings: dict) -> None:
         preview=False,
     )
     prompt_melonloader_after_download(downloaded_build, settings)
+    prompt_server_after_download(settings)
 
     Noir.section("Done")
     Noir.ok(str(build_dir))
@@ -2468,6 +2035,790 @@ def open_path(path: Path) -> None:
         subprocess.Popen(["open", str(path)])
     else:
         subprocess.Popen(["xdg-open", str(path)])
+
+
+class LocalBridgeError(RuntimeError):
+    pass
+
+
+class LocalBridgeAlreadyRunning(LocalBridgeError):
+    pass
+
+
+LOCAL_BRIDGE_REQUEST_SKIP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+}
+LOCAL_BRIDGE_RESPONSE_SKIP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+}
+LOCAL_BRIDGE_ACTIVE: "LocalBridge | None" = None
+LOCAL_BRIDGE_LOCK = threading.RLock()
+LOCAL_BRIDGE_PRINT_LOCK = threading.RLock()
+LOCAL_BRIDGE_BADGE_FIELD = 42
+LOCAL_BRIDGE_BADGE_LIMIT = 3
+LOCAL_BRIDGE_BADGE_LABEL_LIMIT = 10
+LOCAL_BRIDGE_BADGE_EVENTS: list[tuple[str, str, str]] = []
+LOCAL_BRIDGE_LABEL_ALIASES = {
+    "api": "",
+    "auth": "auth",
+    "authentication": "auth",
+    "avatar": "avatar",
+    "config": "config",
+    "gameconfigs": "gamecfg",
+    "gamesessions": "sessions",
+    "getorcreate": "get/create",
+    "heartbeat": "heartbeat",
+    "images": "img",
+    "messages": "msg",
+    "notification": "notify",
+    "notifications": "notify",
+    "players": "player",
+    "platformlogin": "login",
+    "profile": "profile",
+    "relationships": "rels",
+    "rooms": "rooms",
+    "versioncheck": "version",
+}
+
+
+def decode_local_bridge_upstream(values: list[int]) -> str:
+    return bytes(value ^ LOCAL_BRIDGE_UPSTREAM_KEY for value in values).decode("ascii")
+
+
+def local_bridge_default_http_upstream() -> str:
+    return decode_local_bridge_upstream(LOCAL_BRIDGE_DEFAULT_HTTP_UPSTREAM_BYTES)
+
+
+def local_bridge_default_tcp_upstream() -> str:
+    return decode_local_bridge_upstream(LOCAL_BRIDGE_DEFAULT_TCP_UPSTREAM_BYTES)
+
+
+def ensure_trailing_slash_text(value: str) -> str:
+    return value if value.endswith("/") else value + "/"
+
+
+def split_local_bridge_path_query(raw_url: str) -> tuple[str, str]:
+    raw_url = raw_url or "/"
+    parsed = parse.urlsplit(raw_url)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path or "/"
+        return path, f"?{parsed.query}" if parsed.query else ""
+
+    text = raw_url if raw_url.startswith("/") else "/" + raw_url
+    parsed = parse.urlsplit(text)
+    path = parsed.path or "/"
+    return path, f"?{parsed.query}" if parsed.query else ""
+
+
+def local_bridge_version_segment(raw_url: str) -> str:
+    path, _ = split_local_bridge_path_query(raw_url)
+    trimmed = path.strip("/")
+    if not trimmed:
+        return ""
+    return trimmed.split("/", 1)[0].lower()
+
+
+def normalize_local_bridge_dynamic_path(path: str) -> str:
+    path = path if path.startswith("/") else "/" + path
+    trimmed = path.strip("/")
+    if not trimmed:
+        return ""
+    if "/" not in trimmed:
+        return trimmed.lower()
+    first, rest = trimmed.split("/", 1)
+    return first.lower() + "/" + rest
+
+
+def local_bridge_target_url(raw_url: str, upstream_base: str) -> str:
+    path, query = split_local_bridge_path_query(raw_url)
+    suffix = normalize_local_bridge_dynamic_path(path)
+    return ensure_trailing_slash_text(upstream_base) + suffix + query
+
+
+def local_bridge_api_path_after_version(target_url: str) -> str:
+    parsed = parse.urlsplit(target_url)
+    trimmed = (parsed.path or "").strip("/")
+    if "/" not in trimmed:
+        return ""
+    return trimmed.split("/", 1)[1].strip("/").lower()
+
+
+def normalize_local_bridge_profile_id(value: object) -> str | None:
+    text = str(value or "").strip()
+    if text.isdecimal():
+        parsed = int(text)
+        if parsed > 0:
+            return str(parsed)
+    return None
+
+
+def local_bridge_profile_from_json(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    for key in ("PlayerId", "Id"):
+        profile_id = normalize_local_bridge_profile_id(value.get(key))
+        if profile_id is not None:
+            return profile_id
+    for key in ("Player", "Profile"):
+        profile_id = local_bridge_profile_from_json(value.get(key))
+        if profile_id is not None:
+            return profile_id
+    return None
+
+
+def local_bridge_should_learn_profile(method: str, target_url: str) -> bool:
+    if method.upper() != "POST":
+        return False
+    return local_bridge_api_path_after_version(target_url) in {
+        "api/players/v1/getorcreate",
+        "api/players/v1/create",
+        "api/platformlogin/v1",
+        "api/auth/v1",
+        "api/authentication/v1",
+    }
+
+
+def local_bridge_http_connection(target_url: str) -> tuple[http.client.HTTPConnection, str]:
+    parsed = parse.urlsplit(target_url)
+    if parsed.scheme == "https":
+        connection: http.client.HTTPConnection = http.client.HTTPSConnection(parsed.hostname or "", parsed.port or 443, timeout=120)
+    elif parsed.scheme == "http":
+        connection = http.client.HTTPConnection(parsed.hostname or "", parsed.port or 80, timeout=120)
+    else:
+        raise LocalBridgeError("HTTP upstream must use http:// or https://")
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    return connection, path
+
+
+def trim_local_bridge_label(value: str, limit: int = LOCAL_BRIDGE_BADGE_LABEL_LIMIT) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(1, limit - 1)] + "."
+
+
+def local_bridge_label_part(value: str) -> str:
+    clean = value.strip().lower()
+    return LOCAL_BRIDGE_LABEL_ALIASES.get(clean, clean)
+
+
+def local_bridge_api_label(raw_target: str) -> str:
+    path, _ = split_local_bridge_path_query(raw_target)
+    parts = [part.lower() for part in path.strip("/").split("/") if part]
+    if parts:
+        parts = parts[1:]
+    cleaned: list[str] = []
+    for part in parts:
+        label = local_bridge_label_part(part)
+        if not label or re.fullmatch(r"v\d+", part) or part.isdecimal():
+            continue
+        cleaned.append(label)
+    if not cleaned:
+        return "root"
+    if cleaned[-1] == "get/create":
+        return "get/create"
+    if cleaned[0] == "img" and cleaned[-1] == "profile":
+        return "profile"
+    if cleaned[-1] in {"get", "add", "init", "set"} and len(cleaned) >= 2:
+        return trim_local_bridge_label(f"{cleaned[-2]}/{cleaned[-1]}")
+    if cleaned[0] in {"player", "img"} and len(cleaned) >= 2:
+        return trim_local_bridge_label(f"{cleaned[0]}/{cleaned[-1]}")
+    if len(cleaned) >= 2 and cleaned[-1] not in {cleaned[0], "create", "update", "remove"}:
+        return trim_local_bridge_label(f"{cleaned[0]}/{cleaned[-1]}")
+    return trim_local_bridge_label(cleaned[-1] if len(cleaned) > 1 else cleaned[0])
+
+
+def local_bridge_badge_plain() -> str:
+    return "  ".join(f"{char} {label}" for char, _, label in LOCAL_BRIDGE_BADGE_EVENTS)
+
+
+def local_bridge_badge_render() -> str:
+    return "  ".join(
+        Noir.c(color, char) + Noir.c(Noir.GRAY, f" {label}")
+        for char, color, label in LOCAL_BRIDGE_BADGE_EVENTS
+    )
+
+
+def local_bridge_badge_field() -> str:
+    plain = local_bridge_badge_plain()
+    if not plain:
+        return ""
+    return (" " * max(0, LOCAL_BRIDGE_BADGE_FIELD - len(plain))) + local_bridge_badge_render()
+
+
+def draw_local_bridge_badge() -> None:
+    if not sys.stdout.isatty() or not Noir.use_color:
+        return
+    field = local_bridge_badge_field()
+    if not field:
+        return
+    column = max(1, Noir.width - LOCAL_BRIDGE_BADGE_FIELD + 1)
+    sys.stdout.write(f"\033[s\033[2;{column}H{field}\033[u")
+    sys.stdout.flush()
+
+
+def local_bridge_event(method: str, raw_target: str, status: int | str) -> None:
+    upper = method.upper()
+    if upper == "POST":
+        event = (">", Noir.BLUE, local_bridge_api_label(raw_target))
+    elif upper == "GET":
+        event = ("<", Noir.ORANGE, local_bridge_api_label(raw_target))
+    else:
+        event = ("!", Noir.RED, local_bridge_api_label(raw_target))
+    with LOCAL_BRIDGE_PRINT_LOCK:
+        LOCAL_BRIDGE_BADGE_EVENTS.append(event)
+        del LOCAL_BRIDGE_BADGE_EVENTS[:-LOCAL_BRIDGE_BADGE_LIMIT]
+        draw_local_bridge_badge()
+
+
+class LocalBridgeHttpServer(http.server.ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, server_address: tuple[str, int], handler: type[http.server.BaseHTTPRequestHandler], bridge: "LocalBridge"):
+        self.bridge = bridge
+        super().__init__(server_address, handler)
+
+
+class LocalBridgeHttpHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "RecRoomLocalBridge/py"
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:
+        self.handle_bridge_request()
+
+    def do_POST(self) -> None:
+        self.handle_bridge_request()
+
+    def do_PUT(self) -> None:
+        self.handle_bridge_request()
+
+    def do_DELETE(self) -> None:
+        self.handle_bridge_request()
+
+    def do_PATCH(self) -> None:
+        self.handle_bridge_request()
+
+    def do_OPTIONS(self) -> None:
+        self.handle_bridge_request()
+
+    def handle_bridge_request(self) -> None:
+        bridge = self.server.bridge  # type: ignore[attr-defined]
+        raw_target = self.path or "/"
+        version_key = local_bridge_version_segment(raw_target)
+        bridge.remember_profile_id(version_key, self.headers.get(LOCAL_BRIDGE_PROFILE_HEADER))
+        try:
+            target_url = local_bridge_target_url(raw_target, bridge.http_upstream)
+            status = self.forward_to_upstream(bridge, target_url, version_key)
+        except Exception as exc:
+            status = 502
+            self.write_plain_response(status, f"Upstream request failed: {type(exc).__name__}: {exc}")
+        finally:
+            local_bridge_event(self.command, raw_target, status)
+
+    def request_body(self) -> bytes | None:
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(raw_length or "0")
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return None
+        return self.rfile.read(length)
+
+    def upstream_headers(self, bridge: "LocalBridge", version_key: str) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        has_profile_header = False
+        for name, value in self.headers.items():
+            lower = name.lower()
+            if lower in LOCAL_BRIDGE_REQUEST_SKIP_HEADERS:
+                continue
+            if lower == LOCAL_BRIDGE_PROFILE_HEADER.lower():
+                has_profile_header = bool(str(value).strip())
+            headers[name] = value
+        if not has_profile_header:
+            remembered = bridge.remembered_profile_id(version_key)
+            if remembered:
+                headers[LOCAL_BRIDGE_PROFILE_HEADER] = remembered
+        if not any(name.lower() == "accept-encoding" for name in headers):
+            headers["Accept-Encoding"] = "identity"
+        headers["X-Forwarded-Host"] = self.headers.get("Host", f"localhost:{LOCAL_BRIDGE_HTTP_PORT}")
+        headers["X-Forwarded-Proto"] = "http"
+        if self.client_address:
+            headers["X-Forwarded-For"] = str(self.client_address[0])
+        return headers
+
+    def forward_to_upstream(self, bridge: "LocalBridge", target_url: str, version_key: str) -> int:
+        body = self.request_body()
+        headers = self.upstream_headers(bridge, version_key)
+        connection, upstream_path = local_bridge_http_connection(target_url)
+        try:
+            connection.request(self.command, upstream_path, body=body, headers=headers)
+            response = connection.getresponse()
+            response_body = response.read()
+        finally:
+            connection.close()
+
+        if local_bridge_should_learn_profile(self.command, target_url) and 200 <= int(response.status) < 300:
+            try:
+                payload = json.loads(response_body.decode("utf-8-sig"))
+            except Exception:
+                payload = None
+            bridge.remember_profile_id(version_key, local_bridge_profile_from_json(payload))
+
+        self.send_response(response.status, response.reason)
+        for name, value in response.getheaders():
+            if name.lower() in LOCAL_BRIDGE_RESPONSE_SKIP_HEADERS:
+                continue
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(response_body)))
+        self.end_headers()
+        if response_body:
+            self.wfile.write(response_body)
+        self.close_connection = True
+        return int(response.status)
+
+    def write_plain_response(self, status: int, text: str) -> None:
+        body = text.encode("utf-8", errors="replace")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
+
+class LocalBridge:
+    def __init__(
+        self,
+        *,
+        http_port: int = LOCAL_BRIDGE_HTTP_PORT,
+        tcp_port: int = LOCAL_BRIDGE_TCP_PORT,
+        http_upstream: str | None = None,
+        tcp_upstream: str | None = None,
+        bind_any: bool = False,
+    ):
+        self.http_port = http_port
+        self.tcp_port = tcp_port
+        self.http_upstream = ensure_trailing_slash_text(http_upstream or local_bridge_default_http_upstream())
+        self.tcp_upstream = ensure_trailing_slash_text(tcp_upstream or local_bridge_default_tcp_upstream())
+        self.bind_any = bind_any
+        self.stop_event = threading.Event()
+        self.profile_ids: dict[str, str] = {}
+        self.profile_lock = threading.RLock()
+        self.active_sockets: set[socket.socket] = set()
+        self.active_sockets_lock = threading.RLock()
+        self.http_server: LocalBridgeHttpServer | None = None
+        self.http_thread: threading.Thread | None = None
+        self.tcp_listener: socket.socket | None = None
+        self.tcp_thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        host = "0.0.0.0" if self.bind_any else "127.0.0.1"
+        try:
+            self.http_server = LocalBridgeHttpServer((host, self.http_port), LocalBridgeHttpHandler, self)
+            self.http_thread = threading.Thread(target=self.http_server.serve_forever, name="RecRoomLocalBridgeHTTP", daemon=True)
+            self.http_thread.start()
+            self.start_tcp_listener(host)
+        except OSError as exc:
+            self.stop()
+            if self.port_is_listening(self.http_port) or self.port_is_listening(self.tcp_port):
+                raise LocalBridgeAlreadyRunning("Server is already on. No need to run again.") from exc
+            raise LocalBridgeError(str(exc)) from exc
+
+    def start_tcp_listener(self, host: str) -> None:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((host, self.tcp_port))
+        listener.listen()
+        listener.settimeout(0.5)
+        self.tcp_listener = listener
+        self.tcp_thread = threading.Thread(target=self.run_tcp_listener, name="RecRoomLocalBridgeTCP", daemon=True)
+        self.tcp_thread.start()
+
+    def is_running(self) -> bool:
+        return (
+            self.http_thread is not None
+            and self.http_thread.is_alive()
+            and self.tcp_thread is not None
+            and self.tcp_thread.is_alive()
+            and not self.stop_event.is_set()
+        )
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.http_server is not None:
+            try:
+                self.http_server.shutdown()
+            except Exception:
+                pass
+            try:
+                self.http_server.server_close()
+            except Exception:
+                pass
+        if self.tcp_listener is not None:
+            try:
+                self.tcp_listener.close()
+            except OSError:
+                pass
+        with self.active_sockets_lock:
+            sockets = list(self.active_sockets)
+        for item in sockets:
+            self.close_socket(item)
+
+    def remember_profile_id(self, version_key: str, raw_id: object) -> None:
+        profile_id = normalize_local_bridge_profile_id(raw_id)
+        if not version_key or profile_id is None:
+            return
+        with self.profile_lock:
+            self.profile_ids[version_key] = profile_id
+
+    def remembered_profile_id(self, version_key: str) -> str | None:
+        if not version_key:
+            return None
+        with self.profile_lock:
+            return self.profile_ids.get(version_key)
+
+    def register_socket(self, item: socket.socket) -> None:
+        with self.active_sockets_lock:
+            self.active_sockets.add(item)
+
+    def unregister_socket(self, item: socket.socket) -> None:
+        with self.active_sockets_lock:
+            self.active_sockets.discard(item)
+
+    @staticmethod
+    def close_socket(item: socket.socket) -> None:
+        try:
+            item.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            item.close()
+        except OSError:
+            pass
+
+    @staticmethod
+    def port_is_listening(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            return probe.connect_ex(("127.0.0.1", port)) == 0
+
+    def run_tcp_listener(self) -> None:
+        assert self.tcp_listener is not None
+        while not self.stop_event.is_set():
+            try:
+                client, _ = self.tcp_listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self.register_socket(client)
+            thread = threading.Thread(target=self.handle_tcp_client, args=(client,), name="RecRoomLocalBridgeTCPClient", daemon=True)
+            thread.start()
+
+    def handle_tcp_client(self, client: socket.socket) -> None:
+        upstream: socket.socket | None = None
+        raw_target = "/"
+        status = "?"
+        try:
+            client.settimeout(120)
+            headers, leftover = self.read_header_block(client)
+            rewritten_headers, raw_target, upstream_url = self.rewrite_websocket_handshake(headers)
+            upstream = self.connect_tcp_upstream(upstream_url)
+            self.register_socket(upstream)
+            upstream.sendall(rewritten_headers)
+            if leftover:
+                upstream.sendall(leftover)
+
+            response_headers, upstream_leftover = self.read_header_block(upstream)
+            status_line = response_headers.decode("latin-1", errors="replace").split("\r\n", 1)[0]
+            status_parts = status_line.split()
+            status = status_parts[1] if len(status_parts) >= 2 and status_parts[1].isdigit() else status_line
+            client.sendall(response_headers)
+            if upstream_leftover:
+                client.sendall(upstream_leftover)
+            local_bridge_event("GET", raw_target, status)
+            self.pipe_tcp_pair(client, upstream)
+        except Exception:
+            local_bridge_event("ERR", raw_target, status)
+            self.try_write_bad_gateway(client)
+        finally:
+            if upstream is not None:
+                self.unregister_socket(upstream)
+                self.close_socket(upstream)
+            self.unregister_socket(client)
+            self.close_socket(client)
+
+    def rewrite_websocket_handshake(self, headers: bytes) -> tuple[bytes, str, str]:
+        text = headers.decode("latin-1", errors="replace")
+        lines = text.split("\r\n")
+        if not lines or not lines[0].strip():
+            raise LocalBridgeError("Missing WebSocket request line.")
+        request_line = lines[0].split(" ", 2)
+        if len(request_line) != 3:
+            raise LocalBridgeError(f"Invalid WebSocket request line: {lines[0]}")
+        method, raw_target, version = request_line
+        if method.upper() != "GET":
+            raise LocalBridgeError(f"Expected WebSocket GET request, got {method}")
+
+        upstream_url = local_bridge_target_url(raw_target, self.tcp_upstream)
+        upstream = parse.urlsplit(upstream_url)
+        upstream_target = upstream.path or "/"
+        if upstream.query:
+            upstream_target += "?" + upstream.query
+        host_value = upstream.hostname or ""
+        if upstream.port:
+            host_value = f"{host_value}:{upstream.port}"
+
+        version_key = local_bridge_version_segment(raw_target)
+        has_profile_header = False
+        rewritten = [f"{method} {upstream_target} {version}", f"Host: {host_value}"]
+        for line in lines[1:]:
+            if not line:
+                continue
+            if ":" not in line:
+                rewritten.append(line)
+                continue
+            name, value = line.split(":", 1)
+            lower = name.strip().lower()
+            cleaned_value = value.strip()
+            if lower == LOCAL_BRIDGE_PROFILE_HEADER.lower():
+                has_profile_header = bool(cleaned_value)
+                self.remember_profile_id(version_key, cleaned_value)
+            if lower in {"host", "proxy-connection"}:
+                continue
+            rewritten.append(line)
+        if not has_profile_header:
+            remembered = self.remembered_profile_id(version_key)
+            if remembered:
+                rewritten.append(f"{LOCAL_BRIDGE_PROFILE_HEADER}: {remembered}")
+        return ("\r\n".join(rewritten) + "\r\n\r\n").encode("latin-1"), raw_target, upstream_url
+
+    def connect_tcp_upstream(self, upstream_url: str) -> socket.socket:
+        upstream = parse.urlsplit(upstream_url)
+        if upstream.scheme not in {"ws", "wss"}:
+            raise LocalBridgeError("TCP upstream must use ws:// or wss://")
+        host = upstream.hostname or ""
+        port = upstream.port or (443 if upstream.scheme == "wss" else 80)
+        raw_socket = socket.create_connection((host, port), timeout=120)
+        if upstream.scheme == "wss":
+            context = ssl.create_default_context()
+            return context.wrap_socket(raw_socket, server_hostname=host)
+        return raw_socket
+
+    def read_header_block(self, source: socket.socket) -> tuple[bytes, bytes]:
+        data = bytearray()
+        while b"\r\n\r\n" not in data:
+            chunk = source.recv(4096)
+            if not chunk:
+                raise LocalBridgeError("Connection closed before headers finished.")
+            data.extend(chunk)
+            if len(data) > LOCAL_BRIDGE_HANDSHAKE_LIMIT:
+                raise LocalBridgeError("Headers exceeded 64 KiB.")
+        end = data.index(b"\r\n\r\n") + 4
+        return bytes(data[:end]), bytes(data[end:])
+
+    def pipe_tcp_pair(self, left: socket.socket, right: socket.socket) -> None:
+        sockets = [left, right]
+        for item in sockets:
+            item.settimeout(0.5)
+        while not self.stop_event.is_set():
+            try:
+                readable, _, _ = select.select(sockets, [], [], 0.5)
+            except (OSError, ValueError):
+                return
+            for source in readable:
+                target = right if source is left else left
+                try:
+                    chunk = source.recv(LOCAL_BRIDGE_BUFFER_SIZE)
+                    if not chunk:
+                        return
+                    target.sendall(chunk)
+                except (OSError, ssl.SSLError):
+                    return
+
+    @staticmethod
+    def try_write_bad_gateway(client: socket.socket) -> None:
+        try:
+            client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+        except OSError:
+            pass
+
+
+def local_bridge_port_busy() -> bool:
+    return LocalBridge.port_is_listening(LOCAL_BRIDGE_HTTP_PORT) or LocalBridge.port_is_listening(LOCAL_BRIDGE_TCP_PORT)
+
+
+def active_local_bridge_running() -> bool:
+    with LOCAL_BRIDGE_LOCK:
+        return LOCAL_BRIDGE_ACTIVE is not None and LOCAL_BRIDGE_ACTIVE.is_running()
+
+
+def start_local_bridge_background(settings: dict | None = None, *, announce: bool = True) -> bool:
+    global LOCAL_BRIDGE_ACTIVE
+    with LOCAL_BRIDGE_LOCK:
+        if LOCAL_BRIDGE_ACTIVE is not None and LOCAL_BRIDGE_ACTIVE.is_running():
+            Noir.warn("Server is already on. No need to run again.")
+            return True
+        if local_bridge_port_busy():
+            Noir.warn("Server is already on. No need to run again.")
+            return True
+        if announce:
+            Noir.blue_info("Launching server.")
+        config = (settings or {}).get("server", {})
+        bridge = LocalBridge(
+            http_port=int(config.get("http_port") or LOCAL_BRIDGE_HTTP_PORT),
+            tcp_port=int(config.get("tcp_port") or LOCAL_BRIDGE_TCP_PORT),
+            http_upstream=str(config.get("http_upstream") or local_bridge_default_http_upstream()),
+            tcp_upstream=str(config.get("tcp_upstream") or local_bridge_default_tcp_upstream()),
+            bind_any=bool(config.get("bind_any", False)),
+        )
+        try:
+            bridge.start()
+        except LocalBridgeAlreadyRunning as exc:
+            Noir.warn(str(exc))
+            return True
+        except Exception as exc:
+            Noir.err(f"Could not launch server: {exc}")
+            return False
+        LOCAL_BRIDGE_ACTIVE = bridge
+        if settings is not None:
+            server = settings.setdefault("server", {})
+            server["last_started_at"] = now_iso()
+            save_settings(settings)
+        Noir.ok(f"Server running on localhost:{bridge.http_port} / localhost:{bridge.tcp_port}")
+        return True
+
+
+def stop_local_bridge(*, announce: bool = False) -> None:
+    global LOCAL_BRIDGE_ACTIVE
+    with LOCAL_BRIDGE_LOCK:
+        bridge = LOCAL_BRIDGE_ACTIVE
+        LOCAL_BRIDGE_ACTIVE = None
+    if bridge is None:
+        if announce:
+            Noir.warn("Server is not running.")
+        return
+    bridge.stop()
+    if announce:
+        Noir.ok("Server stopped.")
+
+
+def server_policy_value(policy: object) -> str:
+    value = str(policy or "ask").strip().lower()
+    if value in {"always", "everytime", "launch_everytime", "launch_every_time"}:
+        return "always"
+    if value in {"ignore", "ignored", "never"}:
+        return "ignore"
+    return "ask"
+
+
+def current_server_policy(settings: dict) -> str:
+    return server_policy_value(settings.setdefault("server", {}).get("policy"))
+
+
+def save_server_policy(settings: dict, policy: object) -> str:
+    selected = server_policy_value(policy)
+    settings.setdefault("server", {})["policy"] = selected
+    save_settings(settings)
+    return selected
+
+
+def server_policy_label(policy: object) -> str:
+    selected = server_policy_value(policy)
+    if selected == "always":
+        return "Launch everytime in the background"
+    if selected == "ignore":
+        return "Ignore"
+    return "Ask after downloads"
+
+
+def prompt_server_after_download(settings: dict) -> None:
+    Noir.section("Server")
+    Noir.warn("You must run the server in order to connect to my stuff.")
+    Noir.menu(
+        [
+            ("1", "Launch everytime in the background"),
+            ("2", "Launch this once"),
+            ("3", "Ignore"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    choice = prompt_choice({"1", "2", "3"})
+    if choice == "1":
+        save_server_policy(settings, "always")
+        start_local_bridge_background(settings, announce=True)
+    elif choice == "2":
+        start_local_bridge_background(settings, announce=True)
+    elif choice == "3":
+        save_server_policy(settings, "ignore")
+        Noir.warn("Server ignored for future automatic prompts.")
+
+
+def ensure_server_for_build_launch(settings: dict) -> None:
+    if current_server_policy(settings) != "always":
+        return
+    start_local_bridge_background(settings, announce=True)
+
+
+def server_menu(settings: dict) -> None:
+    while True:
+        Noir.clear()
+        Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
+        Noir.section("Server")
+        Noir.kv("Status", "running" if active_local_bridge_running() else "stopped")
+        Noir.kv("Policy", server_policy_label(current_server_policy(settings)))
+        rows = [
+            ("1", "Launch everytime in the background"),
+            ("2", "Launch this once"),
+            ("3", "Ignore"),
+        ]
+        choices = {"1", "2", "3", "0"}
+        if active_local_bridge_running():
+            rows.append(("4", "Stop server"))
+            choices.add("4")
+        rows.append(("0", "Back"))
+        Noir.menu(rows)
+        Noir.line(color=Noir.DARK)
+        choice = prompt_choice(choices)
+        if choice == "0":
+            return
+        if choice == "1":
+            save_server_policy(settings, "always")
+            start_local_bridge_background(settings, announce=True)
+            press_enter()
+        elif choice == "2":
+            start_local_bridge_background(settings, announce=True)
+            press_enter()
+        elif choice == "3":
+            save_server_policy(settings, "ignore")
+            Noir.warn("Server ignored for future automatic prompts.")
+            press_enter()
+        elif choice == "4":
+            stop_local_bridge(announce=True)
+            press_enter()
 
 
 def install_melonloader_for_build(build: LocalBuild, settings: dict) -> bool:
@@ -2563,6 +2914,7 @@ def launch_build(build: LocalBuild, settings: dict) -> None:
     if not handle_windows11_historical_launch(build, settings):
         Noir.warn("Launch canceled.")
         return
+    ensure_server_for_build_launch(settings)
     open_path(exe_path)
     Noir.ok(f"Launched: {exe_path.name}")
 
@@ -2669,58 +3021,6 @@ def open_build_storage(settings: dict) -> None:
     press_enter()
 
 
-def steam_settings(settings: dict) -> None:
-    while True:
-        Noir.clear()
-        Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
-        Noir.section("Steam")
-        try:
-            state = load_credential_state()
-        except CredentialError as exc:
-            Noir.warn(str(exc))
-            state = {"version": 1, "reuse_credentials": True}
-
-        saved = has_saved_credentials(state)
-        reuse = bool(state.get("reuse_credentials", True))
-        if saved:
-            Noir.ok("Saved login found.")
-            Noir.kv("Reuse", "on" if reuse else "off")
-        else:
-            Noir.warn("No saved login.")
-        Noir.menu(
-            [
-                ("1", "Replace login" if saved else "Set login"),
-                ("2", "Enable reuse" if not reuse else "Disable reuse"),
-                ("3", "Clear login"),
-                ("0", "Back"),
-            ]
-        )
-        Noir.line(color=Noir.DARK)
-        choice = prompt_choice({"1", "2", "3", "0"})
-        if choice == "0":
-            return
-        if choice == "1":
-            try:
-                prompt_for_credentials()
-                Noir.ok("Login saved.")
-            except CredentialError as exc:
-                Noir.err(str(exc))
-            press_enter()
-        elif choice == "2":
-            if not saved:
-                Noir.warn("Save a login first.")
-            else:
-                state["reuse_credentials"] = not reuse
-                save_credential_state(state)
-                Noir.ok(f"Reuse {'enabled' if state['reuse_credentials'] else 'disabled'}.")
-            press_enter()
-        elif choice == "3":
-            if credentials_path().exists():
-                credentials_path().unlink()
-            Noir.ok("Login cleared.")
-            press_enter()
-
-
 def preview_settings(settings: dict) -> None:
     while True:
         Noir.clear()
@@ -2728,30 +3028,27 @@ def preview_settings(settings: dict) -> None:
         Noir.section("Settings")
         Noir.menu(
             [
-                ("1", "Steam"),
-                ("2", "Open storage"),
-                ("3", "Shortcut"),
-                ("4", "Status"),
-                ("5", "MelonLoader"),
-                ("6", "Raw settings"),
+                ("1", "Open storage"),
+                ("2", "Shortcut"),
+                ("3", "Status"),
+                ("4", "MelonLoader"),
+                ("5", "Raw settings"),
                 ("0", "Back"),
             ]
         )
         Noir.line(color=Noir.DARK)
-        choice = prompt_choice({"1", "2", "3", "4", "5", "6", "0"})
+        choice = prompt_choice({"1", "2", "3", "4", "5", "0"})
         if choice == "0":
             return
         if choice == "1":
-            steam_settings(settings)
-        elif choice == "2":
             open_build_storage(settings)
-        elif choice == "3":
+        elif choice == "2":
             create_shortcut_from_menu(settings)
-        elif choice == "4":
+        elif choice == "3":
             system_check(settings)
-        elif choice == "5":
+        elif choice == "4":
             melonloader_settings(settings)
-        elif choice == "6":
+        elif choice == "5":
             print(json.dumps(settings, indent=2))
             press_enter()
 
@@ -2779,16 +3076,16 @@ def main() -> int:
     settings = load_settings()
 
     try:
-        ensure_depotdownloader(settings)
+        ensure_repo_data_file(RECAGAIN_CSV_NAME)
+        ensure_repo_data_file(STEAMDB_CSV_NAME)
     except DownloadError as exc:
-        Noir.err(str(exc))
-        return 1
+        Noir.warn(str(exc))
     settings = load_settings()
 
     while True:
         Noir.clear()
         render_home(settings)
-        choice = prompt_choice({"1", "2", "3", "0"})
+        choice = prompt_choice({"1", "2", "3", "4", "0"})
         if choice == "0":
             Noir.ok("Bye.")
             return 0
@@ -2799,12 +3096,17 @@ def main() -> int:
                 browse_local_builds(settings)
             elif choice == "3":
                 preview_settings(settings)
+            elif choice == "4":
+                server_menu(settings)
         except Exception as exc:
             write_error_log(exc)
             Noir.err(str(exc))
             Noir.kv("Log", str(error_log_path()))
             press_enter()
         settings = load_settings()
+
+
+atexit.register(stop_local_bridge)
 
 
 if __name__ == "__main__":

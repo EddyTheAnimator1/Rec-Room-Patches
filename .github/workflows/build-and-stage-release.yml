@@ -6,7 +6,11 @@ on:
       - main
       - master
     paths:
+      - .github/workflows/build-and-stage-release.yml
       - Release.py
+      - RecRoomPatches.spec
+      - recagain.csv
+      - steamdb.csv
   workflow_dispatch:
 
 permissions:
@@ -79,8 +83,15 @@ jobs:
       - name: Install PyInstaller
         run: python -m pip install --upgrade pip pyinstaller
 
+      - name: Download bundled MelonLoader
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/LavaGang/MelonLoader/releases/download/v0.5.7/MelonLoader.x64.zip" `
+            -OutFile "MelonLoader.x64.zip"
+
       - name: Build RecRoomPatches.exe
-        run: python -m PyInstaller --noconfirm --clean --onefile --name RecRoomPatches --icon RecRoom.ico Release.py
+        run: python -m PyInstaller --noconfirm --clean RecRoomPatches.spec
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
