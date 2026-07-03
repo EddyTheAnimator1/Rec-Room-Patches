@@ -2152,9 +2152,9 @@ def normalize_local_bridge_dynamic_path(path: str) -> str:
     if not trimmed:
         return ""
     if "/" not in trimmed:
-        return trimmed.lower()
+        return trimmed
     first, rest = trimmed.split("/", 1)
-    return first.lower() + "/" + rest
+    return first + "/" + rest
 
 
 def local_bridge_target_url(raw_url: str, upstream_base: str) -> str:
