@@ -26,7 +26,7 @@ There is a discord server available! https://discord.gg/nrpWndwvwy
 
 # Installation
 1. Go to https://github.com/EddyTheAnimator1/Rec-Room-Patches/releases and download the RecRoompatches.exe
-2. Put the RecRoompatches.exe in a folder to stay organized (It downloads builds through RecAgain)
+2. Put the RecRoompatches.exe in a folder to stay organized (It downloads builds by manifest ID through RecAgain)
 
 If you want to know how it works. Check out https://github.com/EddyTheAnimator1/Rec-Room-Patches/blob/main/Release.py
 

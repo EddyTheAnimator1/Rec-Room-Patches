@@ -9,7 +9,6 @@ on:
       - .github/workflows/build-and-stage-release.yml
       - Release.py
       - RecRoomPatches.spec
-      - recagain.csv
       - steamdb.csv
   workflow_dispatch:
 

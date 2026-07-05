@@ -1,5 +1,4 @@
 import atexit
-import csv
 import http.client
 import http.server
 import json
@@ -30,9 +29,8 @@ LOG_NAME = "last_recagain_noir.log"
 ERROR_LOG_NAME = "last_release_noir_error.log"
 PREVIEW_STATE_VERSION = 1
 USER_AGENT = "Release-Noir/1.0"
-RECAGAIN_CSV_NAME = "recagain.csv"
 STEAMDB_CSV_NAME = "steamdb.csv"
-RECAGAIN_DOWNLOAD_URL = "https://archive.recagain.site/download/{date}"
+RECAGAIN_DOWNLOAD_URL = "https://archive.recagain.site/download/{kind}/{identifier}"
 RECAGAIN_BUILDING_MESSAGE = "You must wait for this build, it's currently downloading on the recagain servers"
 LOCAL_BRIDGE_HTTP_PORT = 2000
 LOCAL_BRIDGE_TCP_PORT = 2001
@@ -103,7 +101,6 @@ INVALID_WIN_CHARS = {
     "*": "-",
 }
 TREE_CACHE: dict[str, list[str]] = {}
-RECAGAIN_DATE_CACHE: dict[str, str] | None = None
 
 
 class DownloadError(RuntimeError):
@@ -149,7 +146,6 @@ class ManifestBundle:
     patch_payload: dict | list | None
     patch_error: str | None = None
     local_folder: Path | None = None
-    archive_date: str | None = None
 
 
 @dataclass
@@ -674,55 +670,6 @@ def ensure_repo_data_file(name: str) -> Path:
     raise DownloadError(f"{name} was not found next to RecRoomPatches.exe and could not be downloaded from the repo{detail}")
 
 
-def normalize_csv_header(value: str) -> str:
-    return value.strip().lstrip("\ufeff").lower().replace(" ", "").replace("_", "")
-
-
-def csv_value(row: dict[str, str], *names: str) -> str:
-    wanted = {normalize_csv_header(name) for name in names}
-    for key, value in row.items():
-        if normalize_csv_header(str(key)) in wanted:
-            return str(value or "").strip()
-    return ""
-
-
-def normalize_recagain_date(value: str) -> str:
-    cleaned = value.strip()
-    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})T(\d{2})[:-](\d{2})[:-](\d{2})Z", cleaned)
-    if match:
-        return f"{match.group(1)}T{match.group(2)}-{match.group(3)}-{match.group(4)}Z"
-    return cleaned
-
-
-def load_recagain_manifest_dates() -> dict[str, str]:
-    global RECAGAIN_DATE_CACHE
-    if RECAGAIN_DATE_CACHE is not None:
-        return RECAGAIN_DATE_CACHE
-
-    csv_path = ensure_repo_data_file(RECAGAIN_CSV_NAME)
-    dates: dict[str, str] = {}
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            manifest_id = normalize_manifest_id(csv_value(row, "Manifest", "ManifestID"))
-            raw_date = csv_value(row, "Date")
-            if manifest_id is None or not raw_date:
-                continue
-            dates.setdefault(manifest_id, normalize_recagain_date(raw_date))
-
-    if not dates:
-        raise ManifestError(f"{RECAGAIN_CSV_NAME} did not contain any manifest dates.")
-    RECAGAIN_DATE_CACHE = dates
-    return dates
-
-
-def recagain_date_for_manifest(manifest_id: str) -> str:
-    archive_date = load_recagain_manifest_dates().get(manifest_id)
-    if archive_date:
-        return archive_date
-    raise ManifestError(f"Manifest {manifest_id} was not found in {RECAGAIN_CSV_NAME}.")
-
-
 def get_repo_tree(branch: str) -> list[str]:
     if branch in TREE_CACHE:
         return TREE_CACHE[branch]
@@ -806,7 +753,6 @@ def make_manifest_bundle(
     patch_payload: dict | list | None,
     patch_error: str | None = None,
     local_folder: Path | None = None,
-    archive_date: str | None = None,
 ) -> ManifestBundle:
     date_label = format_manifest_date(raw_date) if raw_date else "Unknown"
     folder_label = date_label if raw_date else fallback_folder_label(manifest_id, beta_branch)
@@ -822,11 +768,10 @@ def make_manifest_bundle(
         patch_payload=patch_payload,
         patch_error=patch_error,
         local_folder=local_folder,
-        archive_date=archive_date,
     )
 
 
-def fallback_manifest_bundle(manifest_id: str, archive_date: str | None) -> ManifestBundle:
+def fallback_manifest_bundle(manifest_id: str) -> ManifestBundle:
     beta_branch = beta_branch_for_manifest(manifest_id)
     lookup_name = manifest_lookup_name(manifest_id, beta_branch)
     return make_manifest_bundle(
@@ -834,11 +779,10 @@ def fallback_manifest_bundle(manifest_id: str, archive_date: str | None) -> Mani
         beta_branch=beta_branch,
         branch=None,
         folder_name=lookup_name,
-        raw_date=archive_date or "",
+        raw_date="",
         patch_path=None,
         patch_payload=None,
         local_folder=None,
-        archive_date=archive_date,
     )
 
 
@@ -849,7 +793,7 @@ def read_local_patch_payload(patch_path: Path, manifest_name: str) -> tuple[dict
         return None, f"Patch.json was invalid for manifest {manifest_name}: {exc}"
 
 
-def load_local_manifest_bundle(manifest_id: str, archive_date: str | None) -> ManifestBundle | None:
+def load_local_manifest_bundle(manifest_id: str) -> ManifestBundle | None:
     beta_branch = beta_branch_for_manifest(manifest_id)
     folder_name = manifest_lookup_name(manifest_id, beta_branch)
     folder = script_dir() / "manifest" / folder_name
@@ -870,7 +814,6 @@ def load_local_manifest_bundle(manifest_id: str, archive_date: str | None) -> Ma
         patch_payload=patch_payload,
         patch_error=patch_error,
         local_folder=folder,
-        archive_date=archive_date,
     )
 
 
@@ -887,8 +830,7 @@ def manifest_folder_names(paths: list[str]) -> list[str]:
 
 
 def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
-    archive_date = recagain_date_for_manifest(manifest_id)
-    local_bundle = load_local_manifest_bundle(manifest_id, archive_date)
+    local_bundle = load_local_manifest_bundle(manifest_id)
     if local_bundle is not None:
         return local_bundle
 
@@ -926,12 +868,11 @@ def lookup_manifest_bundle(manifest_id: str) -> ManifestBundle:
                 patch_payload=patch_payload,
                 patch_error=patch_error,
                 local_folder=None,
-                archive_date=archive_date,
             )
         except Exception:
             continue
 
-    return fallback_manifest_bundle(manifest_id, archive_date)
+    return fallback_manifest_bundle(manifest_id)
 
 
 def melonloader_zip_path() -> Path:
@@ -994,8 +935,11 @@ def clean_work_dir(work_dir: Path) -> None:
         work_dir.unlink()
 
 
-def recagain_download_url(archive_date: str) -> str:
-    return RECAGAIN_DOWNLOAD_URL.format(date=parse.quote(archive_date, safe=""))
+def recagain_download_url(kind: str, identifier: str) -> str:
+    return RECAGAIN_DOWNLOAD_URL.format(
+        kind=parse.quote(kind, safe=""),
+        identifier=parse.quote(identifier, safe=""),
+    )
 
 
 def recagain_state_from_json(data: bytes) -> dict | None:
@@ -1024,11 +968,8 @@ def raise_for_recagain_state(data: bytes) -> None:
 
 
 def download_recagain_zip(bundle: ManifestBundle, work_dir: Path) -> Path:
-    if not bundle.archive_date:
-        raise DownloadError(f"Manifest {bundle.manifest_id} does not have a RecAgain archive date.")
-
-    zip_path = work_dir / f"{bundle.archive_date}.zip"
-    url = recagain_download_url(bundle.archive_date)
+    zip_path = work_dir / f"{bundle.manifest_id}.zip"
+    url = recagain_download_url("manifest", bundle.manifest_id)
     req = request.Request(
         url,
         headers={
@@ -1885,12 +1826,7 @@ def status_checks(settings: dict) -> None:
     else:
         Noir.step("GitHub", "OK", f"v{latest}")
     Noir.step("Storage", "OK", "Builds")
-    try:
-        count = len(load_recagain_manifest_dates())
-    except (DownloadError, ManifestError) as exc:
-        Noir.step("RecAgain CSV", "WARN", str(exc))
-    else:
-        Noir.step("RecAgain CSV", "OK", f"{count} manifests")
+    Noir.step("RecAgain", "OK", "manifest endpoint")
     steamdb_path = local_data_path(STEAMDB_CSV_NAME)
     Noir.step("SteamDB CSV", "OK" if steamdb_path.exists() else "WARN", steamdb_path.name)
 
@@ -1942,8 +1878,6 @@ def download_build_workflow(settings: dict) -> None:
         return
     build_dir = manifest_download_path(settings, bundle)
     Noir.kv("Date", bundle.date_label)
-    if bundle.archive_date:
-        Noir.kv("RecAgain", bundle.archive_date)
     if bundle.beta_branch:
         Noir.kv("Beta", bundle.beta_branch)
     patch_status = "invalid" if bundle.patch_error else bundle.patch_path or "none"
@@ -1957,8 +1891,6 @@ def download_build_workflow(settings: dict) -> None:
 
     Noir.section("RecAgain")
     Noir.kv("Manifest", manifest_id)
-    if bundle.archive_date:
-        Noir.kv("Archive", bundle.archive_date)
     Noir.kv("Folder", str(build_dir))
     try:
         download_recagain_archive(settings, bundle, build_dir, replace_existing=replace_existing)
@@ -1980,7 +1912,7 @@ def download_build_workflow(settings: dict) -> None:
         "\n".join(
             [
                 f"manifest={manifest_id}",
-                f"archive_date={bundle.archive_date or ''}",
+                f"download_url={recagain_download_url('manifest', manifest_id)}",
                 f"date_label={bundle.date_label}",
                 f"path={build_dir}",
                 f"completed_at={now_iso()}",
@@ -3104,7 +3036,6 @@ def main() -> int:
     settings = load_settings()
 
     try:
-        ensure_repo_data_file(RECAGAIN_CSV_NAME)
         ensure_repo_data_file(STEAMDB_CSV_NAME)
     except DownloadError as exc:
         Noir.warn(str(exc))

@@ -6,7 +6,6 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('recagain.csv', '.'),
         ('steamdb.csv', '.'),
         ('MelonLoader.x64.zip', '.'),
     ],
