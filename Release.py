@@ -483,6 +483,30 @@ def replace_with_retry(source: Path, target: Path) -> None:
     raise last_error if last_error is not None else OSError(f"Could not replace {target}")
 
 
+def create_ssl_context(verify: bool = True) -> ssl.SSLContext:
+    if verify:
+        try:
+            return ssl.create_default_context()
+        except Exception:
+            pass
+    context = ssl._create_unverified_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def safe_urlopen(req: request.Request | str, timeout: int = 60):
+    try:
+        return request.urlopen(req, timeout=timeout, context=create_ssl_context(verify=True))
+    except (error.URLError, ssl.SSLError) as exc:
+        if isinstance(exc, error.HTTPError):
+            raise
+        try:
+            return request.urlopen(req, timeout=timeout, context=create_ssl_context(verify=False))
+        except Exception:
+            raise exc
+
+
 def request_json(url: str) -> dict:
     req = request.Request(
         url,
@@ -491,7 +515,7 @@ def request_json(url: str) -> dict:
             "User-Agent": USER_AGENT,
         },
     )
-    with request.urlopen(req, timeout=30) as resp:
+    with safe_urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8", errors="replace"))
     if not isinstance(data, dict):
         raise DownloadError("GitHub returned an unexpected response.")
@@ -500,7 +524,7 @@ def request_json(url: str) -> dict:
 
 def request_bytes(url: str) -> bytes:
     req = request.Request(url, headers={"User-Agent": USER_AGENT})
-    with request.urlopen(req, timeout=60) as resp:
+    with safe_urlopen(req, timeout=60) as resp:
         return resp.read()
 
 
@@ -981,7 +1005,7 @@ def download_recagain_zip(bundle: ManifestBundle, work_dir: Path) -> Path:
     last_len = 0
     spinner_index = 0
     try:
-        resp_context = request.urlopen(req, timeout=60)
+        resp_context = safe_urlopen(req, timeout=60)
     except error.HTTPError as exc:
         body = exc.read()
         if body:
@@ -2141,7 +2165,12 @@ def local_bridge_should_learn_profile(method: str, target_url: str) -> bool:
 def local_bridge_http_connection(target_url: str) -> tuple[http.client.HTTPConnection, str]:
     parsed = parse.urlsplit(target_url)
     if parsed.scheme == "https":
-        connection: http.client.HTTPConnection = http.client.HTTPSConnection(parsed.hostname or "", parsed.port or 443, timeout=120)
+        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+            parsed.hostname or "",
+            parsed.port or 443,
+            timeout=120,
+            context=create_ssl_context(verify=False),
+        )
     elif parsed.scheme == "http":
         connection = http.client.HTTPConnection(parsed.hostname or "", parsed.port or 80, timeout=120)
     else:
@@ -2567,8 +2596,12 @@ class LocalBridge:
         port = upstream.port or (443 if upstream.scheme == "wss" else 80)
         raw_socket = socket.create_connection((host, port), timeout=120)
         if upstream.scheme == "wss":
-            context = ssl.create_default_context()
-            return context.wrap_socket(raw_socket, server_hostname=host)
+            try:
+                context = create_ssl_context(verify=True)
+                return context.wrap_socket(raw_socket, server_hostname=host)
+            except (ssl.SSLError, OSError):
+                context = create_ssl_context(verify=False)
+                return context.wrap_socket(raw_socket, server_hostname=host)
         return raw_socket
 
     def read_header_block(self, source: socket.socket) -> tuple[bytes, bytes]:
