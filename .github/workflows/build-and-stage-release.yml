@@ -109,4 +109,4 @@ jobs:
           gh release create "$RELEASE_TAG" dist/RecRoomPatches.exe \
             --draft \
             --title "$RELEASE_TAG" \
-            --notes "Edit this draft and describe what you added, removed, and changed."
+            --notes "Edit me!"
