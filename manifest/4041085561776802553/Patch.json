@@ -26,7 +26,7 @@
     {
       "type": "write_text_file",
       "file": "Recroom_Release_Data/steam_appid.txt",
-      "content": "480",
+      "content": "250820",
       "base_dir": "."
     }
   ]
