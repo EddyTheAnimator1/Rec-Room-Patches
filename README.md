@@ -33,7 +33,7 @@ If you want to know how it works. Check out https://github.com/EddyTheAnimator1/
 # Usage
 1. Scroll down to the TABLE. Find a version and ENSURE there's a checkmark on the patch section.
 2. Copy the Manifest number.
-3. Open the latest .exe package, Press 1, Enter manifest ID. Then, download. I recommend choosing yes for melonloader. The program MUST be open for the game to connect.
+3. Open the latest .exe package, Press 1, Enter manifest ID. Then, download. I recommend choosing yes for melonloader (Unless you don't have enough RAM. Like less than 8 GB)
 
 ## Patch table + Downloads table
 
