@@ -25,13 +25,18 @@ PREVIEW_STATE_VERSION = 1
 USER_AGENT = "Release-Noir/1.0"
 STEAMDB_CSV_NAME = "steamdb.csv"
 RECAGAIN_DOWNLOAD_URL = "https://archive.recagain.site/download/{kind}/{identifier}"
+RECAGAIN_HEALTHCHECK_URL = "https://archive.recagain.site/"
 RECAGAIN_BUILDING_MESSAGE = "You must wait for this build, it's currently downloading on the recagain servers"
 MELONLOADER_RELEASE_TAG = "v0.5.7"
 MELONLOADER_ASSET_NAME = "MelonLoader.x64.zip"
 MELONLOADER_PROMPT_INFO = (
-    "Windows 11 has a 50/50 chance of crashing these builds. "
-    "MelonLoader prevents that, don't ask why. Plus, it doesn't hurt to have it."
+    "MelonLoader ensures compatibility, for some. The builds might crash unless you have "
+    "MelonLoader. For others, it works normally WITHOUT MelonLoader. This is recommended "
+    "to be first TURNED off. Though, if you crash right away with no trace, you should "
+    "INSTALL MelonLoader."
 )
+MELONLOADER_SETTINGS_TUTORIAL = "Main menu > Settings > MelonLoader."
+STEAM_OWNERSHIP_SETTING = "owns_rec_room_on_steam"
 PATCH_REPO_OWNER = "EddyTheAnimator1"
 PATCH_REPO_NAME = "Rec-Room-Patches"
 PATCH_BRANCHES = ("main", "master")
@@ -222,6 +227,10 @@ class Noir:
         print(f"{cls.chip('ERR', cls.RED)} {text}")
 
     @classmethod
+    def red_inf(cls, text: str) -> None:
+        print(f"{cls.chip('INF', cls.RED)} {cls.c(cls.RED, text)}")
+
+    @classmethod
     def menu(cls, rows: list[tuple[str, str]]) -> None:
         for key, title in rows:
             key_part = cls.c(cls.BOLD + cls.ORANGE, f"{key:>2}")
@@ -236,9 +245,16 @@ class Noir:
     def step(cls, label: str, result: str, detail: str = "", delay: float = STEP_DELAY) -> None:
         time.sleep(max(0.0, delay))
         dots = "." * max(1, 24 - len(label))
+        normalized_result = result.strip().upper()
+        if normalized_result in {"ERROR", "ERR", "FAILED", "FAIL"}:
+            result_color = cls.RED
+        elif normalized_result in {"WARN", "WARNING", "UPDATE"}:
+            result_color = cls.GOLD
+        else:
+            result_color = cls.GREEN
         print(
             cls.c(cls.GRAY, f"  {label} {dots} ")
-            + cls.c(cls.GREEN, result)
+            + cls.c(result_color, result)
             + (cls.c(cls.DIM + cls.GRAY, f"  {detail}") if detail else "")
         )
 
@@ -310,6 +326,7 @@ def default_settings() -> dict:
         "state_version": PREVIEW_STATE_VERSION,
         "fake_mode": False,
         "theme": "orange-black",
+        STEAM_OWNERSHIP_SETTING: None,
         "created_at": now_iso(),
         "last_launch": None,
         "storage_root": str(default_storage_root()),
@@ -440,6 +457,54 @@ def save_settings(settings: dict) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     replace_with_retry(tmp, path)
+
+
+def owns_rec_room_on_steam(settings: dict) -> bool:
+    return settings.get(STEAM_OWNERSHIP_SETTING) is True
+
+
+def steam_ownership_label(settings: dict) -> str:
+    value = settings.get(STEAM_OWNERSHIP_SETTING)
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return "Not answered"
+
+
+def ask_steam_ownership(settings: dict, *, first_launch: bool) -> bool:
+    Noir.clear()
+    Noir.section("Very Important")
+    if not first_launch:
+        Noir.kv("Current", steam_ownership_label(settings))
+    Noir.warn(
+        "Do you own Rec Room on steam? "
+        "(If yes, this will SIGNIFICANTLY reduce compatibility issues.)"
+    )
+    if first_launch:
+        Noir.info(
+            "For this to work properly. Ensure you own SteamVR on your account. "
+            "(E.g. valid license)"
+        )
+    Noir.menu(
+        [
+            ("1", "Yes"),
+            ("2", "No"),
+        ]
+    )
+    Noir.line(color=Noir.DARK)
+    choice = prompt_choice({"1", "2"})
+    selected = choice == "1"
+    settings[STEAM_OWNERSHIP_SETTING] = selected
+    save_settings(settings)
+    Noir.ok(f"Owns Rec Room on Steam: {'Yes' if selected else 'No'}")
+    return selected
+
+
+def ensure_steam_ownership_answered(settings: dict) -> None:
+    if isinstance(settings.get(STEAM_OWNERSHIP_SETTING), bool):
+        return
+    ask_steam_ownership(settings, first_launch=True)
 
 
 def replace_with_retry(source: Path, target: Path) -> None:
@@ -1107,6 +1172,42 @@ def install_melonloader_to_build(build_dir: Path, settings: dict | None = None) 
     Noir.ok(f"MelonLoader {MELONLOADER_RELEASE_TAG} installed to {build_dir}")
 
 
+def remove_melonloader_from_build(build_dir: Path, settings: dict | None = None) -> None:
+    if not build_dir.exists() or not build_dir.is_dir():
+        raise DownloadError(f"Build folder was not found: {build_dir}")
+
+    Noir.section("MelonLoader")
+    version_dll = build_dir / "version.dll"
+    melonloader_dir = build_dir / "MelonLoader"
+    removed = False
+
+    if version_dll.exists():
+        if not version_dll.is_file():
+            raise DownloadError(f"MelonLoader path is not a file: {version_dll}")
+        version_dll.unlink()
+        removed = True
+
+    if melonloader_dir.exists():
+        if not melonloader_dir.is_dir():
+            raise DownloadError(f"MelonLoader path is not a folder: {melonloader_dir}")
+        shutil.rmtree(melonloader_dir)
+        removed = True
+
+    if not removed:
+        Noir.warn(f"MelonLoader is not installed in {build_dir}")
+        return
+
+    if settings is not None:
+        melonloader = settings.setdefault("melonloader", {})
+        melonloader["removed_at"] = now_iso()
+        melonloader["last_removed_build"] = str(build_dir)
+        if melonloader.get("last_build") == str(build_dir):
+            melonloader.pop("last_build", None)
+        save_settings(settings)
+
+    Noir.ok(f"MelonLoader removed from {build_dir}")
+
+
 def get_instruction_base_dir(item: dict) -> str | None:
     for key in ("base_dir", "base", "root", "base_path"):
         value = item.get(key)
@@ -1295,6 +1396,18 @@ def write_text_file(target_path: Path, content: str, encoding: str, overwrite: b
     target_path.write_text(content, encoding=encoding, newline="")
 
 
+def effective_text_patch_content(instruction: dict, settings: dict) -> str:
+    content = instruction["content"]
+    target_name = Path(instruction["file"]).name.casefold()
+    if (
+        owns_rec_room_on_steam(settings)
+        and target_name == "steam_appid.txt"
+        and content == "250820"
+    ):
+        return str(APP_ID)
+    return content
+
+
 def install_patch_file(build_dir: Path, bundle: ManifestBundle, instruction: dict) -> Path:
     target_path = resolve_patch_target(
         build_dir,
@@ -1312,7 +1425,7 @@ def install_patch_file(build_dir: Path, bundle: ManifestBundle, instruction: dic
     return target_path
 
 
-def apply_patch_payload(build_dir: Path, bundle: ManifestBundle) -> list[PatchResult]:
+def apply_patch_payload(build_dir: Path, bundle: ManifestBundle, settings: dict) -> list[PatchResult]:
     if bundle.patch_error:
         Noir.section("Patch")
         raise PatchError(bundle.patch_error)
@@ -1338,7 +1451,8 @@ def apply_patch_payload(build_dir: Path, bundle: ManifestBundle) -> list[PatchRe
 
         target = resolve_patch_target(build_dir, instruction["file"], kind, instruction.get("base_dir"))
         if kind in {"write_text_file", "create_text_file", "write_text"}:
-            write_text_file(target, instruction["content"], instruction["encoding"], instruction["overwrite"])
+            content = effective_text_patch_content(instruction, settings)
+            write_text_file(target, content, instruction["encoding"], instruction["overwrite"])
             Noir.ok(f"{target.relative_to(build_dir)}")
             results.append(PatchResult(target, "text file written"))
             continue
@@ -1638,7 +1752,7 @@ def melonloader_policy_label(policy: object) -> str:
     if value == "always_install":
         return "Install every time"
     if value == "never_install":
-        return "Reject"
+        return "Always reject"
     return "Ask every time"
 
 
@@ -1806,6 +1920,71 @@ def render_home(settings: dict) -> None:
     Noir.line(color=Noir.DARK)
 
 
+def ping_recagain_server(timeout: int = 12) -> tuple[bool, str]:
+    req = request.Request(
+        RECAGAIN_HEALTHCHECK_URL,
+        headers={"User-Agent": USER_AGENT},
+        method="HEAD",
+    )
+    started = time.monotonic()
+    try:
+        with safe_urlopen(req, timeout=timeout) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+    except error.HTTPError as exc:
+        status = int(exc.code)
+        if status >= 500:
+            return False, f"HTTP {status}"
+    except (error.URLError, ssl.SSLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        return False, str(reason)
+
+    elapsed_ms = max(1, round((time.monotonic() - started) * 1000))
+    return True, f"HTTP {status} / {elapsed_ms} ms"
+
+
+def check_recagain_with_progress(timeout: int = 12) -> tuple[bool, str]:
+    result: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            ok, detail = ping_recagain_server(timeout=timeout)
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        result["ok"] = ok
+        result["detail"] = detail
+
+    import threading
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    label = "RecAgain"
+    dots = "." * max(1, 24 - len(label))
+    prefix = Noir.c(Noir.GRAY, f"  {label} {dots} ")
+    spinner_index = 0
+
+    while thread.is_alive():
+        spinner = Noir.c(Noir.ORANGE, SPINNER[spinner_index])
+        sys.stdout.write("\r" + prefix + spinner)
+        sys.stdout.flush()
+        spinner_index = (spinner_index + 1) % len(SPINNER)
+        thread.join(0.08)
+
+    thread.join()
+    ok = bool(result.get("ok"))
+    detail = str(result.get("detail") or "Unknown response")
+    status = "OK" if ok else "ERROR"
+    status_color = Noir.GREEN if ok else Noir.RED
+    final_line = (
+        prefix
+        + Noir.c(status_color, status)
+        + Noir.c(Noir.DIM + Noir.GRAY, f"  {detail}")
+    )
+    sys.stdout.write("\r" + final_line + "\n")
+    sys.stdout.flush()
+    return ok, detail
+
+
 def status_checks(settings: dict) -> None:
     Noir.section("Checks")
     app_update = settings.get("app_update", {})
@@ -1820,7 +1999,7 @@ def status_checks(settings: dict) -> None:
     else:
         Noir.step("GitHub", "OK", f"v{latest}")
     Noir.step("Storage", "OK", "Builds")
-    Noir.step("RecAgain", "OK", "manifest endpoint")
+    check_recagain_with_progress()
     steamdb_path = local_data_path(STEAMDB_CSV_NAME)
     Noir.step("SteamDB CSV", "OK" if steamdb_path.exists() else "WARN", steamdb_path.name)
 
@@ -1900,7 +2079,7 @@ def download_build_workflow(settings: dict) -> None:
     Noir.ok("Download finished.")
     normalize_beta_download_layout(build_dir, bundle)
     clean_build_metadata(build_dir)
-    apply_patch_payload(build_dir, bundle)
+    apply_patch_payload(build_dir, bundle, settings)
     remember_manifest(settings, bundle, build_dir)
     log_path().write_text(
         "\n".join(
@@ -1982,6 +2161,26 @@ def install_melonloader_for_build(build: LocalBuild, settings: dict) -> bool:
         return False
 
 
+def remove_melonloader_for_build(build: LocalBuild, settings: dict) -> bool:
+    try:
+        remove_melonloader_from_build(build.path, settings)
+        return True
+    except (DownloadError, OSError) as exc:
+        Noir.err(str(exc))
+        return False
+
+
+def print_melonloader_guidance(settings: dict, *, show_settings_tutorial: bool = True) -> None:
+    if not owns_rec_room_on_steam(settings):
+        Noir.red_inf(
+            "[BIG WARNING]: MelonLoader is NOT recommended for users that do NOT own "
+            "Rec Room on their Steam account. It might cause the V:0000065432 warning."
+        )
+    Noir.blue_info(MELONLOADER_PROMPT_INFO)
+    if show_settings_tutorial:
+        Noir.info(f"MelonLoader settings: {MELONLOADER_SETTINGS_TUTORIAL}")
+
+
 def prompt_melonloader_after_download(build: LocalBuild, settings: dict) -> None:
     if not is_historical_melonloader_build(build):
         return
@@ -1994,30 +2193,29 @@ def prompt_melonloader_after_download(build: LocalBuild, settings: dict) -> None
         return
 
     Noir.section("MelonLoader")
+    print_melonloader_guidance(settings)
     Noir.warn("2016-2017 build downloaded.")
     Noir.info("Install MelonLoader 0.5.7 x64 into this build?")
-    Noir.blue_info(MELONLOADER_PROMPT_INFO)
     Noir.menu(
         [
-            ("1", "Skip"),
+            ("1", "Install only this time"),
             ("2", "Install every time"),
-            ("3", "Reject"),
-            ("4", "Ask every time"),
+            ("3", "Reject only this time"),
+            ("4", "Always reject"),
         ]
     )
     Noir.line(color=Noir.DARK)
     choice = prompt_choice({"1", "2", "3", "4"})
     if choice == "1":
-        return
+        install_melonloader_for_build(build, settings)
     elif choice == "2":
         save_melonloader_policy(settings, "always_install")
         install_melonloader_for_build(build, settings)
     elif choice == "3":
-        save_melonloader_policy(settings, "never_install")
-        Noir.warn("MelonLoader rejected for future 2016-2017 builds.")
+        Noir.warn("MelonLoader rejected for this build only.")
     elif choice == "4":
-        save_melonloader_policy(settings, "ask")
-        Noir.ok("MelonLoader will ask every time.")
+        save_melonloader_policy(settings, "never_install")
+        Noir.warn("MelonLoader will always be rejected for future 2016-2017 builds.")
 
 
 def handle_windows11_historical_launch(build: LocalBuild, settings: dict) -> bool:
@@ -2031,30 +2229,29 @@ def handle_windows11_historical_launch(build: LocalBuild, settings: dict) -> boo
         return True
 
     Noir.section("Windows 11")
+    print_melonloader_guidance(settings)
     Noir.warn("Windows 11 detected on a 2016-2017 build.")
     Noir.info("MelonLoader 0.5.7 x64 can be installed before launch.")
-    Noir.blue_info(MELONLOADER_PROMPT_INFO)
     Noir.menu(
         [
-            ("1", "Skip"),
+            ("1", "Install only this time"),
             ("2", "Install every time"),
-            ("3", "Reject"),
-            ("4", "Ask every time"),
+            ("3", "Reject only this time"),
+            ("4", "Always reject"),
         ]
     )
     Noir.line(color=Noir.DARK)
     choice = prompt_choice({"1", "2", "3", "4"})
     if choice == "1":
-        return True
+        return install_melonloader_for_build(build, settings)
     if choice == "2":
         save_melonloader_policy(settings, "always_install")
         return install_melonloader_for_build(build, settings)
     if choice == "3":
-        save_melonloader_policy(settings, "never_install")
-        Noir.warn("MelonLoader rejected for future 2016-2017 builds.")
+        Noir.warn("MelonLoader rejected for this launch only.")
         return True
-    save_melonloader_policy(settings, "ask")
-    Noir.ok("MelonLoader will ask every time.")
+    save_melonloader_policy(settings, "never_install")
+    Noir.warn("MelonLoader will always be rejected for future 2016-2017 builds.")
     return True
 
 
@@ -2084,8 +2281,14 @@ def build_actions(build: LocalBuild, settings: dict) -> None:
             ("2", "Launch"),
         ]
         choices = {"1", "2", "0"}
+        melonloader_installed = melonloader_is_installed(build.path)
         if historical:
-            rows.append(("3", f"Install MelonLoader {MELONLOADER_RELEASE_TAG}"))
+            melonloader_action = (
+                "Remove MelonLoader"
+                if melonloader_installed
+                else f"Install MelonLoader {MELONLOADER_RELEASE_TAG}"
+            )
+            rows.append(("3", melonloader_action))
             choices.add("3")
         rows.append(("0", "Back"))
         Noir.menu(rows)
@@ -2101,7 +2304,10 @@ def build_actions(build: LocalBuild, settings: dict) -> None:
             launch_build(build, settings)
             press_enter()
         elif choice == "3":
-            install_melonloader_for_build(build, settings)
+            if melonloader_installed:
+                remove_melonloader_for_build(build, settings)
+            else:
+                install_melonloader_for_build(build, settings)
             press_enter()
 
 
@@ -2141,12 +2347,13 @@ def melonloader_settings(settings: dict) -> None:
     Noir.clear()
     Noir.header(len(scan_local_builds(settings)), False, depot_root(settings))
     Noir.section("MelonLoader")
+    print_melonloader_guidance(settings, show_settings_tutorial=False)
     Noir.kv("Current", melonloader_policy_label(current_melonloader_policy(settings)))
     Noir.menu(
         [
-            ("1", "Skip"),
+            ("1", "Back"),
             ("2", "Install every time"),
-            ("3", "Reject"),
+            ("3", "Always reject"),
             ("4", "Ask every time"),
         ]
     )
@@ -2161,6 +2368,11 @@ def melonloader_settings(settings: dict) -> None:
     }[choice]
     save_melonloader_policy(settings, selected)
     Noir.ok(f"MelonLoader: {melonloader_policy_label(selected)}")
+    press_enter()
+
+
+def steam_ownership_settings(settings: dict) -> None:
+    ask_steam_ownership(settings, first_launch=False)
     press_enter()
 
 
@@ -2182,13 +2394,14 @@ def preview_settings(settings: dict) -> None:
                 ("1", "Open storage"),
                 ("2", "Shortcut"),
                 ("3", "Status"),
-                ("4", "MelonLoader"),
-                ("5", "Raw settings"),
+                ("4", "Steam ownership"),
+                ("5", "MelonLoader"),
+                ("6", "Raw settings"),
                 ("0", "Back"),
             ]
         )
         Noir.line(color=Noir.DARK)
-        choice = prompt_choice({"1", "2", "3", "4", "5", "0"})
+        choice = prompt_choice({"1", "2", "3", "4", "5", "6", "0"})
         if choice == "0":
             return
         if choice == "1":
@@ -2198,8 +2411,10 @@ def preview_settings(settings: dict) -> None:
         elif choice == "3":
             system_check(settings)
         elif choice == "4":
-            melonloader_settings(settings)
+            steam_ownership_settings(settings)
         elif choice == "5":
+            melonloader_settings(settings)
+        elif choice == "6":
             print(json.dumps(settings, indent=2))
             press_enter()
 
@@ -2217,6 +2432,7 @@ def system_check(settings: dict) -> None:
 def main() -> int:
     Noir.configure()
     settings = load_settings()
+    ensure_steam_ownership_answered(settings)
     settings["last_launch"] = now_iso()
     settings["fake_mode"] = False
     save_settings(settings)
