@@ -116,10 +116,7 @@ _NOTIFICATION_LOCK = threading.RLock()
 _INVENTION_LOCK = threading.RLock()
 _COMMUNITY_BOARD_THUMBNAIL_LOCK = threading.Lock()
 
-HUB_NEGOTIATION_MAX_AGE_SECONDS = 2 * 60
-HUB_HANDSHAKE_TIMEOUT_SECONDS = 10
-HUB_MAX_CLIENT_FRAME_BYTES = 16 * 1024
-UPLOADED_IMAGE_SIZE = (2560, 1440)
+HUB_NEGOTIATION_MAX_AGE_SECONDS = 10 * 60
 PRESENCE_ONLINE_MAX_AGE_SECONDS = 90
 
 # Version-owned consumable catalog and category limits.
@@ -12113,23 +12110,18 @@ async def _handle_upload_transient_image(request: Request, context) -> Response:
         or request.query_params.get("OldImageName")
         or ""
     ).strip()
-    try:
-        asset = await asyncio.to_thread(
-            context.save_image_bytes,
-            owner_player_id=player["player_id"],
-            content=image,
-            file_ext=file_ext,
-            mime_type=mime_type,
-            purpose=f"{API_VERSION}.transient_image",
-            target_size=UPLOADED_IMAGE_SIZE,
-            metadata={
-                "api_version": API_VERSION,
-                "gameSessionId": requested_session_id,
-                "oldImageName": old_image_name,
-            },
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    asset = context.save_image_bytes(
+        owner_player_id=player["player_id"],
+        content=image,
+        file_ext=file_ext,
+        mime_type=mime_type,
+        purpose=f"{API_VERSION}.transient_image",
+        metadata={
+            "api_version": API_VERSION,
+            "gameSessionId": requested_session_id,
+            "oldImageName": old_image_name,
+        },
+    )
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 
@@ -12149,19 +12141,14 @@ async def _handle_upload_saved_image(request: Request, context) -> Response:
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Invalid imgMeta JSON.") from exc
     metadata = await _saved_image_upload_metadata(raw_metadata_dict, player, context)
-    try:
-        asset = await asyncio.to_thread(
-            context.save_image_bytes,
-            owner_player_id=player["player_id"],
-            content=image,
-            file_ext=".jpg",
-            mime_type="image/jpeg",
-            purpose=f"{API_VERSION}.saved_image",
-            target_size=UPLOADED_IMAGE_SIZE,
-            metadata=metadata,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    asset = context.save_image_bytes(
+        owner_player_id=player["player_id"],
+        content=image,
+        file_ext=".jpg",
+        mime_type="image/jpeg",
+        purpose=f"{API_VERSION}.saved_image",
+        metadata=metadata,
+    )
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 
@@ -12171,19 +12158,14 @@ async def _handle_set_profile_image(request: Request, context) -> Response:
     image = fields.get("image")
     if not image or not image.startswith(b"\xff\xd8"):
         raise HTTPException(status_code=400, detail="A JPEG image field is required.")
-    try:
-        asset = await asyncio.to_thread(
-            context.save_image_bytes,
-            owner_player_id=player["player_id"],
-            content=image,
-            file_ext=".jpg",
-            mime_type="image/jpeg",
-            purpose=f"{API_VERSION}.profile_image",
-            target_size=UPLOADED_IMAGE_SIZE,
-            metadata={"api_version": API_VERSION},
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    asset = context.save_image_bytes(
+        owner_player_id=player["player_id"],
+        content=image,
+        file_ext=".jpg",
+        mime_type="image/jpeg",
+        purpose=f"{API_VERSION}.profile_image",
+        metadata={"api_version": API_VERSION},
+    )
     image_name = Path(asset["relative_path"]).name
     try:
         state = json.loads(player["state_json"] or "{}")
@@ -12212,8 +12194,18 @@ async def _handle_set_profile_image(request: Request, context) -> Response:
             """,
             (json.dumps(state, sort_keys=True), player["player_id"], API_VERSION),
         )
-    if legacy_player_id > 0:
-        await _broadcast_profile_update(legacy_player_id, context)
+    refreshed = (
+        _find_player_by_legacy_id_25april2019(context, legacy_player_id)
+        if legacy_player_id > 0
+        else None
+    )
+    if refreshed is not None:
+        await _send_hub_notification(
+            legacy_player_id,
+            11,
+            _serialize_profile_25april2019(refreshed),
+            context=context,
+        )
     return Response(status_code=204)
 
 
@@ -13258,61 +13250,6 @@ def _clean_route_path(route_path: str) -> str:
     return route_path.split("?", 1)[0].strip("/")
 
 
-def _signalr_client_text(message: dict[str, Any]) -> str:
-    text = message.get("text")
-    raw = message.get("bytes")
-    if text is not None:
-        encoded = str(text).encode("utf-8")
-        value = str(text)
-    elif raw is not None:
-        encoded = bytes(raw)
-        value = encoded.decode("utf-8", errors="strict")
-    else:
-        raise ValueError("A SignalR text frame is required.")
-    if len(encoded) > HUB_MAX_CLIENT_FRAME_BYTES:
-        raise ValueError("SignalR client frame is too large.")
-    return value
-
-
-def _signalr_records(data: str) -> list[dict[str, Any]]:
-    if not data.endswith("\x1e"):
-        raise ValueError("SignalR messages must end with a record separator.")
-    records: list[dict[str, Any]] = []
-    for raw_record in data[:-1].split("\x1e"):
-        if not raw_record:
-            raise ValueError("Empty SignalR records are not accepted.")
-        parsed = json.loads(raw_record)
-        if not isinstance(parsed, dict):
-            raise ValueError("SignalR records must be JSON objects.")
-        records.append(parsed)
-    return records
-
-
-def _valid_signalr_handshake(data: str) -> bool:
-    try:
-        records = _signalr_records(data)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        return False
-    return len(records) == 1 and records[0] == {"protocol": "json", "version": 1}
-
-
-def _valid_signalr_client_messages(data: str) -> bool:
-    try:
-        records = _signalr_records(data)
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        return False
-    return bool(records) and all(record == {"type": 6} for record in records)
-
-
-def _authenticated_signalr_player(request_or_websocket: Any, context):
-    authorization = str(
-        request_or_websocket.headers.get("authorization") or ""
-    ).strip()
-    if not authorization.casefold().startswith("bearer "):
-        return None
-    return context.player_from_request(request_or_websocket, API_VERSION)
-
-
 async def _create_hub_connection_id(player, context) -> str:
     player_id = _legacy_id_for_player(player)
     if player_id <= 0:
@@ -14015,18 +13952,13 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
 
     if path == "hub/v1/negotiate":
         if method == "POST":
-            player = _authenticated_signalr_player(request, context)
-            if player is None:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Authenticated SignalR negotiation is required.",
-                )
+            player = _authenticated_player(request, context)
             return JSONResponse({
                 "connectionId": await _create_hub_connection_id(player, context),
                 "availableTransports": [
                     {
                         "transport": "WebSockets",
-                        "transferFormats": ["Text"]
+                        "transferFormats": ["Text", "Binary"]
                     }
                 ]
             })
@@ -15203,7 +15135,7 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         return
 
     if path == "hub/v1":
-        row = _authenticated_signalr_player(websocket, context)
+        row = context.player_from_request(websocket, API_VERSION)
         player_id = 0
         if row is not None:
             try:
@@ -15233,7 +15165,7 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
             player_id=player_id,
             websocket=websocket,
         )
-        # Mark online during the gap before the first heartbeat.
+                        # Mark online during the gap before the first heartbeat.
         await _mark_presence_heartbeat(
             player_id,
             context,
@@ -15244,13 +15176,7 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         handshake_complete = False
         try:
             while True:
-                if handshake_complete:
-                    message = await websocket.receive()
-                else:
-                    message = await asyncio.wait_for(
-                        websocket.receive(),
-                        timeout=HUB_HANDSHAKE_TIMEOUT_SECONDS,
-                    )
+                message = await websocket.receive()
                 await context.require_transient().refresh_connection(
                     connection_id=hub_connection_id,
                     api_version=API_VERSION,
@@ -15259,24 +15185,13 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
                 )
                 if message.get("type") == "websocket.disconnect":
                     break
-                try:
-                    data = _signalr_client_text(message)
-                except (UnicodeDecodeError, ValueError):
-                    await websocket.close(code=1007, reason="Invalid SignalR frame.")
-                    break
-                if handshake_complete:
-                    if not _valid_signalr_client_messages(data):
-                        await websocket.close(code=1008, reason="Client hub invocations are disabled.")
-                        break
-                    continue
-                if not _valid_signalr_handshake(data):
-                    await websocket.close(code=1002, reason="Invalid SignalR handshake.")
-                    break
-                handshake_complete = True
-                await websocket.send_text("{}\x1e")
-                if player_id > 0:
-                    await _flush_hub_notifications(player_id, websocket, context)
-                    # Seed the client's confirmed presence subscription.
+                data = message.get("text") or (message.get("bytes") or b"").decode("utf-8", errors="ignore")
+                if "protocol" in data and not handshake_complete:
+                    handshake_complete = True
+                    await websocket.send_text("{}\x1e")
+                    if player_id > 0:
+                        await _flush_hub_notifications(player_id, websocket, context)
+                        # Seed the client's confirmed presence subscription.
                     player = (
                         _find_player_by_legacy_id_25april2019(context, player_id)
                         if player_id > 0
@@ -15381,8 +15296,6 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
                         await websocket.send_text(
                             json.dumps(invocation, separators=(",", ":")) + "\x1e"
                         )
-        except asyncio.TimeoutError:
-            await websocket.close(code=4408, reason="SignalR handshake timed out.")
         except WebSocketDisconnect:
             pass
         except Exception as e:

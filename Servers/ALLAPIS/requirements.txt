@@ -2,4 +2,3 @@ fastapi
 uvicorn[standard]
 httpx
 redis>=5.2,<7
-Pillow>=12.3,<13
