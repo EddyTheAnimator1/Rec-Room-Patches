@@ -9,7 +9,9 @@ import sys
 import time
 import uuid
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
@@ -23,6 +25,9 @@ DEFAULT_PREFIX = "recroom:allapis:v1"
 DEFAULT_MAX_CONNECTIONS = 64
 DEFAULT_PRESENCE_TTL_SECONDS = 75
 DEFAULT_HEARTBEAT_SECONDS = 25
+DEFAULT_SERVERLESS_IDLE_SUSPEND_SECONDS = 60
+DEFAULT_SERVERLESS_WAKE_TIMEOUT_SECONDS = 45
+DEFAULT_LOCAL_WAKE_TIMEOUT_SECONDS = 5
 DEFAULT_FANOUT_CONCURRENCY = 32
 MAX_FANOUT_TARGETS = 5_000
 MAX_FANOUT_MESSAGES = 8
@@ -47,6 +52,28 @@ def _positive_int(name: str, default: int, *, minimum: int, maximum: int) -> int
             f"{name} must be between {minimum} and {maximum}."
         )
     return value
+
+
+def _nonnegative_int(name: str, default: int, *, maximum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RedisConfigurationError(f"{name} must be an integer.") from exc
+    if not 0 <= value <= maximum:
+        raise RedisConfigurationError(f"{name} must be between 0 and {maximum}.")
+    return value
+
+
+def _redis_operation(method):
+    @wraps(method)
+    async def wrapped(self: "RedisTransientState", *args: Any, **kwargs: Any):
+        async with self._operation():
+            return await method(self, *args, **kwargs)
+
+    return wrapped
 
 
 def resolve_redis_url(*, production: bool) -> str:
@@ -221,6 +248,8 @@ return 1
         production: bool,
         max_connections: int | None = None,
         presence_ttl_seconds: int | None = None,
+        idle_suspend_seconds: int | None = None,
+        wake_timeout_seconds: int | None = None,
     ) -> None:
         self.redis_url = redis_url
         self.prefix = prefix
@@ -243,6 +272,29 @@ return 1
             minimum=5,
             maximum=max(5, self.presence_ttl_seconds - 5),
         )
+        self.idle_suspend_seconds = (
+            max(0, int(idle_suspend_seconds))
+            if idle_suspend_seconds is not None
+            else _nonnegative_int(
+                "RECROOM_REDIS_IDLE_SUSPEND_SECONDS",
+                DEFAULT_SERVERLESS_IDLE_SUSPEND_SECONDS if production else 0,
+                maximum=3_600,
+            )
+        )
+        self.wake_timeout_seconds = (
+            max(1, int(wake_timeout_seconds))
+            if wake_timeout_seconds is not None
+            else _positive_int(
+                "RECROOM_REDIS_WAKE_TIMEOUT_SECONDS",
+                (
+                    DEFAULT_SERVERLESS_WAKE_TIMEOUT_SECONDS
+                    if production
+                    else DEFAULT_LOCAL_WAKE_TIMEOUT_SECONDS
+                ),
+                minimum=1,
+                maximum=180,
+            )
+        )
         self.instance_id = uuid.uuid4().hex
         self._pool = ConnectionPool.from_url(
             redis_url,
@@ -250,13 +302,18 @@ return 1
             decode_responses=True,
             socket_connect_timeout=3.0,
             socket_timeout=5.0,
-            health_check_interval=30,
+            health_check_interval=0,
             retry_on_timeout=True,
         )
         self._redis = Redis(connection_pool=self._pool)
         self._started = False
+        self._closed = False
+        self._lifecycle_lock = asyncio.Lock()
+        self._active_operations = 0
+        self._last_activity_monotonic = time.monotonic()
         self._subscriber_task: asyncio.Task[None] | None = None
         self._lease_refresh_task: asyncio.Task[None] | None = None
+        self._idle_suspend_task: asyncio.Task[None] | None = None
         self._local_sockets: dict[tuple[str, str, str], dict[str, WebSocket]] = defaultdict(dict)
         self._local_connection_route: dict[str, tuple[str, str, str]] = {}
         self.fanout_concurrency = _positive_int(
@@ -287,8 +344,33 @@ return 1
         return self._redis
 
     async def start(self) -> None:
+        self._closed = False
+        try:
+            await self.ensure_active()
+        except HTTPException as exc:
+            raise RedisConfigurationError(str(exc.detail)) from exc
+        if self.idle_suspend_seconds and self._idle_suspend_task is None:
+            self._idle_suspend_task = asyncio.create_task(
+                self._idle_suspend_loop(), name="recroom-redis-idle-suspend"
+            )
+
+    async def ensure_active(self) -> None:
+        self._last_activity_monotonic = time.monotonic()
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Shared transient state is shutting down.",
+                )
+            if self._started:
+                return
+            await self._activate_locked()
+
+    async def _activate_locked(self) -> None:
         last_error: Exception | None = None
-        for attempt in range(4):
+        deadline = time.monotonic() + self.wake_timeout_seconds
+        attempt = 0
+        while True:
             try:
                 if await self._redis.ping() is not True:
                     raise RedisError("Redis PING did not return success.")
@@ -299,24 +381,83 @@ return 1
                 self._lease_refresh_task = asyncio.create_task(
                     self._lease_refresh_loop(), name="recroom-redis-lease-refresh"
                 )
+                idle_suspend = (
+                    f"{self.idle_suspend_seconds}s"
+                    if self.idle_suspend_seconds
+                    else "disabled"
+                )
                 print(
                     "Redis transient state connected: "
                     f"{safe_redis_endpoint(self.redis_url)}; prefix={self.prefix}; "
                     f"pool={self.max_connections}; presence_ttl={self.presence_ttl_seconds}s; "
-                    f"heartbeat={self.heartbeat_seconds}s",
+                    f"heartbeat={self.heartbeat_seconds}s; "
+                    f"idle_suspend={idle_suspend}",
                     file=sys.stderr,
                 )
                 return
             except (RedisError, OSError) as exc:
                 last_error = exc
-                if attempt < 3:
-                    await asyncio.sleep(min(2.0, 0.2 * (2**attempt)) + secrets.randbelow(100) / 1000)
-        raise RedisConfigurationError(
-            f"Redis transient state is unavailable at {safe_redis_endpoint(self.redis_url)} "
-            f"({type(last_error).__name__ if last_error else 'unknown error'})."
-        ) from last_error
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                delay = min(2.0, 0.2 * (2**min(attempt, 4)))
+                await asyncio.sleep(min(remaining, delay + secrets.randbelow(100) / 1000))
+                attempt += 1
+        raise self._unavailable(last_error or RedisError("Redis wake timed out."))
 
-    async def close(self) -> None:
+    @asynccontextmanager
+    async def _operation(self):
+        async with self._lifecycle_lock:
+            if self._closed:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Shared transient state is shutting down.",
+                )
+            self._active_operations += 1
+            self._last_activity_monotonic = time.monotonic()
+        try:
+            await self.ensure_active()
+            yield
+        finally:
+            async with self._lifecycle_lock:
+                self._active_operations = max(0, self._active_operations - 1)
+                self._last_activity_monotonic = time.monotonic()
+
+    async def _idle_suspend_loop(self) -> None:
+        poll_seconds = min(5.0, max(0.1, self.idle_suspend_seconds / 4))
+        while not self._closed:
+            try:
+                await asyncio.sleep(poll_seconds)
+                await self.suspend_if_idle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(
+                    f"Redis idle suspension check failed ({type(exc).__name__}).",
+                    file=sys.stderr,
+                )
+
+    async def suspend_if_idle(self) -> bool:
+        if not self.idle_suspend_seconds:
+            return False
+        async with self._lifecycle_lock:
+            idle_for = time.monotonic() - self._last_activity_monotonic
+            if (
+                not self._started
+                or self._active_operations
+                or self.local_connection_count()
+                or idle_for < self.idle_suspend_seconds
+            ):
+                return False
+            await self._suspend_locked()
+            print(
+                "Redis transient state suspended after "
+                f"{self.idle_suspend_seconds}s without local activity.",
+                file=sys.stderr,
+            )
+            return True
+
+    async def _suspend_locked(self) -> None:
         self._started = False
         tasks = tuple(
             task
@@ -329,7 +470,42 @@ return 1
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        await self._redis.aclose()
+        await self._pool.disconnect(inuse_connections=True)
+
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            self._closed = True
+            self._started = False
+            local_sockets = tuple(
+                websocket
+                for sockets in self._local_sockets.values()
+                for websocket in sockets.values()
+            )
+            tasks = tuple(
+                task
+                for task in (
+                    self._subscriber_task,
+                    self._lease_refresh_task,
+                    self._idle_suspend_task,
+                )
+                if task is not None
+            )
+            self._subscriber_task = None
+            self._lease_refresh_task = None
+            self._idle_suspend_task = None
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if local_sockets:
+            await asyncio.gather(
+                *(
+                    websocket.close(code=1012, reason="Server restarting.")
+                    for websocket in local_sockets
+                ),
+                return_exceptions=True,
+            )
+        await self._redis.aclose(close_connection_pool=False)
         await self._pool.aclose()
         self._local_sockets.clear()
         self._local_connection_route.clear()
@@ -340,6 +516,7 @@ return 1
             detail=f"Shared transient state is unavailable ({type(exc).__name__}).",
         )
 
+    @_redis_operation
     async def allow_rate_limit(self, bucket: str, *, limit: int, window_seconds: int) -> bool:
         key = self._key("rate", self._opaque(bucket))
         try:
@@ -353,6 +530,7 @@ return 1
             raise self._unavailable(exc) from exc
         return int(result[0]) <= limit
 
+    @_redis_operation
     async def put_json(self, family: str, identifier: Any, value: Any, *, ttl_seconds: int) -> None:
         try:
             await self.redis.set(
@@ -363,6 +541,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def get_json(self, family: str, identifier: Any) -> Any | None:
         try:
             value = await self.redis.get(self._key(family, identifier))
@@ -375,6 +554,7 @@ return 1
         except (TypeError, ValueError):
             return None
 
+    @_redis_operation
     async def take_json(self, family: str, identifier: Any) -> Any | None:
         """Atomically consume a short-lived JSON value."""
 
@@ -393,12 +573,14 @@ return 1
         except (TypeError, ValueError):
             return None
 
+    @_redis_operation
     async def delete(self, family: str, identifier: Any) -> None:
         try:
             await self.redis.delete(self._key(family, identifier))
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def get_or_create_secret(
         self,
         family: str,
@@ -427,6 +609,7 @@ return 1
             )
         return str(value)
 
+    @_redis_operation
     async def get_secret(self, family: str, identifier: Any) -> str | None:
         try:
             value = await self.redis.get(self._key("secret", family, identifier))
@@ -434,12 +617,14 @@ return 1
             raise self._unavailable(exc) from exc
         return str(value) if value else None
 
+    @_redis_operation
     async def delete_secret(self, family: str, identifier: Any) -> None:
         try:
             await self.redis.delete(self._key("secret", family, identifier))
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def create_admin_session(
         self,
         *,
@@ -449,13 +634,16 @@ return 1
     ) -> None:
         await self.put_json("admin-session", token_hash, session, ttl_seconds=ttl_seconds)
 
+    @_redis_operation
     async def get_admin_session(self, token_hash: str) -> dict[str, Any] | None:
         value = await self.get_json("admin-session", token_hash)
         return value if isinstance(value, dict) else None
 
+    @_redis_operation
     async def revoke_admin_session(self, token_hash: str) -> None:
         await self.delete("admin-session", token_hash)
 
+    @_redis_operation
     async def create_player_session(
         self,
         *,
@@ -484,6 +672,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def revoke_player_session(self, token_hash: str) -> None:
         session = await self.get_json("player-session", token_hash)
         try:
@@ -497,6 +686,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def revoke_player_sessions(self, player_id: Any) -> None:
         index_key = self._key("player-sessions", player_id)
         try:
@@ -511,6 +701,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def register_connection(
         self,
         *,
@@ -540,6 +731,7 @@ return 1
             raise
         return connection_id
 
+    @_redis_operation
     async def refresh_connection(
         self,
         *,
@@ -599,6 +791,7 @@ return 1
         if membership not in (None, "", 0, "0"):
             await self.set_membership(player, membership)
 
+    @_redis_operation
     async def refresh_local_connection_leases(self) -> None:
         routes = tuple(self._local_connection_route.items())
 
@@ -646,6 +839,7 @@ return 1
             except (HTTPException, RedisError, OSError):
                 continue
 
+    @_redis_operation
     async def unregister_connection(self, connection_id: str) -> bool:
         route = self._local_connection_route.pop(connection_id, None)
         if route is None:
@@ -691,6 +885,7 @@ return 1
             raise self._unavailable(exc) from exc
         return int(remaining[0]) > 0
 
+    @_redis_operation
     async def update_http_presence(
         self,
         *,
@@ -717,6 +912,7 @@ return 1
             player=player,
         )
 
+    @_redis_operation
     async def set_presence(
         self,
         api_version: str,
@@ -734,6 +930,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def get_presence(self, api_version: str, player_id: Any) -> dict[str, Any] | None:
         if not await self.player_online(player_id):
             return None
@@ -749,6 +946,7 @@ return 1
             return None
         return decoded if isinstance(decoded, dict) else None
 
+    @_redis_operation
     async def player_online(self, player_id: Any) -> bool:
         player = str(player_id)
         key = self._key("player-connections", player)
@@ -762,6 +960,7 @@ return 1
             raise self._unavailable(exc) from exc
         return int(result[-1]) > 0
 
+    @_redis_operation
     async def route_player_ids(self, api_version: str, transport: str) -> list[str]:
         key = self._key("route-players", api_version, transport)
         now = int(time.time())
@@ -774,6 +973,7 @@ return 1
             raise self._unavailable(exc) from exc
         return [str(value) for value in result[-1]]
 
+    @_redis_operation
     async def route_player_online(
         self, api_version: str, transport: str, player_id: Any
     ) -> bool:
@@ -785,6 +985,7 @@ return 1
             raise self._unavailable(exc) from exc
         return score is not None and float(score) > time.time()
 
+    @_redis_operation
     async def set_membership(self, player_id: Any, membership: Any | None) -> None:
         session_id: str = ""
         if isinstance(membership, dict):
@@ -820,9 +1021,11 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def get_membership(self, player_id: Any) -> Any | None:
         return await self.get_json("membership", player_id)
 
+    @_redis_operation
     async def session_member_ids(self, game_session_id: Any) -> list[str]:
         key = self._key("session-members", game_session_id)
         now = int(time.time())
@@ -835,9 +1038,11 @@ return 1
             raise self._unavailable(exc) from exc
         return [str(value) for value in result[-1]]
 
+    @_redis_operation
     async def session_member_count(self, game_session_id: Any) -> int:
         return len(await self.session_member_ids(game_session_id))
 
+    @_redis_operation
     async def session_member_counts(
         self, game_session_ids: Iterable[Any]
     ) -> dict[str, int]:
@@ -864,6 +1069,7 @@ return 1
             for session_id, value in zip(session_ids, values)
         }
 
+    @_redis_operation
     async def authorize_session_party(
         self,
         game_session_id: Any,
@@ -890,6 +1096,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def session_party_member_ids(self, game_session_id: Any) -> set[str]:
         try:
             values = await self.redis.smembers(
@@ -899,6 +1106,7 @@ return 1
             raise self._unavailable(exc) from exc
         return {str(value) for value in values}
 
+    @_redis_operation
     async def session_host_id(self, game_session_id: Any) -> str | None:
         try:
             value = await self.redis.get(self._key("session-host", game_session_id))
@@ -906,6 +1114,7 @@ return 1
             raise self._unavailable(exc) from exc
         return str(value) if value else None
 
+    @_redis_operation
     async def record_session_invites(
         self,
         game_session_id: Any,
@@ -927,6 +1136,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def session_inviter_id(
         self, game_session_id: Any, player_id: Any
     ) -> str | None:
@@ -938,6 +1148,7 @@ return 1
             raise self._unavailable(exc) from exc
         return str(value) if value else None
 
+    @_redis_operation
     async def consume_session_invite(
         self, game_session_id: Any, player_id: Any
     ) -> str | None:
@@ -950,6 +1161,7 @@ return 1
             raise self._unavailable(exc) from exc
         return str(inviter) if inviter else None
 
+    @_redis_operation
     async def remove_session_member(
         self, game_session_id: Any, player_id: Any
     ) -> bool:
@@ -968,6 +1180,7 @@ return 1
             raise self._unavailable(exc) from exc
         return bool(removed)
 
+    @_redis_operation
     async def vote_to_kick(
         self,
         *,
@@ -999,17 +1212,21 @@ return 1
             int(result[2]),
         )
 
+    @_redis_operation
     async def remember_token_lookup(
         self, family: str, raw_token: str, value: Any, *, ttl_seconds: int
     ) -> None:
         await self.put_json(f"token:{family}", self._opaque(raw_token), value, ttl_seconds=ttl_seconds)
 
+    @_redis_operation
     async def token_lookup(self, family: str, raw_token: str) -> Any | None:
         return await self.get_json(f"token:{family}", self._opaque(raw_token))
 
+    @_redis_operation
     async def forget_token_lookup(self, family: str, raw_token: str) -> None:
         await self.delete(f"token:{family}", self._opaque(raw_token))
 
+    @_redis_operation
     async def revoke_player_transient_state(
         self,
         player_id: Any,
@@ -1080,6 +1297,7 @@ return 1
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
+    @_redis_operation
     async def publish_delivery(
         self,
         *,

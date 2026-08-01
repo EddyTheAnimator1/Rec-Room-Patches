@@ -4946,6 +4946,10 @@ def create_app() -> FastAPI:
                 )
         return response
 
+    @app.get("/health", include_in_schema=False)
+    async def healthcheck() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/admin", include_in_schema=False)
     async def admin_panel_shell() -> Response:
         panel_path = admin_panel_dir / "index.html"
