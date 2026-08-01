@@ -12110,6 +12110,7 @@ async def _save_2019_moderated_image(
     mime_type: str,
     purpose: str,
     metadata: dict[str, Any],
+    target_size: tuple[int, int] | None = None,
     activation_type: str = "publish",
     activation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -12125,7 +12126,7 @@ async def _save_2019_moderated_image(
             mime_type=mime_type,
             purpose=purpose,
             metadata=metadata,
-            target_size=manager.target_size,
+            target_size=target_size or manager.target_size,
             moderation={
                 "activation_type": activation_type,
                 "activation": activation or {},
@@ -12238,6 +12239,14 @@ async def _handle_upload_transient_image(request: Request, context) -> Response:
         or request.query_params.get("OldImageName")
         or ""
     ).strip()
+    manager = context.image_moderation
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Image moderation is unavailable.")
+    target_size = (
+        manager.polaroid_target_size
+        if is_jpeg and not old_image_name
+        else manager.target_size
+    )
     asset = await _save_2019_moderated_image(
         context,
         owner_player_id=str(player["player_id"]),
@@ -12245,12 +12254,21 @@ async def _handle_upload_transient_image(request: Request, context) -> Response:
         file_ext=file_ext,
         mime_type=mime_type,
         purpose=f"{API_VERSION}.transient_image",
+        target_size=target_size,
         metadata={
             "api_version": API_VERSION,
             "gameSessionId": requested_session_id,
             "oldImageName": old_image_name,
         },
     )
+    job_id = str(asset.get("job_id") or "")
+    if not job_id:
+        raise HTTPException(status_code=503, detail="Image moderation job was not created.")
+    moderation_status = await manager.wait_for_job_completion(job_id)
+    if moderation_status == "rejected":
+        raise HTTPException(status_code=422, detail="Image rejected by moderation.")
+    if moderation_status != "approved":
+        raise HTTPException(status_code=503, detail="Image moderation did not complete in time.")
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 

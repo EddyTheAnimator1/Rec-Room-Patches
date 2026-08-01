@@ -246,6 +246,43 @@ class ImageModerationManager:
             int(self.config["target_height"]),
         )
 
+    @property
+    def polaroid_target_size(self) -> tuple[int, int]:
+        return (
+            int(self.config["polaroid_target_width"]),
+            int(self.config["polaroid_target_height"]),
+        )
+
+    async def wait_for_job_completion(
+        self,
+        job_id: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        timeout = float(
+            timeout_seconds
+            if timeout_seconds is not None
+            else self.config.get("client_wait_timeout_seconds", 60)
+        )
+        deadline = time.monotonic() + max(0.1, timeout)
+        while True:
+            status = await asyncio.to_thread(self._job_completion_status, job_id)
+            if status is None:
+                return "missing"
+            if status in {"approved", "rejected"}:
+                return status
+            if time.monotonic() >= deadline:
+                return "timeout"
+            await asyncio.sleep(0.25)
+
+    def _job_completion_status(self, job_id: str) -> str | None:
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM image_moderation_jobs WHERE job_id = ?",
+                (str(job_id),),
+            ).fetchone()
+        return None if row is None else str(row["status"])
+
     def register_job(
         self,
         conn: Any,
