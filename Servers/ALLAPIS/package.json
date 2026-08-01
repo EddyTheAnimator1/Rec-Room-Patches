@@ -1,0 +1,13 @@
+{
+  "name": "rec-room-image-moderation",
+  "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "4.22.0",
+    "buffer": "6.0.3",
+    "nsfwjs": "4.3.0",
+    "sharp": "0.35.3"
+  }
+}

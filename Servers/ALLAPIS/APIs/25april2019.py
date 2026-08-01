@@ -1222,8 +1222,7 @@ async def _handle_create_profile(request: Request, context) -> Response:
         request,
         [("username_lower", username.casefold())],
     )
-    if _find_player_by_username(context, username) is not None:
-        raise HTTPException(status_code=409, detail="Username is already in use.")
+    context.assert_username_available(username)
     profile = context.get_or_create_player(
         API_VERSION,
         username=username,
@@ -1410,8 +1409,7 @@ async def _handle_create_account(request: Request, context) -> Response:
         [("username_lower", username)],
     )
         
-    if _find_player_by_username(context, username) is not None:
-        raise HTTPException(status_code=409, detail="Username is already in use.")
+    context.assert_username_available(username)
     player = context.get_or_create_player(
         API_VERSION,
         username=username,
@@ -1477,8 +1475,7 @@ async def _handle_create_account_v2(request: Request, context) -> Response:
             request,
             [("username_lower", username)],
         )
-        if _find_player_by_username(context, username) is not None:
-            raise HTTPException(status_code=409, detail="Username is already in use.")
+        context.assert_username_available(username)
         player = context.get_or_create_player(
             API_VERSION,
             username=username,
@@ -1526,8 +1523,7 @@ async def _handle_create_account_v2(request: Request, context) -> Response:
         ],
     )
 
-    if _find_player_by_username(context, username) is not None:
-        raise HTTPException(status_code=409, detail="Username is already in use.")
+    context.assert_username_available(username)
 
         # Platform identity groups profiles and is not a unique player identity.
     profile_identity = f"profile:{platform}:{platform_id}:{legacy_id}"
@@ -6507,7 +6503,7 @@ async def _handle_modify_room(request: Request, context) -> Response:
         with context.db.connection() as conn:
             image_asset = conn.execute(
                 """
-                SELECT 1 FROM data_assets
+                SELECT asset_id FROM data_assets
                 WHERE (relative_path = ? OR relative_path = ? OR relative_path LIKE ?)
                   AND owner_player_id = ?
                   AND purpose = ?
@@ -6521,7 +6517,9 @@ async def _handle_modify_room(request: Request, context) -> Response:
                     f"{API_VERSION}.saved_image",
                 ),
             ).fetchone()
-        if image_asset is None:
+        if image_asset is None or not context.image_asset_is_available(
+            str(image_asset["asset_id"])
+        ):
             return JSONResponse({"Result": 2, "RoomDetails": None})
         metadata["image_name"] = image_name
     metadata.update({
@@ -7185,7 +7183,7 @@ async def _notify_join_companions(
 
     game_session_id = int(game_session.get("GameSessionId") or 0)
     room_id = int(game_session.get("RoomId") or 0)
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         instance = next(
             (
@@ -7254,7 +7252,7 @@ async def _repair_player_game_session(
         return current
     stored = state.get("game_session")
     stored_id = int(stored.get("GameSessionId") or 0) if isinstance(stored, dict) else 0
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         target = next(
             (
@@ -7318,7 +7316,7 @@ async def _join_coach_instance(
     # Exclude the current scene instance when matchmaking a fresh JoinRoom.
     excluded_session_id = previous_session_id if previous_scene_id == scene_id else 0
     selected_member_count = 0
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         match = None
         if not private and bool(scene.get("q", False)):
@@ -7417,7 +7415,7 @@ async def _register_dorm_instance(
         raise HTTPException(status_code=403, detail="You are banned from this room.")
     game_session = _serialize_dorm_game_session(dorm)
     member_count = 0
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         instance = next(
             (item for item in instances if int(item.get("GameSessionId") or 0) == int(game_session["GameSessionId"])),
@@ -7484,7 +7482,7 @@ async def _join_ugc_instance(
     scene_id = int(scene["RoomSceneId"])
     excluded_session_id = previous_session_id if previous_scene_id == scene_id else 0
     selected_member_ids: set[int] = set()
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         match = None
         if not private:
@@ -10532,7 +10530,7 @@ async def _handle_join_player(request: Request, context) -> Response:
     if game_session_id > 0 and local_session_id == game_session_id:
         return JSONResponse({"Result": 17, "GameSession": None, "RoomDetails": None})
     accepted_inviter_ids: set[int] = set()
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         instance = next(
             (item for item in instances if int(item.get("GameSessionId") or 0) == game_session_id), None
@@ -10803,7 +10801,7 @@ async def _handle_join_instance(request: Request, context) -> Response:
     if local_session_id == game_session_id:
         return JSONResponse({"Result": 17, "GameSession": None, "RoomDetails": None})
     accepted_inviter_ids: set[int] = set()
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         instance = next((item for item in instances if int(item.get("GameSessionId") or 0) == game_session_id), None)
         if instance is None:
@@ -11734,7 +11732,10 @@ def _image_asset_row(
         params.append(owner_player_id)
     query += " LIMIT 1"
     with context.db.connection() as conn:
-        return conn.execute(query, tuple(params)).fetchone()
+        row = conn.execute(query, tuple(params)).fetchone()
+    if row is None or not context.image_asset_is_available(str(row["asset_id"])):
+        return None
+    return row
 
 
 async def _handle_list_saved_images(request: Request, context) -> Response:
@@ -11742,9 +11743,20 @@ async def _handle_list_saved_images(request: Request, context) -> Response:
     with context.db.connection() as conn:
         rows = conn.execute(
             """
-            SELECT relative_path
-            FROM data_assets
+            SELECT da.relative_path
+            FROM data_assets AS da
             WHERE owner_player_id = ? AND purpose = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM image_moderation_jobs AS imj
+                  WHERE imj.asset_id = da.asset_id AND imj.decision != 'safe'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM moderation_content_controls AS mcc
+                  WHERE mcc.target_type = 'image'
+                    AND mcc.target_id = da.asset_id
+                    AND mcc.control_type = 'quarantine'
+                    AND mcc.active = 1
+              )
             ORDER BY created_at DESC
             """,
             (player["player_id"], f"{API_VERSION}.saved_image"),
@@ -11847,6 +11859,17 @@ def _public_slideshow_asset_rows(context) -> list[Any]:
             LEFT JOIN player_version_state AS pvs
               ON pvs.player_id = p.player_id AND pvs.api_version = ?
             WHERE da.purpose = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM image_moderation_jobs AS imj
+                  WHERE imj.asset_id = da.asset_id AND imj.decision != 'safe'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM moderation_content_controls AS mcc
+                  WHERE mcc.target_type = 'image'
+                    AND mcc.target_id = da.asset_id
+                    AND mcc.control_type = 'quarantine'
+                    AND mcc.active = 1
+              )
             ORDER BY da.created_at DESC
             LIMIT 100
             """,
@@ -12078,6 +12101,111 @@ async def _handle_cheer_image(request: Request, context) -> Response:
     return Response(status_code=204)
 
 
+async def _save_2019_moderated_image(
+    context,
+    *,
+    owner_player_id: str,
+    content: bytes,
+    file_ext: str,
+    mime_type: str,
+    purpose: str,
+    metadata: dict[str, Any],
+    activation_type: str = "publish",
+    activation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    manager = context.image_moderation
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Image moderation is unavailable.")
+    try:
+        return await asyncio.to_thread(
+            context.save_image_bytes,
+            owner_player_id=owner_player_id,
+            content=content,
+            file_ext=file_ext,
+            mime_type=mime_type,
+            purpose=purpose,
+            metadata=metadata,
+            target_size=manager.target_size,
+            moderation={
+                "activation_type": activation_type,
+                "activation": activation or {},
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def handle_image_moderation_approved(*, job: dict[str, Any], context) -> None:
+    if str(job.get("activation_type") or "") != "profile":
+        return
+    owner_player_id = str(job["owner_player_id"])
+    with context.db.transaction() as conn:
+        latest = conn.execute(
+            """
+            SELECT job_id
+            FROM image_moderation_jobs
+            WHERE owner_player_id = ? AND activation_type = 'profile'
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (owner_player_id,),
+        ).fetchone()
+        if latest is None or str(latest["job_id"]) != str(job["job_id"]):
+            return
+        asset = conn.execute(
+            "SELECT relative_path FROM data_assets WHERE asset_id = ?",
+            (str(job["asset_id"]),),
+        ).fetchone()
+        player_state = conn.execute(
+            """
+            SELECT state_json
+            FROM player_version_state
+            WHERE player_id = ? AND api_version = ?
+            """,
+            (owner_player_id, API_VERSION),
+        ).fetchone()
+        if asset is None or player_state is None:
+            raise RuntimeError("Approved profile image owner state is missing.")
+        try:
+            state = json.loads(player_state["state_json"] or "{}")
+        except (TypeError, ValueError):
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        state["profile_image_name"] = Path(str(asset["relative_path"])).name
+        activation = job.get("activation")
+        if not isinstance(activation, dict):
+            activation = {}
+        legacy_player_id = int(
+            activation.get("legacy_player_id")
+            or state.get("legacy_player_id")
+            or state.get("recnet_id")
+            or 0
+        )
+        conn.execute(
+            """
+            UPDATE players
+            SET profile_picture_asset_id = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ?
+            """,
+            (str(job["asset_id"]), owner_player_id),
+        )
+        conn.execute(
+            """
+            UPDATE player_version_state
+            SET state_json = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+            WHERE player_id = ? AND api_version = ?
+            """,
+            (json.dumps(state, sort_keys=True), owner_player_id, API_VERSION),
+        )
+    if legacy_player_id > 0:
+        await _broadcast_profile_update(legacy_player_id, context)
+
+
 async def _handle_upload_transient_image(request: Request, context) -> Response:
     player = _authenticated_player(request, context)
     active = await context.require_transient().get_membership(
@@ -12110,8 +12238,9 @@ async def _handle_upload_transient_image(request: Request, context) -> Response:
         or request.query_params.get("OldImageName")
         or ""
     ).strip()
-    asset = context.save_image_bytes(
-        owner_player_id=player["player_id"],
+    asset = await _save_2019_moderated_image(
+        context,
+        owner_player_id=str(player["player_id"]),
         content=image,
         file_ext=file_ext,
         mime_type=mime_type,
@@ -12141,8 +12270,9 @@ async def _handle_upload_saved_image(request: Request, context) -> Response:
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Invalid imgMeta JSON.") from exc
     metadata = await _saved_image_upload_metadata(raw_metadata_dict, player, context)
-    asset = context.save_image_bytes(
-        owner_player_id=player["player_id"],
+    asset = await _save_2019_moderated_image(
+        context,
+        owner_player_id=str(player["player_id"]),
         content=image,
         file_ext=".jpg",
         mime_type="image/jpeg",
@@ -12158,54 +12288,19 @@ async def _handle_set_profile_image(request: Request, context) -> Response:
     image = fields.get("image")
     if not image or not image.startswith(b"\xff\xd8"):
         raise HTTPException(status_code=400, detail="A JPEG image field is required.")
-    asset = context.save_image_bytes(
-        owner_player_id=player["player_id"],
+    state = _player_state(player)
+    legacy_player_id = int(state.get("legacy_player_id") or state.get("recnet_id") or 0)
+    await _save_2019_moderated_image(
+        context,
+        owner_player_id=str(player["player_id"]),
         content=image,
         file_ext=".jpg",
         mime_type="image/jpeg",
         purpose=f"{API_VERSION}.profile_image",
         metadata={"api_version": API_VERSION},
+        activation_type="profile",
+        activation={"legacy_player_id": legacy_player_id},
     )
-    image_name = Path(asset["relative_path"]).name
-    try:
-        state = json.loads(player["state_json"] or "{}")
-    except Exception:
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    state["profile_image_name"] = image_name
-    legacy_player_id = int(state.get("legacy_player_id") or state.get("recnet_id") or 0)
-    with context.db.transaction() as conn:
-        conn.execute(
-            """
-            UPDATE players
-            SET profile_picture_asset_id = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE player_id = ?
-            """,
-            (asset["asset_id"], player["player_id"]),
-        )
-        conn.execute(
-            """
-            UPDATE player_version_state
-            SET state_json = ?,
-                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-            WHERE player_id = ? AND api_version = ?
-            """,
-            (json.dumps(state, sort_keys=True), player["player_id"], API_VERSION),
-        )
-    refreshed = (
-        _find_player_by_legacy_id_25april2019(context, legacy_player_id)
-        if legacy_player_id > 0
-        else None
-    )
-    if refreshed is not None:
-        await _send_hub_notification(
-            legacy_player_id,
-            11,
-            _serialize_profile_25april2019(refreshed),
-            context=context,
-        )
     return Response(status_code=204)
 
 
@@ -12232,12 +12327,12 @@ async def _handle_uploaded_image(image_name: str, request: Request, context) -> 
     with context.db.connection() as conn:
         row = conn.execute(
             """
-            SELECT relative_path, mime_type FROM data_assets
+            SELECT asset_id, relative_path, mime_type FROM data_assets
             WHERE relative_path = ? OR relative_path = ? OR relative_path LIKE ? LIMIT 1
             """,
             (f"IMAGES/{image_name}", image_name, f"%/{image_name}"),
         ).fetchone()
-    if row is not None:
+    if row is not None and context.image_asset_is_available(str(row["asset_id"])):
         path = (context.data_dir / str(row["relative_path"])).resolve()
         if path.is_file() and context.data_dir.resolve() in path.parents:
             return Response(
@@ -12605,7 +12700,7 @@ async def _handle_send_message(request: Request, context) -> Response:
         if not isinstance(active, dict):
             raise HTTPException(status_code=409, detail="A game invite requires an active session.")
         game_session_id = int(active.get("GameSessionId") or 0)
-        with context.db.transaction() as conn:
+        with context.db.connection() as conn:
             instances = _read_game_instances(conn)
             instance = next((item for item in instances if int(item.get("GameSessionId") or 0) == game_session_id), None)
             if instance is None:
@@ -12672,7 +12767,7 @@ async def _handle_send_multiple_messages(request: Request, context) -> Response:
         if not isinstance(active, dict):
             raise HTTPException(status_code=409, detail="A game invite requires an active session.")
         game_session_id = int(active.get("GameSessionId") or 0)
-        with context.db.transaction() as conn:
+        with context.db.connection() as conn:
             instances = _read_game_instances(conn)
             instance = next(
                 (item for item in instances if int(item.get("GameSessionId") or 0) == game_session_id),
@@ -12720,7 +12815,7 @@ async def _handle_offline_invite(request: Request, context) -> Response:
     if not isinstance(active, dict):
         raise HTTPException(status_code=409, detail="A game invite requires an active session.")
     game_session_id = int(active.get("GameSessionId") or 0)
-    with context.db.transaction() as conn:
+    with context.db.connection() as conn:
         instances = _read_game_instances(conn)
         instance = next(
             (item for item in instances if int(item.get("GameSessionId") or 0) == game_session_id),
@@ -14725,6 +14820,15 @@ def validate_moderation_action(
 ) -> None:
     if action != "quarantine":
         raise ValueError("This adapter validates only content quarantine actions.")
+    if target_type == "image":
+        with context.db.connection() as conn:
+            asset = conn.execute(
+                "SELECT 1 FROM data_assets WHERE asset_id = ?",
+                (str(target_id),),
+            ).fetchone()
+        if asset is None:
+            raise ValueError("The reported image no longer exists.")
+        return
     try:
         numeric_target_id = int(target_id)
     except (TypeError, ValueError) as exc:
@@ -14774,7 +14878,7 @@ def validate_moderation_action(
             raise ValueError("The reported player event no longer exists.")
         return
     raise ValueError(
-        "This client adapter can quarantine only rooms, inventions, and player events."
+        "This client adapter can quarantine only rooms, inventions, player events, and images."
     )
 
 

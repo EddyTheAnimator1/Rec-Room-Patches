@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "target_width": 2560,
+  "target_height": 1440,
+  "queue_delay_seconds": 3,
+  "idle_poll_interval_seconds": 30,
+  "lease_seconds": 180,
+  "retry_max_seconds": 300,
+  "nudenet_320n": {
+    "rejected_classes": {
+      "ANUS_EXPOSED": 0.45,
+      "BUTTOCKS_EXPOSED": 0.55,
+      "FEMALE_BREAST_EXPOSED": 0.55,
+      "FEMALE_GENITALIA_EXPOSED": 0.45,
+      "MALE_GENITALIA_EXPOSED": 0.45
+    }
+  },
+  "nsfwjs_mobilenet_v2": {
+    "rejected_classes": {
+      "Hentai": 0.7,
+      "Porn": 0.7
+    }
+  },
+  "very_confident": {
+    "minimum_nudenet_score": 0.92,
+    "minimum_nsfwjs_score": 0.95,
+    "require_both_models": true,
+    "cross_model_confirmation": {
+      "minimum_nudenet_score": 0.25,
+      "nudenet_classes": [
+        "ANUS_EXPOSED",
+        "FEMALE_BREAST_EXPOSED",
+        "FEMALE_GENITALIA_EXPOSED",
+        "MALE_GENITALIA_EXPOSED"
+      ],
+      "minimum_nsfwjs_score": 0.8,
+      "nsfwjs_classes": [
+        "Hentai",
+        "Porn"
+      ]
+    },
+    "timeout_seconds": 86400
+  }
+}

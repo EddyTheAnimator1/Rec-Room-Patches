@@ -2,3 +2,6 @@ fastapi
 uvicorn[standard]
 httpx
 redis>=5.2,<7
+Pillow>=12.3,<13
+nudenet==3.4.2
+onnxruntime>=1.23,<2

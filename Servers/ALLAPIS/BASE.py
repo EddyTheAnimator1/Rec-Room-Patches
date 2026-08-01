@@ -42,6 +42,7 @@ from content_filter import (
     environment_enabled,
 )
 import moderation_service
+import image_moderation
 import redis_state
 import timed_content
 
@@ -81,6 +82,7 @@ DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
+RESERVED_PLAYER_USERNAMES = frozenset({"coach"})
 ADMIN_KEY_ENV_NAMES = ("RECROOM_ADMIN_SECRET", "RECROOM_ADMIN_BAN_KEY", "RECROOM_ADMIN_KEY", "RR_ADMIN_KEY")
 ADMIN_SESSION_COOKIE_NAME = "recroom_admin_session"
 DEFAULT_ADMIN_SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -103,6 +105,10 @@ SENSITIVE_PAYLOAD_KEY_RE = re.compile(r"(?i)(token|secret|password|authorization
 
 
 class ConfigurationError(RuntimeError):
+    pass
+
+
+class UsernameConflictError(ValueError):
     pass
 
 
@@ -510,6 +516,9 @@ def ensure_runtime_directories(settings: Settings) -> dict[str, str]:
     image_dir.mkdir(parents=True, exist_ok=True)
     (image_dir / BACKEND_IMAGE_DIR_NAME).mkdir(parents=True, exist_ok=True)
     (image_dir / PLAYER_IMAGE_DIR_NAME).mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / image_moderation.QUARANTINE_DIR_NAME).mkdir(
+        parents=True, exist_ok=True
+    )
     (settings.data_dir / VIDEO_DATA_DIR_NAME).mkdir(parents=True, exist_ok=True)
     legacy_image_moves = migrate_legacy_root_images(settings.data_dir)
     enforce_data_directory_policy(settings.data_dir)
@@ -599,7 +608,10 @@ def migrate_legacy_root_images(data_dir: Path) -> dict[str, str]:
             if target.resolve() != child.resolve():
                 child.replace(target)
                 moved[child.name] = f"{IMAGE_DATA_DIR_NAME}/{BACKEND_IMAGE_DIR_NAME}/{target.name}"
-        elif child.is_dir() and child.name != IMAGE_DATA_DIR_NAME:
+        elif child.is_dir() and child.name not in {
+            IMAGE_DATA_DIR_NAME,
+            image_moderation.QUARANTINE_DIR_NAME,
+        }:
             for nested in list(child.iterdir()):
                 if nested.is_file() and nested.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
                     target = backend_image_dir / nested.name
@@ -760,7 +772,7 @@ class Database:
         conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA busy_timeout = 15000")
         return conn
 
     @contextmanager
@@ -779,7 +791,8 @@ class Database:
             yield conn
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -1265,10 +1278,84 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON bug_report_actions(group_id, created_at);
         """,
     ),
+    (
+        11,
+        """
+        CREATE TABLE IF NOT EXISTS image_moderation_jobs (
+            job_id TEXT PRIMARY KEY,
+            asset_id TEXT NOT NULL UNIQUE REFERENCES data_assets(asset_id) ON DELETE CASCADE,
+            api_version TEXT NOT NULL,
+            owner_player_id TEXT NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            purpose TEXT NOT NULL,
+            activation_type TEXT NOT NULL,
+            activation_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            lease_owner TEXT NULL,
+            lease_expires_at TEXT NULL,
+            nudenet_json TEXT NULL,
+            nsfwjs_json TEXT NULL,
+            max_nudenet_score REAL NULL,
+            max_nsfwjs_score REAL NULL,
+            moderation_case_id TEXT NULL REFERENCES moderation_cases(case_id),
+            player_case_id TEXT NULL REFERENCES moderation_cases(case_id),
+            last_error TEXT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            reviewed_at TEXT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_image_moderation_queue
+            ON image_moderation_jobs(status, next_attempt_at, lease_expires_at);
+
+        CREATE INDEX IF NOT EXISTS idx_image_moderation_asset_decision
+            ON image_moderation_jobs(asset_id, decision);
+
+        CREATE INDEX IF NOT EXISTS idx_image_moderation_owner_activation
+            ON image_moderation_jobs(owner_player_id, activation_type, created_at);
+        """,
+    ),
+    (
+        12,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_players_username_nocase
+            ON players(username COLLATE NOCASE);
+        """,
+    ),
 )
 
 
+def _player_username_key(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _validate_existing_player_usernames(conn: sqlite3.Connection) -> None:
+    usernames: dict[str, tuple[str, str]] = {}
+    conflicts: list[str] = []
+    for row in conn.execute("SELECT player_id, username FROM players ORDER BY created_at, player_id"):
+        username = str(row["username"] or "").strip()
+        key = _player_username_key(username)
+        if not key:
+            conflicts.append(f"player {row['player_id']} has an empty username")
+            continue
+        previous = usernames.get(key)
+        if previous is not None:
+            conflicts.append(f"{previous[1]!r} and {username!r}")
+        else:
+            usernames[key] = (str(row["player_id"]), username)
+        if key in RESERVED_PLAYER_USERNAMES and str(row["player_id"]) != COACH_PLAYER_ID:
+            conflicts.append(f"reserved username {username!r} belongs to player {row['player_id']}")
+    if conflicts:
+        details = ", ".join(conflicts[:5])
+        raise ConfigurationError(f"Cannot enforce unique player usernames: {details}.")
+
+
 def initialize_database(db: Database) -> None:
+    with db.connection() as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
     with db.transaction() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
@@ -1276,6 +1363,8 @@ def initialize_database(db: Database) -> None:
         applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations")}
         for version, sql in MIGRATIONS:
             if version not in applied:
+                if version == 12:
+                    _validate_existing_player_usernames(conn)
                 for statement in sql.split(";"):
                     statement = statement.strip()
                     if statement:
@@ -1412,6 +1501,19 @@ def ensure_coach_profile(db: Database) -> dict[str, Any]:
 
 def normalize_identity_value(value: Any) -> str:
     return str(value or "").strip().casefold()
+
+
+def validate_new_player_username(conn: sqlite3.Connection, username: Any) -> str:
+    clean_username = str(username or "").strip()
+    username_key = _player_username_key(clean_username)
+    if not username_key:
+        raise UsernameConflictError("Username is required.")
+    if username_key in RESERVED_PLAYER_USERNAMES:
+        raise UsernameConflictError("Username is reserved.")
+    for row in conn.execute("SELECT username FROM players"):
+        if _player_username_key(row["username"]) == username_key:
+            raise UsernameConflictError("Username is already in use.")
+    return clean_username
 
 
 def hash_ban_identity(pepper: str, identity_type: str, value: Any) -> str:
@@ -1594,9 +1696,7 @@ def get_or_create_player(
     now = utc_now()
     with db.transaction() as conn:
         row = None
-        if username:
-            row = conn.execute("SELECT * FROM players WHERE username = ?", (username,)).fetchone()
-        if row is None and state_identity:
+        if state_identity:
             state_row = conn.execute(
                 """
                 SELECT p.*
@@ -1610,32 +1710,40 @@ def get_or_create_player(
 
         if row is None:
             player_id = str(uuid.uuid4())
-            username = username or f"Player_{secrets.token_hex(4)}"
-            display_name = display_name or username
-            conn.execute(
-                """
-                INSERT INTO players (
-                    player_id, username, display_name, email, verified, permissions_json,
-                    canonical_level, canonical_xp, profile_picture_asset_id, is_coach,
-                    created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    player_id,
-                    username,
-                    display_name,
-                    DEFAULT_CREATED_PLAYER_EMAIL,
-                    1,
-                    json.dumps(DEV_PERMISSIONS),
-                    1,
-                    0,
-                    None,
-                    0,
-                    now,
-                    now,
-                ),
+            username = validate_new_player_username(
+                conn,
+                username or f"Player_{secrets.token_hex(4)}",
             )
+            display_name = display_name or username
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO players (
+                        player_id, username, display_name, email, verified, permissions_json,
+                        canonical_level, canonical_xp, profile_picture_asset_id, is_coach,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        player_id,
+                        username,
+                        display_name,
+                        DEFAULT_CREATED_PLAYER_EMAIL,
+                        1,
+                        json.dumps(DEV_PERMISSIONS),
+                        1,
+                        0,
+                        None,
+                        0,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "players.username" in str(exc):
+                    raise UsernameConflictError("Username is already in use.") from exc
+                raise
             conn.execute(
                 """
                 INSERT INTO player_version_state(player_id, api_version, state_json, created_at, updated_at)
@@ -1668,6 +1776,7 @@ class ServerContext:
         self.db = db
         self.content_filter = content_filter
         self.transient = transient
+        self.image_moderation: image_moderation.ImageModerationManager | None = None
 
     def require_transient(self) -> redis_state.RedisTransientState:
         if self.transient is None:
@@ -2275,6 +2384,10 @@ class ServerContext:
         self.assert_player_not_banned(player["player_id"])
         return player
 
+    def assert_username_available(self, username: Any) -> str:
+        with self.db.connection() as conn:
+            return validate_new_player_username(conn, username)
+
     def insert_bug_report(
         self,
         conn: sqlite3.Connection,
@@ -2430,11 +2543,29 @@ class ServerContext:
 
     def record_player_identities(self, player_id: str, identities: list[tuple[str, Any]]) -> None:
         now = utc_now()
-        with self.db.transaction() as conn:
+        stale_before = utc_datetime_text(
+            utc_datetime_now() - timedelta(minutes=5)
+        )
+        pending: list[tuple[str, str]] = []
+        with self.db.connection() as conn:
             for identity_type, value in identities:
                 identity_hash = self.identity_hash(identity_type, value)
                 if not identity_hash:
                     continue
+                existing = conn.execute(
+                    """
+                    SELECT last_seen_at
+                    FROM player_identities
+                    WHERE identity_type = ? AND identity_hash = ? AND player_id = ?
+                    """,
+                    (identity_type, identity_hash, player_id),
+                ).fetchone()
+                if existing is None or str(existing["last_seen_at"]) <= stale_before:
+                    pending.append((identity_type, identity_hash))
+        if not pending:
+            return
+        with self.db.transaction() as conn:
+            for identity_type, identity_hash in pending:
                 conn.execute(
                     """
                     INSERT INTO player_identities(
@@ -2487,17 +2618,7 @@ class ServerContext:
         if include_network:
             allowed_types.add("ip_hash")
         now = utc_now()
-        with self.db.transaction() as conn:
-            conn.execute(
-                """
-                UPDATE moderation_sanctions
-                SET active = 0, updated_at = ?
-                WHERE active = 1
-                  AND expires_at IS NOT NULL
-                  AND expires_at <= ?
-                """,
-                (now, now),
-            )
+        with self.db.connection() as conn:
             for identity_type, value in identities:
                 if identity_type not in allowed_types:
                     continue
@@ -2645,17 +2766,7 @@ class ServerContext:
                     (player_id,),
                 ).fetchall()
             now = utc_now()
-            with self.db.transaction() as conn:
-                conn.execute(
-                    """
-                    UPDATE moderation_sanctions
-                    SET active = 0, updated_at = ?
-                    WHERE active = 1
-                      AND expires_at IS NOT NULL
-                      AND expires_at <= ?
-                    """,
-                    (now, now),
-                )
+            with self.db.connection() as conn:
                 for identity in identity_rows:
                     sanction_row = conn.execute(
                         """
@@ -3029,6 +3140,8 @@ class ServerContext:
         mime_type: str,
         purpose: str | None = None,
         metadata: dict[str, Any] | None = None,
+        target_size: tuple[int, int] | None = None,
+        moderation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         ext = file_ext.lower()
         if ext not in {".png", ".jpg", ".jpeg"}:
@@ -3037,67 +3150,120 @@ class ServerContext:
         if mime_type not in {"image/png", "image/jpeg"} or guessed_ext.lower() not in {".png", ".jpg", ".jpeg"}:
             raise ValueError("Unsupported image MIME type.")
 
+        stored_metadata = dict(metadata or {})
+        if target_size is not None:
+            content, dimensions = image_moderation.normalize_image_bytes(
+                content,
+                mime_type=mime_type,
+                target_size=target_size,
+            )
+            stored_metadata.update(dimensions)
+
+        manager = self.image_moderation
+        if moderation is not None:
+            if owner_player_id is None:
+                raise ValueError("Moderated image uploads require an owner.")
+            if manager is None or not bool(manager.config.get("enabled", True)):
+                raise RuntimeError("Image moderation is unavailable.")
+
         asset_id = str(uuid.uuid4())
         filename = f"{asset_id}{ext}"
-        bucket_name = PLAYER_IMAGE_DIR_NAME if owner_player_id else BACKEND_IMAGE_DIR_NAME
-        path = validate_image_write_path(self.data_dir, filename, bucket_name)
+        if moderation is not None:
+            quarantine_dir = (self.data_dir / image_moderation.QUARANTINE_DIR_NAME).resolve()
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            path = (quarantine_dir / filename).resolve()
+            if quarantine_dir not in path.parents:
+                raise ValueError("Invalid image quarantine path.")
+            relative_path = f"{image_moderation.QUARANTINE_DIR_NAME}/{filename}"
+        else:
+            bucket_name = PLAYER_IMAGE_DIR_NAME if owner_player_id else BACKEND_IMAGE_DIR_NAME
+            path = validate_image_write_path(self.data_dir, filename, bucket_name)
+            relative_path = f"{IMAGE_DATA_DIR_NAME}/{bucket_name}/{filename}"
         path.write_bytes(content)
-        relative_path = f"{IMAGE_DATA_DIR_NAME}/{bucket_name}/{filename}"
 
         now = utc_now()
-        with self.db.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO data_assets(
-                    asset_id, owner_player_id, relative_path, mime_type, file_ext,
-                    purpose, metadata_json, created_at
+        job_id: str | None = None
+        try:
+            with self.db.transaction() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO data_assets(
+                        asset_id, owner_player_id, relative_path, mime_type, file_ext,
+                        purpose, metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        asset_id,
+                        owner_player_id,
+                        relative_path,
+                        mime_type,
+                        ext,
+                        purpose,
+                        json.dumps(stored_metadata),
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    asset_id,
-                    owner_player_id,
-                    relative_path,
-                    mime_type,
-                    ext,
-                    purpose,
-                    json.dumps(metadata or {}),
-                    now,
-                ),
-            )
+                if moderation is not None and manager is not None:
+                    job_id = manager.register_job(
+                        conn,
+                        asset_id=asset_id,
+                        owner_player_id=str(owner_player_id),
+                        purpose=str(purpose or "image"),
+                        activation_type=str(moderation.get("activation_type") or "publish"),
+                        activation=moderation.get("activation"),
+                    )
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        if job_id is not None and manager is not None:
+            manager.wake()
         return {
             "asset_id": asset_id,
+            "job_id": job_id,
             "relative_path": relative_path,
             "mime_type": mime_type,
             "file_ext": ext,
             "purpose": purpose,
-            "metadata": metadata or {},
+            "metadata": stored_metadata,
         }
+
+    def image_asset_is_available(self, asset_id: str) -> bool:
+        with self.db.connection() as conn:
+            job = conn.execute(
+                "SELECT decision FROM image_moderation_jobs WHERE asset_id = ?",
+                (str(asset_id),),
+            ).fetchone()
+        if job is not None and str(job["decision"]) != "safe":
+            return False
+        return not self.is_content_quarantined("image", asset_id)
 
     def find_image_path(self, filename: str) -> Path | None:
         clean_name = Path(filename).name
         if not clean_name or Path(clean_name).suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
             return None
-        image_dir = (self.data_dir / IMAGE_DATA_DIR_NAME).resolve()
-
-        if image_dir.is_dir():
-            for child in image_dir.rglob("*"):
-                if child.is_file() and child.name.casefold() == clean_name.casefold():
-                    return child.resolve()
-
         with self.db.connection() as conn:
             row = conn.execute(
                 """
-                SELECT relative_path FROM data_assets
+                SELECT asset_id, relative_path FROM data_assets
                 WHERE relative_path = ? OR relative_path = ? OR relative_path LIKE ?
                 LIMIT 1
                 """,
                 (f"{IMAGE_DATA_DIR_NAME}/{clean_name}", clean_name, f"%/{clean_name}"),
             ).fetchone()
             if row:
+                if not self.image_asset_is_available(str(row["asset_id"])):
+                    return None
                 asset_path = (self.data_dir / str(row["relative_path"])).resolve()
                 if asset_path.is_file() and self.data_dir.resolve() in asset_path.parents:
                     return asset_path
+                return None
+
+        image_dir = (self.data_dir / IMAGE_DATA_DIR_NAME).resolve()
+        if image_dir.is_dir():
+            for child in image_dir.rglob("*"):
+                if child.is_file() and child.name.casefold() == clean_name.casefold():
+                    return child.resolve()
         return None
 
     def serve_image(self, filename: str) -> Response | None:
@@ -3738,7 +3904,7 @@ def admin_allowed_actions(
                 "Restore invention publishing",
                 "Removes the active invention-publishing restriction.",
             )
-    elif target_type in {"room", "invention", "player_event"} and case_id:
+    elif target_type in {"room", "invention", "player_event", "image"} and case_id:
         active_quarantine = any(
             bool(row.get("active"))
             and str(row.get("control_type")) == "quarantine"
@@ -4802,6 +4968,22 @@ def create_app() -> FastAPI:
     print(content_filter.startup_summary(), file=sys.stderr)
     timed_content.reconcile_due_timed_content(db, now_utc=utc_datetime_now())
     context = ServerContext(settings, db, content_filter, transient)
+
+    async def activate_approved_image(job: dict[str, Any]) -> None:
+        module = load_version_module(settings, str(job["api_version"]))
+        handler = getattr(module, "handle_image_moderation_approved", None)
+        if handler is None:
+            return
+        result = handler(job=job, context=context)
+        awaited = maybe_await(result)
+        if awaited is not None:
+            await awaited
+
+    context.image_moderation = image_moderation.ImageModerationManager(
+        context,
+        root_dir=settings.root_dir,
+        on_approved=activate_approved_image,
+    )
     limiter = RateLimiter(
         transient,
         limit=120 if settings.is_railway else 600,
@@ -4898,6 +5080,10 @@ def create_app() -> FastAPI:
     @app.exception_handler(ConfigurationError)
     async def configuration_error_handler(_: Request, exc: ConfigurationError) -> JSONResponse:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(UsernameConflictError)
+    async def username_conflict_error_handler(_: Request, exc: UsernameConflictError) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(_: Request, __: Exception) -> JSONResponse:
@@ -5538,6 +5724,7 @@ def create_app() -> FastAPI:
         severity_for_category = {
             "credible_threat": "critical",
             "underage_safety": "critical",
+            "sexual_content": "high",
             "sexual_misconduct": "high",
             "discrimination": "high",
             "harassment": "high",
@@ -5613,6 +5800,54 @@ def create_app() -> FastAPI:
             case=case,
         )
         return JSONResponse({"Success": True, "Case": case})
+
+    @app.get(
+        "/admin/moderation/cases/{case_id}/image",
+        dependencies=[Depends(require_documented_admin)],
+        tags=["moderation"],
+    )
+    async def admin_get_moderation_case_image(
+        case_id: str,
+        request: Request,
+    ) -> Response:
+        await require_operator_request(request)
+        case = moderation_service.get_case(db, case_id)
+        if case is None:
+            raise HTTPException(status_code=404, detail="Moderation case not found.")
+        if str(case.get("target_type") or "") != "image":
+            raise HTTPException(status_code=404, detail="This case has no image evidence.")
+        with db.connection() as conn:
+            asset = conn.execute(
+                """
+                SELECT relative_path, mime_type
+                FROM data_assets
+                WHERE asset_id = ?
+                LIMIT 1
+                """,
+                (str(case["target_id"]),),
+            ).fetchone()
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Image evidence not found.")
+        path = (context.data_dir / str(asset["relative_path"])).resolve()
+        if context.data_dir.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="Image evidence not found.")
+        content = path.read_bytes()
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            media_type = "image/png"
+        elif content.startswith(b"\xff\xd8\xff"):
+            media_type = "image/jpeg"
+        else:
+            raise HTTPException(status_code=415, detail="Unsupported image evidence format.")
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "no-store, private, max-age=0",
+                "Pragma": "no-cache",
+                "Content-Disposition": f'inline; filename="case-{case_id}-image{path.suffix.lower()}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get(
         "/admin/moderation/cases/{case_id}/evidence",
@@ -7187,6 +7422,7 @@ def create_app() -> FastAPI:
             await transient.start()
         except redis_state.RedisConfigurationError as exc:
             raise RuntimeError(str(exc)) from exc
+        await context.image_moderation.start()
         with db.connection() as conn:
             banned_player_ids = [
                 str(row["player_id"])
@@ -7207,6 +7443,7 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def stop_persisted_maintenance_deadline() -> None:
         await stop_maintenance_deadlines(context)
+        await context.image_moderation.close()
         await transient.close()
 
     app.state.settings = settings

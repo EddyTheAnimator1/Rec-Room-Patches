@@ -65,9 +65,9 @@ def _image_asset_for_player(context, player_id: str):
         asset_id = player["profile_picture_asset_id"] if player else None
         if asset_id:
             asset = conn.execute("SELECT * FROM data_assets WHERE asset_id = ?", (asset_id,)).fetchone()
-            if asset:
+            if asset and context.image_asset_is_available(str(asset["asset_id"])):
                 return asset
-        return conn.execute(
+        asset = conn.execute(
             """
             SELECT *
             FROM data_assets
@@ -78,6 +78,9 @@ def _image_asset_for_player(context, player_id: str):
             """,
             (player_id, PROFILE_IMAGE_PURPOSE),
         ).fetchone()
+    if asset and context.image_asset_is_available(str(asset["asset_id"])):
+        return asset
+    return None
 
 
 def _detect_image_type(content: bytes, fallback_mime: str = "") -> tuple[str, str]:

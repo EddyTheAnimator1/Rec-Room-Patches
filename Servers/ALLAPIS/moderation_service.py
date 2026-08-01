@@ -655,9 +655,10 @@ def transition_case(
             "room",
             "invention",
             "player_event",
+            "image",
         }:
             raise ValueError(
-                "Quarantine is supported only for room, invention, and player-event cases."
+                "Quarantine is supported only for room, invention, player-event, and image cases."
             )
 
         # Expired timeouts stop blocking later case actions even if no player
@@ -977,18 +978,7 @@ def active_player_sanction(
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     now_text = utc_text(now)
-    with db.transaction() as conn:
-        conn.execute(
-            """
-            UPDATE moderation_sanctions
-            SET active = 0, updated_at = ?
-            WHERE target_player_id = ?
-              AND active = 1
-              AND expires_at IS NOT NULL
-              AND expires_at <= ?
-            """,
-            (now_text, player_id, now_text),
-        )
+    with db.connection() as conn:
         row = conn.execute(
             """
             SELECT *
@@ -1015,18 +1005,7 @@ def active_player_sanctions(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     now_text = utc_text(now)
-    with db.transaction() as conn:
-        conn.execute(
-            """
-            UPDATE moderation_sanctions
-            SET active = 0, updated_at = ?
-            WHERE target_player_id = ?
-              AND active = 1
-              AND expires_at IS NOT NULL
-              AND expires_at <= ?
-            """,
-            (now_text, player_id, now_text),
-        )
+    with db.connection() as conn:
         rows = conn.execute(
             """
             SELECT *

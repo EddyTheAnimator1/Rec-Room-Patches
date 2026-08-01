@@ -892,6 +892,31 @@ async function openCase(caseId) {
     ]);
     elements.drawerContent.append(overviewSection);
 
+    if (item.target_type === "image") {
+      const image = document.createElement("img");
+      image.className = "bug-report-image";
+      image.alt = `Quarantined image evidence for case ${item.case_id}`;
+      image.loading = "lazy";
+      image.src = `/admin/moderation/cases/${encodeURIComponent(
+        item.case_id
+      )}/image`;
+      const imageSection = node("section", { className: "drawer-section" }, [
+        node("h3", {}, "Quarantined image evidence"),
+        node(
+          "p",
+          { className: "muted" },
+          "Visible only to authenticated moderators. Game-facing image routes remain blocked."
+        ),
+        image,
+      ]);
+      image.addEventListener("error", () => {
+        image.replaceWith(
+          node("p", { className: "muted" }, "The quarantined image could not be displayed.")
+        );
+      });
+      elements.drawerContent.append(imageSection);
+    }
+
     const reportsSection = node("section", { className: "drawer-section" });
     reportsSection.append(node("h3", {}, "Reports"));
     const reportsTimeline = node("div", { className: "timeline" });

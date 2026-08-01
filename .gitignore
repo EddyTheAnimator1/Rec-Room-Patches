@@ -1,5 +1,6 @@
 Servers/ALLAPIS/DATA/database.sqlite3
 __pycache__/
+node_modules/
 build/
 dist/
 Builds/
