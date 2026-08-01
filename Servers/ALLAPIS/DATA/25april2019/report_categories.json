@@ -1,0 +1,28 @@
+{
+  "player": {
+    "-1": "moderator_action",
+    "0": "unknown",
+    "1": "microphone_abuse",
+    "2": "harassment",
+    "3": "cheating",
+    "4": "immature_behavior",
+    "5": "afk",
+    "6": "miscellaneous",
+    "7": "underage",
+    "10": "vote_kick",
+    "100": "underage_safety",
+    "101": "sexual_misconduct",
+    "102": "discrimination",
+    "103": "trolling",
+    "104": "name_or_profile",
+    "1000": "inaccurate_reporting"
+  },
+  "invention": {
+    "-1": "unknown",
+    "0": "discrimination",
+    "1": "sexual_content",
+    "2": "trolling",
+    "3": "misleading",
+    "4": "other"
+  }
+}

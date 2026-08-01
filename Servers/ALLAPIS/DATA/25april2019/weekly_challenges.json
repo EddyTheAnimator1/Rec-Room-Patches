@@ -1,0 +1,88 @@
+[
+  {
+    "name": "3D Charades",
+    "description": "Complete 5 games of 3D Charades.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      2
+    ]
+  },
+  {
+    "name": "Disc Golf",
+    "description": "Complete 5 games of Disc Golf.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      3,
+      4
+    ]
+  },
+  {
+    "name": "Dodgeball",
+    "description": "Complete 5 games of Dodgeball.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      5
+    ]
+  },
+  {
+    "name": "Paddleball",
+    "description": "Complete 5 games of Paddleball.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      7
+    ]
+  },
+  {
+    "name": "Paintball",
+    "description": "Complete 5 games of Paintball.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      8,
+      9,
+      10,
+      11,
+      12
+    ]
+  },
+  {
+    "name": "Soccer",
+    "description": "Complete 5 games of Soccer.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      17
+    ]
+  },
+  {
+    "name": "Bowling",
+    "description": "Complete 5 games of Bowling.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      28
+    ]
+  },
+  {
+    "name": "Rec Royale Squads",
+    "description": "Complete 5 games of Rec Royale Squads.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      25
+    ]
+  },
+  {
+    "name": "Rec Royale Solos",
+    "description": "Complete 5 games of Rec Royale Solos.",
+    "event_type": 2,
+    "count": 5,
+    "room_locations": [
+      26
+    ]
+  }
+]

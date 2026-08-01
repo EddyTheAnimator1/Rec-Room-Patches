@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "instructions": [
+    {
+      "type": "install_patch_file",
+      "source": "global-metadata.dat",
+      "base_dir": "Recroom_Release_Data/il2cpp_data/Metadata",
+      "file": "global-metadata.dat",
+      "overwrite": true
+    },
+    {
+      "type": "write_text_file",
+      "file": "screenmode.bat",
+      "content": "@echo off\r\nstart \"\" \".\\Recroom_Release.exe\" +mode:screen\r\nexit",
+      "encoding": "utf-8",
+      "overwrite": true
+    },
+    {
+      "type": "write_text_file",
+      "file": "vr.bat",
+      "content": "@echo off\r\nstart \"\" \".\\Recroom_Release.exe\" +mode:vr\r\nexit",
+      "encoding": "utf-8",
+      "overwrite": true
+    },
+    {
+      "type": "replace_bytes",
+      "base_dir": "Recroom_Release_Data",
+      "file": "resources.assets",
+      "replacements": [
+        {
+          "find": "6ebb7d66-6984-464d-a4ac-59b553e52000",
+          "replace": "80f7725b-95cc-401f-b0c4-d4c181a5f25f"
+        },
+        {
+          "find": "37d5603e-b72f-4c1a-bc5c-3f318559c2b8",
+          "replace": "5c6571c8-96e6-4df1-ba38-977dd144713a"
+        }
+      ]
+    },
+    {
+      "type": "write_text_file",
+      "file": "steam_appid.txt",
+      "content": "250820",
+      "encoding": "utf-8",
+      "overwrite": true
+    }
+  ]
+}

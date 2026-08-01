@@ -798,8 +798,13 @@ def _default_presence(player_id: int) -> dict[str, Any]:
     }
 
 
-def _presence_for_player(context, player_id: int) -> dict[str, Any]:
-    presence = _get_json_setting(context, _setting_key("presence", player_id), {})
+async def _presence_for_player(
+    context,
+    player_id: int,
+    api_version: str | None = None,
+) -> dict[str, Any]:
+    api_version = api_version or API_VERSION
+    presence = await context.require_transient().get_presence(api_version, player_id)
     if not presence:
         return _default_presence(player_id)
     result = _default_presence(player_id)
@@ -815,7 +820,7 @@ async def _handle_get_presence(route_path: str, context) -> Response:
         raise HTTPException(status_code=404, detail="Unknown endpoint.")
     player_id = int(match.group(1))
     _ensure_existing_profile(context, player_id)
-    return JSONResponse(_presence_for_player(context, player_id))
+    return JSONResponse(await _presence_for_player(context, player_id))
 
 
 async def _handle_update_presence(request: Request, route_path: str, context) -> Response:
@@ -839,7 +844,12 @@ async def _handle_update_presence(request: Request, route_path: str, context) ->
             "LastUpdateTime": _dotnet_utc_ticks(),
         }
     )
-    _set_json_setting(context, _setting_key("presence", player_id), presence)
+    await context.require_transient().update_http_presence(
+        api_version=API_VERSION,
+        player_id=player_id,
+        presence=presence,
+        online=bool(presence["IsOnline"]),
+    )
     return Response(status_code=204)
 
 
@@ -854,7 +864,7 @@ async def _handle_presence_list(request: Request, context) -> Response:
         except Exception:
             continue
         if _PLATFORM_BASE._find_player_by_legacy_id(context, player_id) is not None:
-            presences.append(_presence_for_player(context, player_id))
+            presences.append(await _presence_for_player(context, player_id))
     return JSONResponse(presences)
 
 

@@ -1,0 +1,11 @@
+{
+  "existing_account": {
+    "OutfitSelections": "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,55901f12-d5b5-4fa8-b4c8-e479689ee39d,f600037d-c9c0-43fa-b45b-02f456f9dd5f,,1",
+    "FaceFeatures": "{\"ver\":3,\"eyeId\":\"AjGMoJhEcEehacRZjUMuDg\",\"eyePos\":{\"x\":0.0,\"y\":0.0},\"eyeScl\":0.0,\"mouthId\":\"8I8NMh0FoUa4pcl41wQjmA\",\"mouthPos\":{\"x\":0.0,\"y\":0.0},\"mouthScl\":0.0,\"beardColorId\":\"f9a50d3d-a6e0-42a4-a4e3-42dc89f84a2e\"}",
+    "SkinColor": "Xac-W_R330KfOz-pQla9qg",
+    "HairColor": "f9a50d3d-a6e0-42a4-a4e3-42dc89f84a2e"
+  },
+  "new_account": {
+    "OutfitSelections": "d0a9262f-5504-46a7-bb10-7507503db58e,,,,1;"
+  }
+}

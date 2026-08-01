@@ -278,7 +278,6 @@ async def _handle_platform_login(request: Request, context) -> Response:
             "platform_id": platform_id,
             "name": name,
             "recnet_id": legacy_id,
-            "login_token": token,
         }
     )
     with context.db.transaction() as conn:
@@ -299,8 +298,14 @@ async def _handle_platform_login(request: Request, context) -> Response:
             ("account_id", f"{API_VERSION}:platform:{platform}:{platform_id}"),
             ("account_id", f"recnet:{legacy_id}"),
             ("account_id", f"{API_VERSION}:recnet:{legacy_id}"),
-            ("account_id", token),
         ],
+    )
+    await context.issue_player_session(
+        api_version=API_VERSION,
+        raw_token=token,
+        player_id=str(player["player_id"]),
+        legacy_player_id=legacy_id,
+        ttl_seconds=7 * 24 * 60 * 60,
     )
     return JSONResponse({"Token": token, "PlayerId": legacy_id})
 

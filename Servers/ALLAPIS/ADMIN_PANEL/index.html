@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Configurator</title>
+  <link rel="stylesheet" href="/admin/assets/styles.css">
+  <script src="/admin/assets/app.js" defer></script>
+</head>
+<body>
+  <main id="login-view" class="login-layout">
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">C</div>
+      <p class="eyebrow">Configurator</p>
+      <h1 id="login-title">Operator sign in</h1>
+      <form id="login-form">
+        <label for="admin-key">Administrator key</label>
+        <div class="secret-field">
+          <input
+            id="admin-key"
+            name="admin-key"
+            type="password"
+            autocomplete="current-password"
+            spellcheck="false"
+            required
+          >
+          <button id="toggle-secret" class="quiet-button" type="button">Show</button>
+        </div>
+        <button id="login-button" class="primary-button wide" type="submit">
+          Open operations panel
+        </button>
+      </form>
+      <p id="login-error" class="form-error" role="alert"></p>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark compact" aria-hidden="true">C</div>
+        <div>
+          <p class="product-name">Configurator</p>
+        </div>
+      </div>
+      <div class="session-cluster">
+        <div class="live-indicator"><span></span> Server connected</div>
+        <div class="operator-chip">
+          <span class="operator-avatar" aria-hidden="true">E</span>
+          <div>
+            <strong id="operator-name">primary_operator</strong>
+            <small id="session-expiry">Secure session</small>
+          </div>
+        </div>
+        <button id="logout-button" class="quiet-button" type="button">Log out</button>
+      </div>
+    </header>
+
+    <aside class="sidebar" aria-label="Admin panel navigation">
+      <nav>
+        <button class="nav-item active" data-page="review" type="button">
+          <span aria-hidden="true">◎</span>
+          <span>Review Queue</span>
+          <strong id="queue-count">0</strong>
+        </button>
+        <button class="nav-item" data-page="bugs" type="button">
+          <span aria-hidden="true">!</span>
+          <span>Bug Reports</span>
+          <strong id="bug-report-count">0</strong>
+        </button>
+        <button class="nav-item" data-page="search" type="button">
+          <span aria-hidden="true">⌕</span>
+          <span>Search</span>
+        </button>
+        <button class="nav-item" data-page="apis" type="button">
+          <span aria-hidden="true">#</span>
+          <span>Apis</span>
+        </button>
+        <button class="nav-item" data-page="operations" type="button">
+          <span aria-hidden="true">◇</span>
+          <span>Operations</span>
+        </button>
+        <button class="nav-item" data-page="audit" type="button">
+          <span aria-hidden="true">≡</span>
+          <span>Audit</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot">
+        <span>First-party panel</span>
+        <small>No direct database access</small>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <section id="page-review" class="page active" data-page-panel="review">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Canonical moderation</p>
+            <h1>Review Queue</h1>
+            <p>Reports from every compatible build are grouped into one case timeline.</p>
+          </div>
+          <div class="heading-actions">
+            <label class="select-label" for="case-state-filter">Case state</label>
+            <select id="case-state-filter">
+              <option value="">All states</option>
+              <option value="review_required">Review required</option>
+              <option value="observed">Observed</option>
+              <option value="restricted">Restricted</option>
+              <option value="timed_out">Timed out</option>
+              <option value="quarantined">Quarantined</option>
+              <option value="banned">Banned</option>
+              <option value="cleared">Cleared</option>
+            </select>
+            <button id="refresh-cases" class="secondary-button" type="button">Refresh</button>
+          </div>
+        </div>
+
+        <div class="metric-grid" aria-label="Queue summary">
+          <article class="metric-card">
+            <span>Open cases</span>
+            <strong id="metric-open">0</strong>
+            <small>Current filter</small>
+          </article>
+          <article class="metric-card">
+            <span>Independent reports</span>
+            <strong id="metric-independent">0</strong>
+            <small>Duplicate weight removed</small>
+          </article>
+          <article class="metric-card">
+            <span>Review required</span>
+            <strong id="metric-review">0</strong>
+            <small>Highest priority</small>
+          </article>
+          <article class="metric-card">
+            <span>Active controls</span>
+            <strong id="metric-controls">0</strong>
+            <small>Sanctions and quarantines</small>
+          </article>
+        </div>
+
+        <section class="panel table-panel" aria-labelledby="queue-table-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="queue-table-title">Cases</h2>
+              <p id="queue-status">Loading the review queue…</p>
+            </div>
+            <span class="refresh-note">Auto-refreshes every 30 seconds</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>State</th>
+                  <th>Target</th>
+                  <th>Category</th>
+                  <th>Reports</th>
+                  <th>Assignment</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="case-table-body"></tbody>
+            </table>
+          </div>
+          <div id="queue-empty" class="empty-state" hidden>
+            <span aria-hidden="true">✓</span>
+            <h3>No cases in this view</h3>
+            <p>New in-game reports will appear here after the server creates a case.</p>
+          </div>
+          <div class="pagination">
+            <button id="cases-prev" class="quiet-button" type="button">Previous</button>
+            <span id="cases-page-label">Page 1</span>
+            <button id="cases-next" class="quiet-button" type="button">Next</button>
+          </div>
+        </section>
+      </section>
+
+      <section id="page-bugs" class="page" data-page-panel="bugs" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">April 2019 client submissions</p>
+            <h1>Bug Reports</h1>
+            <p>Review descriptions, screenshots, output logs, and recurring reports.</p>
+          </div>
+          <button id="refresh-bug-reports" class="secondary-button" type="button">Refresh</button>
+        </div>
+
+        <section class="panel table-panel">
+          <form id="bug-report-filter-form" class="filter-row">
+            <input id="bug-report-search" type="search" placeholder="Name, description, reporter, or ID">
+            <select id="bug-report-status-filter">
+              <option value="">All states</option>
+              <option value="open">Open</option>
+              <option value="dismissed">Dismissed</option>
+            </select>
+            <button class="quiet-button" type="submit">Apply filters</button>
+          </form>
+          <div class="bug-group-bar">
+            <select id="bug-report-group-select" aria-label="Recurring bug group">
+              <option value="">New recurring-bug group</option>
+            </select>
+            <button id="group-selected-bugs" class="secondary-button" type="button">
+              Group selected
+            </button>
+            <span id="bug-report-status" class="muted">Loading bug reports…</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th><input id="select-all-bug-reports" type="checkbox" aria-label="Select all bug reports"></th>
+                  <th>State</th>
+                  <th>Report</th>
+                  <th>Reporter</th>
+                  <th>Group</th>
+                  <th>Build</th>
+                  <th>Submitted</th>
+                </tr>
+              </thead>
+              <tbody id="bug-report-table-body"></tbody>
+            </table>
+          </div>
+          <div id="bug-report-empty" class="empty-state" hidden>
+            <h3>No bug reports in this view</h3>
+            <p>Reports submitted by the 2019 client will appear here.</p>
+          </div>
+        </section>
+
+        <section id="bug-report-detail" class="panel detail-panel" hidden></section>
+      </section>
+
+      <section id="page-search" class="page" data-page-panel="search" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Canonical lookup</p>
+            <h1>Search</h1>
+            <p>Resolve a player or content target before applying an audited action.</p>
+          </div>
+        </div>
+        <section class="panel search-panel">
+          <form id="search-form" class="search-form">
+            <label for="target-search">Player ID, username, display name, room, or invention</label>
+            <div>
+              <input id="target-search" type="search" minlength="2" autocomplete="off" required>
+              <button class="primary-button" type="submit">Search</button>
+            </div>
+          </form>
+          <p id="search-status" class="muted">Enter at least two characters.</p>
+          <div id="search-results" class="result-list"></div>
+        </section>
+        <section id="search-detail" class="panel detail-panel" hidden></section>
+      </section>
+
+      <section id="page-apis" class="page" data-page-panel="apis" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Pedro test (2019)</p>
+            <h1>Apis</h1>
+            <p>Build-specific controls exposed by the server.</p>
+          </div>
+          <button id="refresh-apis" class="secondary-button" type="button">Refresh</button>
+        </div>
+        <div class="operations-grid single-column">
+          <section class="panel operation-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">25april2019 only</p>
+                <h2>Maintenance API</h2>
+              </div>
+              <span id="maintenance-badge" class="status-badge neutral">Loading</span>
+            </div>
+            <p class="muted">
+              Saves the countdown in config and sends notification 25 to every connected
+              Pedro test client. Other builds are not targeted.
+            </p>
+            <dl id="maintenance-summary" class="definition-grid"></dl>
+            <dl id="maintenance-delivery" class="definition-grid"></dl>
+            <form id="maintenance-form" class="stacked-form">
+              <label for="maintenance-minutes">Starts in minutes</label>
+              <input id="maintenance-minutes" type="number" min="0" max="10080" value="30" required>
+              <label for="maintenance-reason">Operator reason</label>
+              <textarea id="maintenance-reason" maxlength="2000" required></textarea>
+              <div class="button-row">
+                <button class="primary-button" type="submit">Send maintenance</button>
+                <button id="cancel-maintenance" class="danger-button" type="button">Cancel schedule</button>
+              </div>
+            </form>
+            <p class="muted api-note">
+              Zero means immediate maintenance. Cancellation clears future config responses;
+              this client has no confirmed realtime cancellation message.
+            </p>
+          </section>
+        </div>
+      </section>
+
+      <section id="page-operations" class="page" data-page-panel="operations" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Server-wide controls</p>
+            <h1>Operations</h1>
+            <p>Timed content uses canonical UTC state shared by compatible builds.</p>
+          </div>
+          <button id="refresh-operations" class="secondary-button" type="button">Refresh</button>
+        </div>
+        <div class="operations-grid single-column">
+          <section class="panel operation-card">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Timed content</p>
+                <h2>UTC reconciliation</h2>
+              </div>
+              <button id="reconcile-content" class="secondary-button" type="button">Reconcile now</button>
+            </div>
+            <p class="muted">
+              Reconciliation computes the current absolute period. It does not restart or reroll a countdown.
+            </p>
+            <div id="schedule-list" class="schedule-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="page-audit" class="page" data-page-panel="audit" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Append-only history</p>
+            <h1>Audit</h1>
+            <p>Operator actions, reversals, evidence access, and reconciliations.</p>
+          </div>
+          <button id="refresh-audit" class="secondary-button" type="button">Refresh</button>
+        </div>
+        <section class="panel table-panel">
+          <form id="audit-filter-form" class="filter-row">
+            <input id="audit-action-filter" type="search" placeholder="Action">
+            <input id="audit-target-filter" type="search" placeholder="Target or case ID">
+            <button class="quiet-button" type="submit">Apply filters</button>
+          </form>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Operator</th>
+                  <th>Action</th>
+                  <th>Target</th>
+                  <th>Result</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody id="audit-table-body"></tbody>
+            </table>
+          </div>
+          <div id="audit-empty" class="empty-state" hidden>
+            <h3>No audit entries</h3>
+            <p>Completed operator actions will be recorded here.</p>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <aside id="detail-drawer" class="detail-drawer" aria-labelledby="drawer-title" hidden>
+      <div class="drawer-header">
+        <div>
+          <p class="eyebrow">Case detail</p>
+          <h2 id="drawer-title">Case</h2>
+        </div>
+        <button id="close-drawer" class="icon-button" type="button" aria-label="Close case detail">×</button>
+      </div>
+      <div id="drawer-content" class="drawer-content"></div>
+      <div class="drawer-footer">
+        <button id="take-action-button" class="primary-button wide" type="button">Take action</button>
+      </div>
+    </aside>
+  </div>
+
+  <dialog id="action-dialog" class="action-dialog">
+    <form id="action-form" method="dialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Server-authorized action</p>
+          <h2>Take action</h2>
+        </div>
+        <button id="close-action-dialog" class="icon-button" type="button" aria-label="Close action dialog">×</button>
+      </div>
+      <div class="dialog-body">
+        <div id="action-target-summary" class="target-summary"></div>
+        <label for="action-select">Action</label>
+        <select id="action-select" required></select>
+        <p id="action-effect" class="effect-copy"></p>
+        <div id="duration-field" hidden>
+          <label for="action-duration">Duration</label>
+          <select id="action-duration">
+            <option value="900">15 minutes</option>
+            <option value="3600">1 hour</option>
+            <option value="21600">6 hours</option>
+            <option value="86400">24 hours</option>
+            <option value="604800">7 days</option>
+            <option value="custom">Custom</option>
+          </select>
+          <div id="custom-duration-field" hidden>
+            <label for="action-custom-duration">Custom duration</label>
+            <input
+              id="action-custom-duration"
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              placeholder="20s, 9m, 20w, or 1y"
+            >
+            <p class="field-help">s seconds · min minutes · h hours · d days · w weeks · m/mo months · y years</p>
+          </div>
+        </div>
+        <label for="action-reason">Reason</label>
+        <textarea id="action-reason" maxlength="2000" required></textarea>
+        <div id="confirmation-field" class="confirmation-box" hidden>
+          <p>This is permanent. Account data and evidence are preserved.</p>
+          <label id="confirmation-label" for="action-confirmation">Confirmation</label>
+          <input id="action-confirmation" type="text" autocomplete="off">
+        </div>
+        <p id="action-error" class="form-error" role="alert"></p>
+      </div>
+      <div class="dialog-footer">
+        <button id="cancel-action" class="quiet-button" type="button">Cancel</button>
+        <button id="submit-action" class="danger-button" type="submit">Apply action</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+[
+  [{"type": 301, "score": 1}, {"type": 500, "score": 1}, {"type": 801, "score": 1}],
+  [{"type": 201, "score": 1}, {"type": 400, "score": 1}, {"type": 100, "score": 1}],
+  [{"type": 601, "score": 1}, {"type": 701, "score": 1}, {"type": 301, "score": 1}],
+  [{"type": 801, "score": 1}, {"type": 201, "score": 1}, {"type": 500, "score": 1}],
+  [{"type": 100, "score": 1}, {"type": 400, "score": 1}, {"type": 301, "score": 1}],
+  [{"type": 500, "score": 1}, {"type": 801, "score": 1}, {"type": 201, "score": 1}],
+  [{"type": 301, "score": 1}, {"type": 400, "score": 1}, {"type": 100, "score": 1}]
+]

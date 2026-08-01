@@ -1,0 +1,36 @@
+{
+  "default_profile_image_last_modified": "Thu, 25 Apr 2019 23:23:01 GMT",
+  "default_balances": {
+    "tokens": 5000000,
+    "cheers": 2000000
+  },
+  "purchase_gift_message": "A gift for you <3",
+  "default_player_bio": "This player hasn't written a bio yet.",
+  "coach_player_uuid": "00000000-0000-0000-0000-000000000099",
+  "canonical_account_email": "idontwanttoguess@gmail.com",
+  "valid_developer_display_modes": [
+    "0",
+    "1",
+    "2"
+  ],
+  "frontier": {
+    "storefront_type": 200,
+    "acorn_currency_type": 200,
+    "purchase_currency_type": 2,
+    "tier_count": 10,
+    "acorns_per_tier": 10,
+    "tier_token_price": 250,
+    "elite_price": 1000,
+    "elite_item_id": 699999,
+    "xp_boosts": {
+      "1": 0.05,
+      "5": 0.1,
+      "10": 0.15
+    }
+  },
+  "large_token_rewards": {
+    "minimum": 2000000,
+    "maximum": 10000000,
+    "step": 100000
+  }
+}

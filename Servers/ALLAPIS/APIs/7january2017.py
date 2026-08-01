@@ -189,7 +189,6 @@ async def _handle_auth_bootstrap(request: Request, context) -> Response:
             "platform_id": platform_id,
             "name": name,
             "recnet_id": legacy_id,
-            "login_token": token,
         }
     )
     with context.db.transaction() as conn:
@@ -211,9 +210,15 @@ async def _handle_auth_bootstrap(request: Request, context) -> Response:
             ("account_id", f"{API_VERSION}:platform:{platform}:{platform_id}"),
             ("account_id", f"recnet:{legacy_id}"),
             ("account_id", f"{API_VERSION}:recnet:{legacy_id}"),
-            ("account_id", token),
             ("account_id", BASIC_AUTH_HEADER),
         ],
+    )
+    await context.issue_player_session(
+        api_version=API_VERSION,
+        raw_token=token,
+        player_id=str(player["player_id"]),
+        legacy_player_id=legacy_id,
+        ttl_seconds=7 * 24 * 60 * 60,
     )
     return JSONResponse(
         {
@@ -255,23 +260,37 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         return
 
     await websocket.accept()
+    connection_id: str | None = None
+    player_id = 0
     try:
         handshake = _SHARED._json_object_from_text(await websocket.receive_text())
         player_id = _ensure_local_profile(websocket, context, handshake)
-        await _SHARED._register_notification_client(websocket, player_id)
+        connection_id = await _SHARED._register_notification_client(
+            websocket, player_id, context, API_VERSION
+        )
         session_id = int(time.time() * 1000)
         await websocket.send_text(json.dumps({"SessionId": session_id}))
-        await _SHARED._publish_presence(context, player_id, handshake)
+        await _SHARED._publish_presence(
+            context, player_id, handshake, api_version=API_VERSION
+        )
 
         while True:
-            await _SHARED._handle_notification_client_message(await websocket.receive_text(), player_id, context)
+            await _SHARED._handle_notification_client_message(
+                await websocket.receive_text(), player_id, context, API_VERSION
+            )
 
     except WebSocketDisconnect:
-        await _SHARED._unregister_notification_client(websocket, context)
+        await _SHARED._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
     except HTTPException as exc:
-        await _SHARED._unregister_notification_client(websocket, context)
+        await _SHARED._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
         await _close_websocket(websocket, 1008, str(exc.detail))
     except Exception:
-        await _SHARED._unregister_notification_client(websocket, context)
+        await _SHARED._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
         await _close_websocket(websocket, 1011, "Internal WebSocket error.")
         raise

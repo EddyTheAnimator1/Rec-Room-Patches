@@ -47,8 +47,7 @@ _RELATIONSHIP_CHANGED = 1
 _MESSAGE_RECEIVED = 2
 _MESSAGE_DELETED = 3
 _SUBSCRIPTION_UPDATE_PRESENCE = 10
-_NOTIFICATION_CLIENTS_BY_PLAYER: dict[int, set[WebSocket]] = {}
-_NOTIFICATION_PLAYER_BY_CLIENT: dict[WebSocket, int] = {}
+NOTIFICATION_TRANSPORT = "notification-v2"
 
 
 def _clean_route_path(route_path: str) -> str:
@@ -201,57 +200,70 @@ def _message_notification_payload(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _registered_player_ids() -> list[int]:
-    return sorted(player_id for player_id, clients in _NOTIFICATION_CLIENTS_BY_PLAYER.items() if clients)
+async def _registered_player_ids(context, api_version: str | None = None) -> list[int]:
+    api_version = api_version or API_VERSION
+    values = await context.require_transient().route_player_ids(
+        api_version, NOTIFICATION_TRANSPORT
+    )
+    return sorted(int(value) for value in values if str(value).isdigit())
 
 
-async def _register_notification_client(websocket: WebSocket, player_id: int) -> None:
-    _NOTIFICATION_PLAYER_BY_CLIENT[websocket] = player_id
-    _NOTIFICATION_CLIENTS_BY_PLAYER.setdefault(player_id, set()).add(websocket)
+async def _register_notification_client(
+    websocket: WebSocket, player_id: int, context, api_version: str | None = None
+) -> str:
+    api_version = api_version or API_VERSION
+    return await context.require_transient().register_connection(
+        api_version=api_version,
+        transport=NOTIFICATION_TRANSPORT,
+        player_id=player_id,
+        websocket=websocket,
+    )
 
 
-async def _unregister_notification_client(websocket: WebSocket, context) -> None:
-    player_id = _NOTIFICATION_PLAYER_BY_CLIENT.pop(websocket, None)
-    if player_id is None:
+async def _unregister_notification_client(
+    connection_id: str | None, player_id: int, context, api_version: str | None = None
+) -> None:
+    api_version = api_version or API_VERSION
+    if not connection_id:
         return
-    clients = _NOTIFICATION_CLIENTS_BY_PLAYER.get(player_id)
-    if clients is not None:
-        clients.discard(websocket)
-        if clients:
-            return
-        _NOTIFICATION_CLIENTS_BY_PLAYER.pop(player_id, None)
-    presence = _presence_payload_from_client(context, player_id, {"IsOnline": False}, default_online=False)
-    _save_presence(context, player_id, presence)
-    await _broadcast_notification(_registered_player_ids(), _SUBSCRIPTION_UPDATE_PRESENCE, presence)
-
-
-async def _send_notification(player_id: int, event_id: int, message: dict[str, Any]) -> None:
-    clients = list(_NOTIFICATION_CLIENTS_BY_PLAYER.get(player_id, set()))
-    if not clients:
+    still_online = await context.require_transient().unregister_connection(connection_id)
+    if still_online:
         return
-    encoded = _notification_payload(event_id, message)
-    stale: list[WebSocket] = []
-    for client in clients:
-        try:
-            await client.send_text(encoded)
-        except Exception:
-            stale.append(client)
-    for client in stale:
-        _NOTIFICATION_PLAYER_BY_CLIENT.pop(client, None)
-        clients_for_player = _NOTIFICATION_CLIENTS_BY_PLAYER.get(player_id)
-        if clients_for_player is not None:
-            clients_for_player.discard(client)
-            if not clients_for_player:
-                _NOTIFICATION_CLIENTS_BY_PLAYER.pop(player_id, None)
+    presence = _BASE._default_presence(player_id)
+    presence["LastUpdateTime"] = _BASE._dotnet_utc_ticks()
+    recipients = await _registered_player_ids(context, api_version)
+    await _broadcast_notification(
+        recipients, _SUBSCRIPTION_UPDATE_PRESENCE, presence, context, api_version
+    )
 
 
-async def _broadcast_notification(player_ids: list[int], event_id: int, message: dict[str, Any]) -> None:
-    for player_id in player_ids:
-        await _send_notification(player_id, event_id, message)
+async def _send_notification(
+    player_id: int, event_id: int, message: dict[str, Any], context, api_version: str | None = None
+) -> None:
+    api_version = api_version or API_VERSION
+    await context.require_transient().publish_delivery(
+        api_version=api_version,
+        transport=NOTIFICATION_TRANSPORT,
+        player_ids=[player_id],
+        messages=[_notification_payload(event_id, message)],
+    )
 
 
-def _presence_payload_from_client(context, player_id: int, payload: dict[str, Any], *, default_online: bool = True) -> dict[str, Any]:
-    current = _BASE._presence_for_player(context, player_id)
+async def _broadcast_notification(
+    player_ids: list[int], event_id: int, message: dict[str, Any], context, api_version: str | None = None
+) -> None:
+    api_version = api_version or API_VERSION
+    await context.require_transient().publish_delivery(
+        api_version=api_version,
+        transport=NOTIFICATION_TRANSPORT,
+        player_ids=player_ids,
+        messages=[_notification_payload(event_id, message)],
+    )
+
+
+async def _presence_payload_from_client(context, player_id: int, payload: dict[str, Any], *, default_online: bool = True, api_version: str | None = None) -> dict[str, Any]:
+    api_version = api_version or API_VERSION
+    current = await _BASE._presence_for_player(context, player_id, api_version)
     presence = _BASE._default_presence(player_id)
     presence.update(current)
     presence.update(
@@ -275,17 +287,31 @@ def _presence_payload_from_client(context, player_id: int, payload: dict[str, An
     return presence
 
 
-def _save_presence(context, player_id: int, presence: dict[str, Any]) -> None:
-    _BASE._set_json_setting(context, _BASE._setting_key("presence", player_id), presence)
+async def _save_presence(context, player_id: int, presence: dict[str, Any], api_version: str | None = None) -> None:
+    api_version = api_version or API_VERSION
+    await context.require_transient().set_presence(api_version, player_id, presence)
 
 
-async def _publish_presence(context, player_id: int, payload: dict[str, Any], *, default_online: bool = True) -> None:
-    presence = _presence_payload_from_client(context, player_id, payload, default_online=default_online)
-    _save_presence(context, player_id, presence)
-    await _broadcast_notification(_registered_player_ids(), _SUBSCRIPTION_UPDATE_PRESENCE, presence)
+async def _publish_presence(context, player_id: int, payload: dict[str, Any], *, default_online: bool = True, api_version: str | None = None) -> None:
+    api_version = api_version or API_VERSION
+    presence = await _presence_payload_from_client(context, player_id, payload, default_online=default_online, api_version=api_version)
+    await _save_presence(context, player_id, presence, api_version)
+    await _broadcast_notification(
+        await _registered_player_ids(context, api_version),
+        _SUBSCRIPTION_UPDATE_PRESENCE,
+        presence,
+        context,
+        api_version,
+    )
 
 
-async def _handle_notification_client_message(raw_message: str, player_id: int, context) -> None:
+async def _handle_notification_client_message(
+    raw_message: str,
+    player_id: int,
+    context,
+    api_version: str | None = None,
+) -> None:
+    api_version = api_version or API_VERSION
     payload = _json_object_from_text(raw_message)
     api = str(payload.get("api") or payload.get("Api") or payload.get("API") or "").strip("/")
     param = _notification_param(payload)
@@ -294,18 +320,20 @@ async def _handle_notification_client_message(raw_message: str, player_id: int, 
             param = payload
         _handle_player_subscription_notification(api, param, player_id, context)
         return
-    await _publish_presence(context, player_id, _coerce_json_object(param))
+    await _publish_presence(
+        context, player_id, _coerce_json_object(param), api_version=api_version
+    )
 
 
 async def _notify_relationship_changed(relationships: dict[str, dict[str, int]], local_id: int, remote_id: int, context) -> None:
     flags = _BASE._all_relationship_flags(context)
-    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags))
+    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags), context)
     if remote_id != local_id:
-        await _send_notification(remote_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, remote_id, local_id, flags))
+        await _send_notification(remote_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, remote_id, local_id, flags), context)
 
 
-async def _notify_message_received(message: dict[str, Any]) -> None:
-    await _send_notification(int(message.get("ToPlayerId") or 0), _MESSAGE_RECEIVED, _message_notification_payload(message))
+async def _notify_message_received(message: dict[str, Any], context) -> None:
+    await _send_notification(int(message.get("ToPlayerId") or 0), _MESSAGE_RECEIVED, _message_notification_payload(message), context)
 
 
 def _config_payload(context) -> dict[str, Any]:
@@ -461,7 +489,12 @@ async def _handle_remove_setting_v2(request: Request, context) -> Response:
 async def _handle_presence_v2(request: Request, context) -> Response:
     player_id = _ensure_local_profile(request, context)
     response = await _BASE._handle_update_presence(request, f"api/presence/v1/{player_id}", context)
-    await _broadcast_notification(_registered_player_ids(), _SUBSCRIPTION_UPDATE_PRESENCE, _BASE._presence_for_player(context, player_id))
+    await _broadcast_notification(
+        await _registered_player_ids(context),
+        _SUBSCRIPTION_UPDATE_PRESENCE,
+        await _BASE._presence_for_player(context, player_id, API_VERSION),
+        context,
+    )
     return response
 
 
@@ -518,7 +551,7 @@ async def _handle_relationship_flag_v1(request: Request, action: str, context) -
     _BASE._set_relationship_flag(flags, local_id, remote_id, flag_name, enabled)
     _BASE._save_relationship_flags(context, flags)
     relationships = _BASE._all_relationships(context)
-    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags))
+    await _send_notification(local_id, _RELATIONSHIP_CHANGED, _BASE._relationship_response(relationships, local_id, remote_id, flags), context)
     return Response(status_code=204)
 
 
@@ -546,7 +579,7 @@ async def _handle_send_message_v2(request: Request, context) -> Response:
     }
     messages.append(message)
     _BASE._save_messages(context, messages)
-    await _notify_message_received(message)
+    await _notify_message_received(message, context)
     return Response(status_code=204)
 
 
@@ -555,7 +588,7 @@ async def _handle_delete_message_v2(request: Request, context) -> Response:
     message_id = _BASE._int_field(payload, "Id", "id", default=0)
     response = await _BASE._handle_delete_message(request, context)
     if message_id > 0:
-        await _send_notification(_ensure_local_profile(request, context), _MESSAGE_DELETED, {"Id": message_id})
+        await _send_notification(_ensure_local_profile(request, context), _MESSAGE_DELETED, {"Id": message_id}, context)
     return response
 
 
@@ -690,17 +723,19 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         await _BASE.handle_websocket(websocket=websocket, route_path=route_path, context=context)
         return
     await websocket.accept()
+    connection_id: str | None = None
+    player_id = 0
     try:
         handshake = _json_object_from_text(await websocket.receive_text())
         player_id = _ensure_local_profile(websocket, context, handshake)
-        await _register_notification_client(websocket, player_id)
+        connection_id = await _register_notification_client(websocket, player_id, context)
         session_id = int(time.time() * 1000)
         await websocket.send_text(json.dumps({"SessionId": session_id}))
         await _publish_presence(context, player_id, handshake)
         while True:
             await _handle_notification_client_message(await websocket.receive_text(), player_id, context)
     except WebSocketDisconnect:
-        await _unregister_notification_client(websocket, context)
+        await _unregister_notification_client(connection_id, player_id, context)
     except Exception:
-        await _unregister_notification_client(websocket, context)
+        await _unregister_notification_client(connection_id, player_id, context)
         raise

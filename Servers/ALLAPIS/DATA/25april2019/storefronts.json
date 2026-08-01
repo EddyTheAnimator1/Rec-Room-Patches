@@ -1,0 +1,51 @@
+{
+  "currency_types_by_storefront": {
+    "1": 1,
+    "2": 2,
+    "3": 2,
+    "100": 100,
+    "101": 101,
+    "200": 200,
+    "300": 2,
+    "400": 2,
+    "500": 2
+  },
+  "storefront_type_names": {
+    "none": 0,
+    "lasertag": 1,
+    "reccenter": 2,
+    "watch": 3,
+    "quest_lostskulls": 100,
+    "quest_dracula": 101,
+    "recroyale": 200,
+    "cafe": 300,
+    "paintball": 400,
+    "bowling": 500
+  },
+  "currency_type_names": {
+    "invalid": 0,
+    "lasertagtickets": 1,
+    "reccentertokens": 2,
+    "lostskullsgold": 100,
+    "draculasilver": 101,
+    "recroyale_season1": 200
+  },
+  "balance_awards": {
+    "1": 100,
+    "2": 0,
+    "10": 100,
+    "11": 500,
+    "100": 50,
+    "101": 150,
+    "200": 25,
+    "250": 25,
+    "303": 100,
+    "1000": 25,
+    "1001": 10,
+    "1002": 25,
+    "1003": 10,
+    "1100": 100,
+    "1200": 100
+  },
+  "commerce_catalog": []
+}

@@ -1,0 +1,1867 @@
+{
+  "items": [
+    {
+      "avatar_item_desc": "03f8c394-28fa-4087-978b-8d108f0bd969",
+      "category": 0,
+      "asset_name": "Angler"
+    },
+    {
+      "avatar_item_desc": "AbYdU7O_9U-Lwg7zFVZzXQ",
+      "category": 0,
+      "asset_name": "Antler Headband"
+    },
+    {
+      "avatar_item_desc": "17aed0a0-70ed-49da-ad09-5bc4746f7718",
+      "category": 0,
+      "asset_name": "Artist Beret"
+    },
+    {
+      "avatar_item_desc": "7a7d8a06-7982-4bcb-b7bd-4d03b48889b4",
+      "category": 0,
+      "asset_name": "Aviator"
+    },
+    {
+      "avatar_item_desc": "dcf9012d-f9e9-4f15-872e-f130af3b2efa",
+      "category": 0,
+      "asset_name": "Barbershop"
+    },
+    {
+      "avatar_item_desc": "96bc2f9f-ce3a-4c4c-b92c-cfed4ed4594f",
+      "category": 0,
+      "asset_name": "Beekeeper"
+    },
+    {
+      "avatar_item_desc": "VQnoLstCyEGDPy1c38-GvA",
+      "category": 0,
+      "asset_name": "Biker Helmet"
+    },
+    {
+      "avatar_item_desc": "sL7iHCnjyEuQKzrTvciEzQ",
+      "category": 0,
+      "asset_name": "Bride of Frank"
+    },
+    {
+      "avatar_item_desc": "71fd5353-b439-4a23-b471-bfb99b8154d7",
+      "category": 0,
+      "asset_name": "Bunny Ears"
+    },
+    {
+      "avatar_item_desc": "07205057-0804-41de-abe4-bd4027fee1df",
+      "category": 0,
+      "asset_name": "Conductor"
+    },
+    {
+      "avatar_item_desc": "8263a9ca-8c57-4e81-b3e3-24f2ca19a70a",
+      "category": 0,
+      "asset_name": "Construction"
+    },
+    {
+      "avatar_item_desc": "vpP2ZvnL0Uy3n-I_Jv3eeQ",
+      "category": 0,
+      "asset_name": "Cowboy Hairy"
+    },
+    {
+      "avatar_item_desc": "4fcb5b84-13a9-43e6-9680-72b17874ae53",
+      "category": 0,
+      "asset_name": "Deep Sea Diver"
+    },
+    {
+      "avatar_item_desc": "5ac25e5a-8c8e-445c-82a4-7272baec1eb5",
+      "category": 0,
+      "asset_name": "Doctor"
+    },
+    {
+      "avatar_item_desc": "1a028850-64ee-40ab-b547-ebbcfa1b04b3",
+      "category": 0,
+      "asset_name": "Drum Major"
+    },
+    {
+      "avatar_item_desc": "34654303-9760-447f-8614-1c26506db994",
+      "category": 0,
+      "asset_name": "Electrician"
+    },
+    {
+      "avatar_item_desc": "cea5c141-32d8-4dae-80d9-6fb74834a79c",
+      "category": 0,
+      "asset_name": "Farmer"
+    },
+    {
+      "avatar_item_desc": "ec836d2a-b1b8-4566-b8eb-123ae2845956",
+      "category": 0,
+      "asset_name": "Fighter Pilot"
+    },
+    {
+      "avatar_item_desc": "18feb3c2-049f-4f91-9f4e-6b5fcb4ab70c",
+      "category": 0,
+      "asset_name": "Flapper Headband"
+    },
+    {
+      "avatar_item_desc": "OTnfT-4NQU6Gd_iVPDx8eg",
+      "category": 0,
+      "asset_name": "Frankenstein"
+    },
+    {
+      "avatar_item_desc": "2faa26b6-f7c3-4b0d-8f70-1f9454e64a54",
+      "category": 0,
+      "asset_name": "Golfer"
+    },
+    {
+      "avatar_item_desc": "W7AJ4UYlVkWF5nLbmpmRBg",
+      "category": 0,
+      "asset_name": "Ice Queen"
+    },
+    {
+      "avatar_item_desc": "7134c60b-0640-463a-8d97-caa9184bef93",
+      "category": 0,
+      "asset_name": "Lacrosse Helmet"
+    },
+    {
+      "avatar_item_desc": "123de433-a005-4994-8a11-d2d84ad66b11",
+      "category": 0,
+      "asset_name": "Laser Tag"
+    },
+    {
+      "avatar_item_desc": "mfFLpKQRE0anhrmeUvW0bA",
+      "category": 0,
+      "asset_name": "Laurel Crown"
+    },
+    {
+      "avatar_item_desc": "hT7nSD7Ts06F_1SNlOMLwg",
+      "category": 0,
+      "asset_name": "Magical Girl"
+    },
+    {
+      "avatar_item_desc": "76369aef-aeda-46d2-996a-cd00594d0543",
+      "category": 0,
+      "asset_name": "Mobster"
+    },
+    {
+      "avatar_item_desc": "Lli8-aqt1EmCmyXwBRQaYA",
+      "category": 0,
+      "asset_name": "Mummy"
+    },
+    {
+      "avatar_item_desc": "3df394de-9c3e-4141-aba4-12eac4742102",
+      "category": 0,
+      "asset_name": "Pirate Captain"
+    },
+    {
+      "avatar_item_desc": "e2ObiQFqCUOdKniKL9a1EA",
+      "category": 0,
+      "asset_name": "Qpid Laurel"
+    },
+    {
+      "avatar_item_desc": "f277af6a-0807-4716-8948-1bee236ffb74",
+      "category": 0,
+      "asset_name": "Ranger"
+    },
+    {
+      "avatar_item_desc": "40734c4d-e1fe-426c-8921-930f7463d8e8",
+      "category": 0,
+      "asset_name": "Royal Crown"
+    },
+    {
+      "avatar_item_desc": "418ed21e-766f-4c69-9d57-6f866dcc7feb",
+      "category": 0,
+      "asset_name": "Safari"
+    },
+    {
+      "avatar_item_desc": "8d17031a-c0a5-4145-92b7-1f0c2d8f0ce6",
+      "category": 0,
+      "asset_name": "Scallywag"
+    },
+    {
+      "avatar_item_desc": "f60e093f-33be-4527-b827-060adc77b1f4",
+      "category": 0,
+      "asset_name": "Scout Garrison"
+    },
+    {
+      "avatar_item_desc": "7c1552a6-bc36-46e6-884c-1de6b8111a92",
+      "category": 0,
+      "asset_name": "Scout Raccoon"
+    },
+    {
+      "avatar_item_desc": "5bde836f-9343-4934-b01a-606f707020ef",
+      "category": 0,
+      "asset_name": "Sherlock"
+    },
+    {
+      "avatar_item_desc": "6QT99hx6DE6t9cKAs61i3w",
+      "category": 0,
+      "asset_name": "Ski Buddy"
+    },
+    {
+      "avatar_item_desc": "59d9560d-e5af-4205-b860-3afea1cc31a9",
+      "category": 0,
+      "asset_name": "Space Marine Helmet"
+    },
+    {
+      "avatar_item_desc": "gwLiwmqBIk6glFxvaTzxeA",
+      "category": 0,
+      "asset_name": "Steam Punk"
+    },
+    {
+      "avatar_item_desc": "JWanxvOHyESg9F_HlmTOfA",
+      "category": 0,
+      "asset_name": "Steampunk Femme"
+    },
+    {
+      "avatar_item_desc": "0QOlT9c5xUuinpfZaoEe8Q",
+      "category": 0,
+      "asset_name": "Tourist"
+    },
+    {
+      "avatar_item_desc": "-SQLtL4rdEWTJdw2IroQCQ",
+      "category": 0,
+      "asset_name": "Treasure Hunter"
+    },
+    {
+      "avatar_item_desc": "ReqOfohe6UamzaiHG1x3Ow",
+      "category": 0,
+      "asset_name": "Trucker Hat"
+    },
+    {
+      "avatar_item_desc": "24c4404a-839f-46bd-98b6-6848d747a98b",
+      "category": 0,
+      "asset_name": "Winter"
+    },
+    {
+      "avatar_item_desc": "s6mUIqiPCk6e57UYCx3SZA",
+      "category": 0,
+      "asset_name": "Witch"
+    },
+    {
+      "avatar_item_desc": "6d36091e-7083-4e3d-8729-94612602c8cb",
+      "category": 0,
+      "asset_name": "Witch Hunter"
+    },
+    {
+      "avatar_item_desc": "01689baf-405e-4b38-9f09-b624e03865b8",
+      "category": 0,
+      "asset_name": "Wizard"
+    },
+    {
+      "avatar_item_desc": "40528de7-38a3-4a7c-8f93-6d3bfa5573f2",
+      "category": 0,
+      "asset_name": "Head Band"
+    },
+    {
+      "avatar_item_desc": "2b2eb9e5-d52e-4004-bdb2-0bcf6910992d",
+      "category": 0,
+      "asset_name": "Flowers"
+    },
+    {
+      "avatar_item_desc": "703f1987-2b31-4b6f-bab7-1939b1105ac0",
+      "category": 0,
+      "asset_name": "Sun"
+    },
+    {
+      "avatar_item_desc": "8c51fc1a-b1ad-4002-a13c-4313abd92c7f",
+      "category": 0,
+      "asset_name": "Visor"
+    },
+    {
+      "avatar_item_desc": "14ef6b00-debf-4a85-9755-b4d37df496d3",
+      "category": 0,
+      "asset_name": "Baseball"
+    },
+    {
+      "avatar_item_desc": "d2d3264b-fbf6-40b5-9f10-c85ec737d112",
+      "category": 0,
+      "asset_name": "Archer"
+    },
+    {
+      "avatar_item_desc": "f218e2de-46fd-45b9-9e0e-670b6bb905e7",
+      "category": 0,
+      "asset_name": "Astronaut Helmet"
+    },
+    {
+      "avatar_item_desc": "293e7ad3-01c9-43af-96e3-06c34145ff12",
+      "category": 0,
+      "asset_name": "Baseball Helmet"
+    },
+    {
+      "avatar_item_desc": "ef84cb35-5e25-4aa6-82c9-17f01a5040c7",
+      "category": 0,
+      "asset_name": "Beret"
+    },
+    {
+      "avatar_item_desc": "71014872-d879-4858-9d68-58da3c673d8b",
+      "category": 0,
+      "asset_name": "Bike"
+    },
+    {
+      "avatar_item_desc": "1e504fee-b593-4037-bd8f-b88025147991",
+      "category": 0,
+      "asset_name": "Bow"
+    },
+    {
+      "avatar_item_desc": "b99a89c7-38c5-4196-9862-4e1bf9cb0ce1",
+      "category": 0,
+      "asset_name": "Boxing Helmet"
+    },
+    {
+      "avatar_item_desc": "3d5184e1-0201-4476-bf4b-4eb28190de62",
+      "category": 0,
+      "asset_name": "Cat Ears"
+    },
+    {
+      "avatar_item_desc": "a16d59da-caa5-4388-af67-315bfcb16f64",
+      "category": 0,
+      "asset_name": "Cloche"
+    },
+    {
+      "avatar_item_desc": "ad0bdec5-f767-42e7-99e0-221473464a85",
+      "category": 0,
+      "asset_name": "Cowboy"
+    },
+    {
+      "avatar_item_desc": "a628d62c-fa30-4405-bcbc-3e646e3a3434",
+      "category": 0,
+      "asset_name": "Equestrian"
+    },
+    {
+      "avatar_item_desc": "bb54e0e9-5d90-41f3-94c0-8e82f1791af1",
+      "category": 0,
+      "asset_name": "Firefighter"
+    },
+    {
+      "avatar_item_desc": "5e3929d3-d291-4e91-a0ba-2ef203e407d3",
+      "category": 0,
+      "asset_name": "Flat Cap"
+    },
+    {
+      "avatar_item_desc": "5a38f864-7d1c-4989-8558-40b9668f78ef",
+      "category": 0,
+      "asset_name": "Football"
+    },
+    {
+      "avatar_item_desc": "a61e86cd-f7e7-4ac7-a6e8-df269bc5cb01",
+      "category": 0,
+      "asset_name": "Hibiscus"
+    },
+    {
+      "avatar_item_desc": "8d703940-224a-4b0c-a04d-f365550071e1",
+      "category": 0,
+      "asset_name": "Hockey"
+    },
+    {
+      "avatar_item_desc": "e614df5d-3cfe-4bca-b9c2-30c267b9c94e",
+      "category": 0,
+      "asset_name": "Knight Helmet"
+    },
+    {
+      "avatar_item_desc": "1596c113-aa3a-4f5c-b398-e5c3575548e7",
+      "category": 0,
+      "asset_name": "Luchador"
+    },
+    {
+      "avatar_item_desc": "b537c30c-faef-4649-9a1f-be3985936f93",
+      "category": 0,
+      "asset_name": "Lumberjack"
+    },
+    {
+      "avatar_item_desc": "274cb9b2-2f59-47ea-9a8d-a5b656d148c6",
+      "category": 0,
+      "asset_name": "Saija Helmet"
+    },
+    {
+      "avatar_item_desc": "f5c9743f-e77c-42f2-ba63-9843342cbf8e",
+      "category": 0,
+      "asset_name": "Sea Captain"
+    },
+    {
+      "avatar_item_desc": "9cdb4965-6f00-4304-afed-e301e73a2b3a",
+      "category": 0,
+      "asset_name": "Small Brim"
+    },
+    {
+      "avatar_item_desc": "c87239ca-a255-4b13-bbc5-1b38236fb4cc",
+      "category": 0,
+      "asset_name": "Viking"
+    },
+    {
+      "avatar_item_desc": "102c625b-b988-4bf8-a2aa-a31ad7029cdc",
+      "category": 0,
+      "asset_name": "Top Hat"
+    },
+    {
+      "avatar_item_desc": "1d27b674-f9e2-4ffc-9d8c-a58a1be06457",
+      "category": 2,
+      "asset_name": "Afro"
+    },
+    {
+      "avatar_item_desc": "0088603e-ec3b-4478-8694-e6fb1989b3f2",
+      "category": 2,
+      "asset_name": "Angled Bob"
+    },
+    {
+      "avatar_item_desc": "a6cbfe76-534a-4655-a8a8-3fed13d001c7",
+      "category": 2,
+      "asset_name": "Bald Top"
+    },
+    {
+      "avatar_item_desc": "b861e5f3-fc6d-43b3-9861-c1b45cb493a8",
+      "category": 2,
+      "asset_name": "Bishop"
+    },
+    {
+      "avatar_item_desc": "880a3cc0-7407-4b61-b759-f9dd890fe9e5",
+      "category": 2,
+      "asset_name": "Bob"
+    },
+    {
+      "avatar_item_desc": "e36bcd98-7e85-43fa-89f8-57e4ec33823a",
+      "category": 2,
+      "asset_name": "Bob Bangs"
+    },
+    {
+      "avatar_item_desc": "fcfcaf63-deb4-45f7-b711-c051c9ea45cb",
+      "category": 2,
+      "asset_name": "Bun"
+    },
+    {
+      "avatar_item_desc": "da4e7b34-2095-4a9e-801e-4f409039e0dd",
+      "category": 2,
+      "asset_name": "Buzz"
+    },
+    {
+      "avatar_item_desc": "b148cb1e-df81-442f-aea6-ab1727aad00e",
+      "category": 2,
+      "asset_name": "Chunky Afro"
+    },
+    {
+      "avatar_item_desc": "eb9611c6-bb50-41a2-93e9-7f959815a846",
+      "category": 2,
+      "asset_name": "Dreads Long"
+    },
+    {
+      "avatar_item_desc": "193a3bf9-abc0-4d78-8d63-92046908b1c5",
+      "category": 2,
+      "asset_name": "Emo"
+    },
+    {
+      "avatar_item_desc": "e286863c-2967-4d00-b837-b49487b9484a",
+      "category": 2,
+      "asset_name": "Faux Hawk"
+    },
+    {
+      "avatar_item_desc": "BJ2XrGvl40iIl28IbTfbKg",
+      "category": 2,
+      "asset_name": "Female Cheerleader"
+    },
+    {
+      "avatar_item_desc": "09177621-9ecd-4f6a-b6a5-64490139141d",
+      "category": 2,
+      "asset_name": "Flat Top"
+    },
+    {
+      "avatar_item_desc": "0753d7a4-8247-4fca-a6fc-359c26086140",
+      "category": 2,
+      "asset_name": "Fonzie"
+    },
+    {
+      "avatar_item_desc": "d84c0ff9-8fbe-4ed8-abf3-7996e81888ab",
+      "category": 2,
+      "asset_name": "Giant Afro"
+    },
+    {
+      "avatar_item_desc": "95ab7a7c-c35d-4da5-9955-0921064470b6",
+      "category": 2,
+      "asset_name": "Gordon Gekko"
+    },
+    {
+      "avatar_item_desc": "241506f6-bf88-4b46-b5fe-513a225421f4",
+      "category": 2,
+      "asset_name": "Half Up"
+    },
+    {
+      "avatar_item_desc": "49397e16-1027-4286-9bc4-b59eae565ff0",
+      "category": 2,
+      "asset_name": "Jazzercise"
+    },
+    {
+      "avatar_item_desc": "ffea7a65-613f-4835-921e-6dd15f357b7e",
+      "category": 2,
+      "asset_name": "Long Bangs"
+    },
+    {
+      "avatar_item_desc": "21599b51-c50f-43d8-ac5f-62c30cd02ca5",
+      "category": 2,
+      "asset_name": "Lori"
+    },
+    {
+      "avatar_item_desc": "24a240f4-1574-420b-b898-a7e91f170759",
+      "category": 2,
+      "asset_name": "Man Bun"
+    },
+    {
+      "avatar_item_desc": "c45ed7b8-99bd-4a4b-a9ff-e16edf5d7a18",
+      "category": 2,
+      "asset_name": "Man Pony"
+    },
+    {
+      "avatar_item_desc": "9d9fadb6-97eb-480e-a224-4e0179082071",
+      "category": 2,
+      "asset_name": "Meatball Buns"
+    },
+    {
+      "avatar_item_desc": "e49d5d78-157e-4bc8-b878-ff7c4963fdc4",
+      "category": 2,
+      "asset_name": "Mohawk"
+    },
+    {
+      "avatar_item_desc": "2b7f4dae-51da-4af0-b009-12d6005c85c6",
+      "category": 2,
+      "asset_name": "Mullet"
+    },
+    {
+      "avatar_item_desc": "92302d9d-c527-418c-ac5d-1fa869727505",
+      "category": 2,
+      "asset_name": "Part"
+    },
+    {
+      "avatar_item_desc": "79b90274-6eec-4664-acfb-4a123334661e",
+      "category": 2,
+      "asset_name": "Pig Tails"
+    },
+    {
+      "avatar_item_desc": "1fd69ef8-0b74-4962-af5a-67f0bf0358f2",
+      "category": 2,
+      "asset_name": "Ponytail"
+    },
+    {
+      "avatar_item_desc": "8b9f1413-e786-4a30-946c-9292f207875a",
+      "category": 2,
+      "asset_name": "Pulp Fiction"
+    },
+    {
+      "avatar_item_desc": "ce250e13-8137-4f62-9e52-2b1cebe7d0ad",
+      "category": 2,
+      "asset_name": "Punk"
+    },
+    {
+      "avatar_item_desc": "2cb4f372-3372-4583-8b57-c4e3988e3c28",
+      "category": 2,
+      "asset_name": "Punk Girl"
+    },
+    {
+      "avatar_item_desc": "CTcrvbo3OEepIV4oW8bx4w",
+      "category": 2,
+      "asset_name": "Receding Hairline"
+    },
+    {
+      "avatar_item_desc": "d8280c0c-d803-4513-be10-a0ba96d8821e",
+      "category": 2,
+      "asset_name": "Rhianna"
+    },
+    {
+      "avatar_item_desc": "f17a2f9e-1eab-44e8-b10a-1f53c5d0778c",
+      "category": 2,
+      "asset_name": "Scientist"
+    },
+    {
+      "avatar_item_desc": "1a71064b-794f-40fa-9109-8ad36602b6e1",
+      "category": 2,
+      "asset_name": "Shagg"
+    },
+    {
+      "avatar_item_desc": "77d3c585-4928-4471-a425-89036efe7299",
+      "category": 2,
+      "asset_name": "Spiky"
+    },
+    {
+      "avatar_item_desc": "a12f724f-4a73-4ab8-aad4-6bfc662b4dd6",
+      "category": 2,
+      "asset_name": "Undercut"
+    },
+    {
+      "avatar_item_desc": "f9dd08f8-16d3-4c39-af4f-89f7bb6e80d3",
+      "category": 2,
+      "asset_name": "Under Cut Sheet"
+    },
+    {
+      "avatar_item_desc": "e5b83dfc-b2e1-4dcb-a4ab-9d3a4c8a34ae",
+      "category": 2,
+      "asset_name": "Wavy Long"
+    },
+    {
+      "avatar_item_desc": "7dd6f7b0-7ba0-429f-a04f-e32d3a79ee61",
+      "category": 2,
+      "asset_name": "Wavy Short"
+    },
+    {
+      "avatar_item_desc": "47629ed1-5378-427c-ad61-4b44d2fe90cc",
+      "category": 10,
+      "asset_name": "Aviator Goggles"
+    },
+    {
+      "avatar_item_desc": "_qXaNbm4yEeyalo372QbvA",
+      "category": 10,
+      "asset_name": "Biker Goggles"
+    },
+    {
+      "avatar_item_desc": "TcgHS_0aPkehrBg7ytMOMQ",
+      "category": 10,
+      "asset_name": "Clubmasters"
+    },
+    {
+      "avatar_item_desc": "7db6b49f-3e2a-4da8-bdfa-e9ad9ebc5ba6",
+      "category": 10,
+      "asset_name": "Mirrored Glasses"
+    },
+    {
+      "avatar_item_desc": "e1a13235-e3b3-4b39-8e6f-e6449d4321b7",
+      "category": 10,
+      "asset_name": "Pirate Eyepatch"
+    },
+    {
+      "avatar_item_desc": "02a5b48c-abba-4385-967b-ba900424829e",
+      "category": 10,
+      "asset_name": "Safari Monocle"
+    },
+    {
+      "avatar_item_desc": "KNZ1DvCLC0WHyH4opYAXtw",
+      "category": 10,
+      "asset_name": "Sci-Fi Visor Contest"
+    },
+    {
+      "avatar_item_desc": "5fwjFQoC_Uu9ChvF6uNGZw",
+      "category": 10,
+      "asset_name": "Ski Buddy"
+    },
+    {
+      "avatar_item_desc": "kghEf_iMKUSxPO-h5iRhSQ",
+      "category": 10,
+      "asset_name": "Square Wide"
+    },
+    {
+      "avatar_item_desc": "CdeM6RJmPUumXtdmdM3RXA",
+      "category": 10,
+      "asset_name": "Steampunk Femme Spex"
+    },
+    {
+      "avatar_item_desc": "cbN5e-t_jEKa4hzir5JAxQ",
+      "category": 10,
+      "asset_name": "Tourist Glasses"
+    },
+    {
+      "avatar_item_desc": "06306723-ca20-4aa6-b7b3-917113f41ac3",
+      "category": 10,
+      "asset_name": "Pointy"
+    },
+    {
+      "avatar_item_desc": "11e508a7-fe7d-470e-b270-2dba33e2f7a1",
+      "category": 10,
+      "asset_name": "Scientist"
+    },
+    {
+      "avatar_item_desc": "529015c7-3b4a-4a73-b2c3-33103339b6e3",
+      "category": 10,
+      "asset_name": "Smuggler"
+    },
+    {
+      "avatar_item_desc": "bu9tb-K7NEiocvZY3o7ukw",
+      "category": 10,
+      "asset_name": "80s Shutter Shades"
+    },
+    {
+      "avatar_item_desc": "exQz9Zr3HEyOR9nDDrimlQ",
+      "category": 10,
+      "asset_name": "Letterman Shades"
+    },
+    {
+      "avatar_item_desc": "c70005d5-6276-4a98-acb3-6a77bc19379a",
+      "category": 10,
+      "asset_name": "Red"
+    },
+    {
+      "avatar_item_desc": "b89be768-a169-4b24-8022-751e7b817865",
+      "category": 10,
+      "asset_name": "Sci-Fi Visor"
+    },
+    {
+      "avatar_item_desc": "f527ffaf-da03-4519-82ed-46a9cb981dc3",
+      "category": 10,
+      "asset_name": "Square"
+    },
+    {
+      "avatar_item_desc": "6427bd57-fcb2-420f-8b3e-d1da43470b84",
+      "category": 10,
+      "asset_name": "Sun"
+    },
+    {
+      "avatar_item_desc": "34144f4c-f6ef-49e5-a286-1781e82e6782",
+      "category": 10,
+      "asset_name": "Paintball"
+    },
+    {
+      "avatar_item_desc": "8d10cc78-6b00-45f3-affb-205e9cc5b03f",
+      "category": 20,
+      "asset_name": "Close"
+    },
+    {
+      "avatar_item_desc": "61ba3c90-c81e-4deb-bc79-50c0f1fe3e83",
+      "category": 20,
+      "asset_name": "Lumberjack"
+    },
+    {
+      "avatar_item_desc": "cc96f8a5-bc5b-4f89-83b7-ecd53905ada7",
+      "category": 20,
+      "asset_name": "Thick"
+    },
+    {
+      "avatar_item_desc": "3e139dd9-4757-43a8-8546-8da70dc17f0a",
+      "category": 20,
+      "asset_name": "Cop Stache"
+    },
+    {
+      "avatar_item_desc": "cca7ab3d-5609-4700-92fd-3280fcea9b77",
+      "category": 20,
+      "asset_name": "Cowboy Stache"
+    },
+    {
+      "avatar_item_desc": "7553d851-1986-4325-870d-e425dfb7d007",
+      "category": 20,
+      "asset_name": "Beard Farmer"
+    },
+    {
+      "avatar_item_desc": "6b337a35-95d9-4b3a-9891-d9fbb06262aa",
+      "category": 20,
+      "asset_name": "Curly Mustache"
+    },
+    {
+      "avatar_item_desc": "9bf5d259-7774-4cbe-a90f-7f188cc0dce7",
+      "category": 20,
+      "asset_name": "Goatee Thick"
+    },
+    {
+      "avatar_item_desc": "-twtjyBdQ02EAdOfBGTiEw",
+      "category": 20,
+      "asset_name": "Van Dyke"
+    },
+    {
+      "avatar_item_desc": "27cdecd2-88f1-40a8-80a9-87abd827c3c5",
+      "category": 20,
+      "asset_name": "Wizard Beard"
+    },
+    {
+      "avatar_item_desc": "c161dc73-6ce3-49c4-8d15-45e6911f84e4",
+      "category": 20,
+      "asset_name": "Sea Captain Beard"
+    },
+    {
+      "avatar_item_desc": "45f5e714-8a5f-4385-a97f-675066167011",
+      "category": 20,
+      "asset_name": "Seventies Stache"
+    },
+    {
+      "avatar_item_desc": "83be5ba4-525a-4781-a5f6-839c22e4d1d3",
+      "category": 100,
+      "asset_name": "Bowtie"
+    },
+    {
+      "avatar_item_desc": "5accb7dc-90a3-46ee-bad2-8fd1861d50f1",
+      "category": 100,
+      "asset_name": "Cowboy Scarf"
+    },
+    {
+      "avatar_item_desc": "bf13fa1c-f991-4aaa-9402-aac109be9562",
+      "category": 100,
+      "asset_name": "Gold Medal"
+    },
+    {
+      "avatar_item_desc": "2e5afc40-7e25-418c-8b1b-316b8ef479a7",
+      "category": 100,
+      "asset_name": "Knight Cape"
+    },
+    {
+      "avatar_item_desc": "67117b3d-0669-4cf3-8a4f-066cabd4d8b1",
+      "category": 100,
+      "asset_name": "Luchador Cape"
+    },
+    {
+      "avatar_item_desc": "8d97303c-5138-4da1-a74d-378da19d11cb",
+      "category": 100,
+      "asset_name": "Deep Sea Diver"
+    },
+    {
+      "avatar_item_desc": "587ca2bb-dd42-42bf-833f-4e2a97349866",
+      "category": 100,
+      "asset_name": "Doctor"
+    },
+    {
+      "avatar_item_desc": "h_To9WQYdEusYQxlbMmMmQ",
+      "category": 100,
+      "asset_name": "Dracula Cape"
+    },
+    {
+      "avatar_item_desc": "WuShlrJnHUKuscn8e6Rt2g",
+      "category": 100,
+      "asset_name": "Magical Girl"
+    },
+    {
+      "avatar_item_desc": "5cd08cfb-c729-4c30-96d9-6a99bb934d91",
+      "category": 100,
+      "asset_name": "Male Cheer Sash"
+    },
+    {
+      "avatar_item_desc": "BqpRbr_T1kO_YJqB1787kA",
+      "category": 100,
+      "asset_name": "Qpid Quiver"
+    },
+    {
+      "avatar_item_desc": "a44766dc-19ad-4476-849c-5113a5faabd0",
+      "category": 100,
+      "asset_name": "Royal Cape"
+    },
+    {
+      "avatar_item_desc": "f47f81e7-fcdd-4687-9b99-013147bef30f",
+      "category": 100,
+      "asset_name": "Safari"
+    },
+    {
+      "avatar_item_desc": "bf9dc196-5727-4752-8126-7ad5fcd96d55",
+      "category": 100,
+      "asset_name": "Scout Sash"
+    },
+    {
+      "avatar_item_desc": "pNOfTDOgJUGQvGAlTjBoCg",
+      "category": 100,
+      "asset_name": "Short Fat Necktie"
+    },
+    {
+      "avatar_item_desc": "sOREgAGs-06CeGGsG-WIkw",
+      "category": 100,
+      "asset_name": "Steam Punk"
+    },
+    {
+      "avatar_item_desc": "t_66r_j5oUSh9awIPmdUKg",
+      "category": 100,
+      "asset_name": "Treasure Hunter Bandolier"
+    },
+    {
+      "avatar_item_desc": "e15b13a7-9e9a-4b32-ba2c-0cb31ed55a8c",
+      "category": 100,
+      "asset_name": "Winter"
+    },
+    {
+      "avatar_item_desc": "5b6535f0-86cd-417a-bcce-a1ace9a5f260",
+      "category": 100,
+      "asset_name": "Archer Quiver"
+    },
+    {
+      "avatar_item_desc": "c6c08eb5-381a-4193-9722-80da95d62abe",
+      "category": 100,
+      "asset_name": "Business Tie"
+    },
+    {
+      "avatar_item_desc": "6b9e022c-0b68-48fd-8eca-da8573c18900",
+      "category": 100,
+      "asset_name": "Long Scarf"
+    },
+    {
+      "avatar_item_desc": "60067e91-18b8-43ab-ae20-a8ea74c757bf",
+      "category": 100,
+      "asset_name": "Female Cheer Sash"
+    },
+    {
+      "avatar_item_desc": "5d1c42a0-7e36-431a-8e78-a8b74046d153",
+      "category": 100,
+      "asset_name": "Tied Scarf"
+    },
+    {
+      "avatar_item_desc": "ec5255d5-edaf-4888-9fe1-e89ac0e0d300",
+      "category": 101,
+      "asset_name": "Astronaut Torso"
+    },
+    {
+      "avatar_item_desc": "da55bfc3-47b7-46f6-b548-7fb2c2a5e0bf",
+      "category": 101,
+      "asset_name": "Babydoll Dress"
+    },
+    {
+      "avatar_item_desc": "2f8518fc-c989-40de-98b4-c6f09b304166",
+      "category": 101,
+      "asset_name": "Baseball Torso"
+    },
+    {
+      "avatar_item_desc": "348ac48b-986e-4d42-a0f7-1aea16b88271",
+      "category": 101,
+      "asset_name": "Basketball Tee"
+    },
+    {
+      "avatar_item_desc": "843e3364-a743-4dfc-a990-0436e47b8c10",
+      "category": 101,
+      "asset_name": "Bike Jacket"
+    },
+    {
+      "avatar_item_desc": "b02053b3-013f-42b0-8881-85f5be2b8cda",
+      "category": 101,
+      "asset_name": "Black Cheer Dress"
+    },
+    {
+      "avatar_item_desc": "de0ac50d-2adb-4114-bd2e-68953b13d706",
+      "category": 101,
+      "asset_name": "Blazer"
+    },
+    {
+      "avatar_item_desc": "62ce4109-8dee-4895-bf1b-bfa143db4c7e",
+      "category": 101,
+      "asset_name": "Blue Jacket"
+    },
+    {
+      "avatar_item_desc": "9c8fc7f0-8f99-4aad-a34f-8d979f6ae352",
+      "category": 101,
+      "asset_name": "Button Top"
+    },
+    {
+      "avatar_item_desc": "2e59d8d0-91a0-4449-bfdc-a5d663fd9343",
+      "category": 101,
+      "asset_name": "Collar Shirt"
+    },
+    {
+      "avatar_item_desc": "ba84b23e-01ee-4668-a7ef-2e3e0eca2f23",
+      "category": 101,
+      "asset_name": "Cowboy Torso"
+    },
+    {
+      "avatar_item_desc": "896c2491-2f96-4986-9cbd-b3b31ef5d8c5",
+      "category": 101,
+      "asset_name": "Equestrian Jacket"
+    },
+    {
+      "avatar_item_desc": "657efe89-620a-46a2-8b58-cafd855c7cd5",
+      "category": 101,
+      "asset_name": "Female Cheer Torso"
+    },
+    {
+      "avatar_item_desc": "4d507dfa-4a99-4ac0-8537-229e9dc0eb4a",
+      "category": 101,
+      "asset_name": "Female Tank"
+    },
+    {
+      "avatar_item_desc": "8aa79563-ace1-4ba7-ad0c-f3210a78142f",
+      "category": 101,
+      "asset_name": "Female T-Shirt"
+    },
+    {
+      "avatar_item_desc": "a986ff33-9e16-4219-8ebb-2e7b4c772ca7",
+      "category": 101,
+      "asset_name": "Field Hockey"
+    },
+    {
+      "avatar_item_desc": "1b37d6cd-0a89-4604-a046-e5cff55b0cf6",
+      "category": 101,
+      "asset_name": "Firefighter Torso"
+    },
+    {
+      "avatar_item_desc": "f41653f9-ae02-443c-aaf4-1c6f4e49035d",
+      "category": 101,
+      "asset_name": "Flower Swimsuit"
+    },
+    {
+      "avatar_item_desc": "34d45669-b319-4c7d-bd05-078961d70d0b",
+      "category": 101,
+      "asset_name": "Football Shoulder Pads"
+    },
+    {
+      "avatar_item_desc": "77c37481-a185-47ff-af55-65f9fdfcf9e5",
+      "category": 101,
+      "asset_name": "Fur Coat"
+    },
+    {
+      "avatar_item_desc": "d6b0a1e7-e918-43e5-8191-3a8d9d01df7c",
+      "category": 101,
+      "asset_name": "Hockey Shirt"
+    },
+    {
+      "avatar_item_desc": "5f492f8f-ab61-484a-9587-747132b54309",
+      "category": 101,
+      "asset_name": "Jazzercise"
+    },
+    {
+      "avatar_item_desc": "7a730848-ab20-445d-b416-1a72cab49324",
+      "category": 101,
+      "asset_name": "Jersey Dev"
+    },
+    {
+      "avatar_item_desc": "9c34c2c1-07d7-4180-94a2-be8c9caaae84",
+      "category": 101,
+      "asset_name": "Luchador Torso"
+    },
+    {
+      "avatar_item_desc": "9073d6a0-3bc1-4c82-aeb3-d4ee195538b4",
+      "category": 101,
+      "asset_name": "Male Cheer Torso"
+    },
+    {
+      "avatar_item_desc": "d0a9262f-5504-46a7-bb10-7507503db58e",
+      "category": 101,
+      "asset_name": "Male T-Shirt"
+    },
+    {
+      "avatar_item_desc": "6d815b35-6f68-4ed4-817d-70f141e1a571",
+      "category": 101,
+      "asset_name": "Orange Collar Dress"
+    },
+    {
+      "avatar_item_desc": "d8f408f0-78f5-4e8a-b42a-e7b09632d1fd",
+      "category": 101,
+      "asset_name": "Paintball Vest"
+    },
+    {
+      "avatar_item_desc": "84cd594c-1cd8-4b4d-8409-85c8fd5fb02a",
+      "category": 101,
+      "asset_name": "Pink Stoll Dress"
+    },
+    {
+      "avatar_item_desc": "745c5110-104e-4b37-aabf-7c690fd54811",
+      "category": 101,
+      "asset_name": "Purple Jacket"
+    },
+    {
+      "avatar_item_desc": "f51a7ed5-52ea-485f-a430-303697f6fec9",
+      "category": 101,
+      "asset_name": "Red Belt Dress"
+    },
+    {
+      "avatar_item_desc": "515dfc36-7f7b-47bc-abee-380d68f41be6",
+      "category": 101,
+      "asset_name": "Red Flower Dress"
+    },
+    {
+      "avatar_item_desc": "0bc6bd1b-8b7e-4945-a1d6-c26b9c043318",
+      "category": 101,
+      "asset_name": "Sea Captain Torso"
+    },
+    {
+      "avatar_item_desc": "439d1e24-d67f-4b8a-8fb3-8bf589d5a8ee",
+      "category": 101,
+      "asset_name": "50s Dress"
+    },
+    {
+      "avatar_item_desc": "FHKZvPFMLkO8iAIPPQzu1A",
+      "category": 101,
+      "asset_name": "50s Dress Valentine"
+    },
+    {
+      "avatar_item_desc": "AIpF1QUeMUWytpHYBDBAkg",
+      "category": 101,
+      "asset_name": "80s Windbreaker"
+    },
+    {
+      "avatar_item_desc": "b1bfe0b4-1ff6-420f-acfc-2331d34246dc",
+      "category": 101,
+      "asset_name": "Angler"
+    },
+    {
+      "avatar_item_desc": "c0e59f27-a13d-4bd9-b3b8-a38a360f649b",
+      "category": 101,
+      "asset_name": "Archer"
+    },
+    {
+      "avatar_item_desc": "02077915-57d3-4e26-b4fe-8e0399cbb293",
+      "category": 101,
+      "asset_name": "Artist"
+    },
+    {
+      "avatar_item_desc": "42aa7888-f0b9-4584-9cc1-966585c6b36e",
+      "category": 101,
+      "asset_name": "Aviator"
+    },
+    {
+      "avatar_item_desc": "18cd3470-2dd9-4a0a-98bd-eae2d5f5d522",
+      "category": 101,
+      "asset_name": "Barbershop"
+    },
+    {
+      "avatar_item_desc": "1ebbfdfc-f72b-4d70-99d4-4d527f896aa7",
+      "category": 101,
+      "asset_name": "Beekeeper"
+    },
+    {
+      "avatar_item_desc": "n52um7A-b0utGxixd1ESvA",
+      "category": 101,
+      "asset_name": "Biker"
+    },
+    {
+      "avatar_item_desc": "6930ce13-4be4-4ab9-9817-667bd261ffc3",
+      "category": 101,
+      "asset_name": "Bishop"
+    },
+    {
+      "avatar_item_desc": "CQuKKNpan0O7rhR1fr14-Q",
+      "category": 101,
+      "asset_name": "Bowling"
+    },
+    {
+      "avatar_item_desc": "GAWURQSqrEW4G5slrPMgZA",
+      "category": 101,
+      "asset_name": "Bowling Sweater"
+    },
+    {
+      "avatar_item_desc": "ff15e25d-d467-47a8-9ecc-e415d5acb90c",
+      "category": 101,
+      "asset_name": "Boxer"
+    },
+    {
+      "avatar_item_desc": "7VQvz9sbzUWvGalxd9rISg",
+      "category": 101,
+      "asset_name": "Bride of Frank"
+    },
+    {
+      "avatar_item_desc": "e60fccda-8711-463d-b8a3-7cd5e76903b2",
+      "category": 101,
+      "asset_name": "Conductor"
+    },
+    {
+      "avatar_item_desc": "e9913b06-58cb-4b90-bd08-981a3f19f352",
+      "category": 101,
+      "asset_name": "Construction"
+    },
+    {
+      "avatar_item_desc": "QCtqxbvYOkan79YFugH_Cw",
+      "category": 101,
+      "asset_name": "Countess"
+    },
+    {
+      "avatar_item_desc": "c3745cee-d87e-4a23-b6e2-64ebf05c8b11",
+      "category": 101,
+      "asset_name": "Deep Sea Diver"
+    },
+    {
+      "avatar_item_desc": "27e742bf-3081-4274-ba70-301f0edeb4f1",
+      "category": 101,
+      "asset_name": "Doctor"
+    },
+    {
+      "avatar_item_desc": "d3d69bee-60bc-44a3-ad7c-65b3b69d1e59",
+      "category": 101,
+      "asset_name": "Dodgeball"
+    },
+    {
+      "avatar_item_desc": "a6f1825e-1647-4d06-85d7-ac2d139612c0",
+      "category": 101,
+      "asset_name": "Drum Major"
+    },
+    {
+      "avatar_item_desc": "3dc003c5-428b-47d6-80fb-6520b63119e8",
+      "category": 101,
+      "asset_name": "Electrician"
+    },
+    {
+      "avatar_item_desc": "967187b8-df20-4f4f-b48f-10b9ea75cedf",
+      "category": 101,
+      "asset_name": "Farmer"
+    },
+    {
+      "avatar_item_desc": "ff7e6d41-5c27-4516-930c-ad0e9a23cce2",
+      "category": 101,
+      "asset_name": "Fighter Pilot"
+    },
+    {
+      "avatar_item_desc": "9o0gWLJjREG552gxRreT8A",
+      "category": 101,
+      "asset_name": "Figure Skater Collar"
+    },
+    {
+      "avatar_item_desc": "5PUja-WX00Sme9yBwvDq-g",
+      "category": 101,
+      "asset_name": "Figure Skater Dress"
+    },
+    {
+      "avatar_item_desc": "5f600892-aa67-484a-afc7-14c219d89c52",
+      "category": 101,
+      "asset_name": "Flapper"
+    },
+    {
+      "avatar_item_desc": "ZsggwOJ8XUOGfaJltM418g",
+      "category": 101,
+      "asset_name": "Frankenstein"
+    },
+    {
+      "avatar_item_desc": "e042433a-40a2-4758-8074-3b9d407835ec",
+      "category": 101,
+      "asset_name": "Fuschia Marine"
+    },
+    {
+      "avatar_item_desc": "f76b709c-b173-426e-81f2-279a67d2fde1",
+      "category": 101,
+      "asset_name": "Golfer"
+    },
+    {
+      "avatar_item_desc": "m5Plrduzr0yj_9mTn1x3Vw",
+      "category": 101,
+      "asset_name": "Guardians Jacket"
+    },
+    {
+      "avatar_item_desc": "b6rLwzD4NkKV7xKn9ZYVkA",
+      "category": 101,
+      "asset_name": "Hoodie"
+    },
+    {
+      "avatar_item_desc": "3R_zf8xliEiurVU8GwaItg",
+      "category": 101,
+      "asset_name": "Ice Queen Gown"
+    },
+    {
+      "avatar_item_desc": "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2",
+      "category": 101,
+      "asset_name": "Jersey"
+    },
+    {
+      "avatar_item_desc": "739fd42a-8a8c-44a5-afa3-e0974802c6ae",
+      "category": 101,
+      "asset_name": "Knight Torso"
+    },
+    {
+      "avatar_item_desc": "39278302-b52a-48a8-a566-ed756a5fa1a9",
+      "category": 101,
+      "asset_name": "Lacrosse"
+    },
+    {
+      "avatar_item_desc": "24d94673-f394-42e6-a3c8-276f8b8aa722",
+      "category": 101,
+      "asset_name": "Laser Tag"
+    },
+    {
+      "avatar_item_desc": "C4uuztTiYUe20PACMARksA",
+      "category": 101,
+      "asset_name": "Letterman"
+    },
+    {
+      "avatar_item_desc": "350c5c1e-318b-4233-a7e5-1f49909d8e65",
+      "category": 101,
+      "asset_name": "Lumberjack"
+    },
+    {
+      "avatar_item_desc": "MJkDYDH510izAab13ZfXQw",
+      "category": 101,
+      "asset_name": "Magical Girl"
+    },
+    {
+      "avatar_item_desc": "74c65554-0d15-409b-b9a8-0b2620a7d7e2",
+      "category": 101,
+      "asset_name": "Marty Rec Fly"
+    },
+    {
+      "avatar_item_desc": "4308da04-af84-40bb-845a-7a9e1a2726ec",
+      "category": 101,
+      "asset_name": "Mobster"
+    },
+    {
+      "avatar_item_desc": "oRUh266ohkWQil14uxcEdQ",
+      "category": 101,
+      "asset_name": "Mummy"
+    },
+    {
+      "avatar_item_desc": "ab15ef15-a97c-4ab1-896b-bd4d7e1cd9f5",
+      "category": 101,
+      "asset_name": "Pea Coat"
+    },
+    {
+      "avatar_item_desc": "3b00c71f-79c2-4a04-9fc0-a23b4c85562f",
+      "category": 101,
+      "asset_name": "Pirate Captain"
+    },
+    {
+      "avatar_item_desc": "e4ba395e-f291-4e7b-8193-45f4422f41ce",
+      "category": 101,
+      "asset_name": "Punk"
+    },
+    {
+      "avatar_item_desc": "PryEX4MEvkGKwST6dqJHjA",
+      "category": 101,
+      "asset_name": "Qpid Toga"
+    },
+    {
+      "avatar_item_desc": "fb907eb2-91c8-45ff-84a5-462bb86ea7de",
+      "category": 101,
+      "asset_name": "Ranger"
+    },
+    {
+      "avatar_item_desc": "0ab6c95c-e157-48bd-a172-2642896b4ffc",
+      "category": 101,
+      "asset_name": "Royal Lady"
+    },
+    {
+      "avatar_item_desc": "e13f6558-d49c-4314-820c-962ef48eb0c6",
+      "category": 101,
+      "asset_name": "Royal Lord"
+    },
+    {
+      "avatar_item_desc": "1041d745-c5e9-4218-a3e1-198f5c9c418c",
+      "category": 101,
+      "asset_name": "Safari"
+    },
+    {
+      "avatar_item_desc": "2c679f89-c76e-4cfb-94e9-448c8fd44d55",
+      "category": 101,
+      "asset_name": "Saija"
+    },
+    {
+      "avatar_item_desc": "664485e9-a159-4fcb-b32c-2b114b4a1218",
+      "category": 101,
+      "asset_name": "Scallywag"
+    },
+    {
+      "avatar_item_desc": "fe34adaf-47d3-435b-b2fd-b2fee05fceae",
+      "category": 101,
+      "asset_name": "Scientist"
+    },
+    {
+      "avatar_item_desc": "a96e168c-0c4d-4c70-9f8a-c8f07164ce99",
+      "category": 101,
+      "asset_name": "Scout Neckerchief"
+    },
+    {
+      "avatar_item_desc": "35f60d27-22cf-4e17-8f39-c9e3a9fa2291",
+      "category": 101,
+      "asset_name": "Scout Skirt"
+    },
+    {
+      "avatar_item_desc": "033e328f-d9d2-4e53-af20-44f18e3ea208",
+      "category": 101,
+      "asset_name": "Sherlock"
+    },
+    {
+      "avatar_item_desc": "6RhwWExXekaYpK0NGHSXGQ",
+      "category": 101,
+      "asset_name": "Ski Buddy"
+    },
+    {
+      "avatar_item_desc": "25d4c652-1730-4925-925e-31a290a2272a",
+      "category": 101,
+      "asset_name": "Smuggler"
+    },
+    {
+      "avatar_item_desc": "b6610b7b-3978-46fd-9af6-41b4568c9b4d",
+      "category": 101,
+      "asset_name": "Soccer"
+    },
+    {
+      "avatar_item_desc": "4ce7a70f-15a0-4cad-98ee-5cbb40827338",
+      "category": 101,
+      "asset_name": "Space Marine"
+    },
+    {
+      "avatar_item_desc": "E9VTiIVFPEa-OuQRto0e_Q",
+      "category": 101,
+      "asset_name": "Steam Punk"
+    },
+    {
+      "avatar_item_desc": "LK8jt9zCuUGwLRccgOOvjA",
+      "category": 101,
+      "asset_name": "Steampunk Femme"
+    },
+    {
+      "avatar_item_desc": "pQqNvrhDJ0uuipKHA2qUOA",
+      "category": 101,
+      "asset_name": "Suspenders"
+    },
+    {
+      "avatar_item_desc": "74b91f2b-d4d3-4e41-8946-b1296ab7a773",
+      "category": 101,
+      "asset_name": "Tennis"
+    },
+    {
+      "avatar_item_desc": "hTHM3Kjqy0ykqBD8UCRQJw",
+      "category": 101,
+      "asset_name": "Thriller"
+    },
+    {
+      "avatar_item_desc": "vDSlMnayzEqWXwT-lkcKSA",
+      "category": 101,
+      "asset_name": "Tourist"
+    },
+    {
+      "avatar_item_desc": "QK6lBlX_wUCiSbJ9RkIwdA",
+      "category": 101,
+      "asset_name": "Treasure Hunter"
+    },
+    {
+      "avatar_item_desc": "TjrFi6TFhUC5tQXWkZiK9A",
+      "category": 101,
+      "asset_name": "Treasure Hunter Tank"
+    },
+    {
+      "avatar_item_desc": "jUpFzO5MPEGTbS-E0a99Nw",
+      "category": 101,
+      "asset_name": "Tuxedo"
+    },
+    {
+      "avatar_item_desc": "JWfs9IiQs0Weu8MmyGpqLQ",
+      "category": 101,
+      "asset_name": "Vampire Hunter"
+    },
+    {
+      "avatar_item_desc": "3757149b-f478-4975-81e5-d808a1bed8d5",
+      "category": 101,
+      "asset_name": "Winter"
+    },
+    {
+      "avatar_item_desc": "7LSm-xCYakmgcAr--Fn-JA",
+      "category": 101,
+      "asset_name": "Witch"
+    },
+    {
+      "avatar_item_desc": "418db0e0-c7af-40c2-9cac-d461ce41e210",
+      "category": 101,
+      "asset_name": "Witch Hunter"
+    },
+    {
+      "avatar_item_desc": "97eae086-cfea-45ff-9b77-1d184256d493",
+      "category": 101,
+      "asset_name": "Wizard"
+    },
+    {
+      "avatar_item_desc": "21caa68e-c3fa-474c-af5e-af1e742b7a60",
+      "category": 101,
+      "asset_name": "Tennis Skirt"
+    },
+    {
+      "avatar_item_desc": "d766c8d3-76e8-4021-b0a4-24b78fb7eaba",
+      "category": 101,
+      "asset_name": "Track Suit"
+    },
+    {
+      "avatar_item_desc": "2296ed0d-df56-4d46-b33a-aae9230a47fc",
+      "category": 101,
+      "asset_name": "Yellow Blue Dress"
+    },
+    {
+      "avatar_item_desc": "a302741d-313b-4682-82e5-ac76764e662c",
+      "category": 101,
+      "asset_name": "Yellow Poofy Dress"
+    },
+    {
+      "avatar_item_desc": "oYvOo47DJE-DEPlpn5xNUw",
+      "category": 102,
+      "asset_name": "Fanny Pack"
+    },
+    {
+      "avatar_item_desc": "38b38e24-d636-41c6-b80e-a285ae3106dc",
+      "category": 102,
+      "asset_name": "Pirate Captain"
+    },
+    {
+      "avatar_item_desc": "3af4c506-d49c-4126-9437-1d3bb1658863",
+      "category": 102,
+      "asset_name": "Scallywag Belt"
+    },
+    {
+      "avatar_item_desc": "iBQ-v6xaqkipUlfzkSHEeQ",
+      "category": 102,
+      "asset_name": "Steampunk Satchel"
+    },
+    {
+      "avatar_item_desc": "ImwG0snB9ECc_gqRRBoz6A",
+      "category": 102,
+      "asset_name": "Treasure Hunter Belt"
+    },
+    {
+      "avatar_item_desc": "uubY_Cn9A0-Ww4lsIRCF6w",
+      "category": 103,
+      "asset_name": "Dracula Medal"
+    },
+    {
+      "avatar_item_desc": "jiBzrzDPkkuL6DqIFKpcCw",
+      "category": 103,
+      "asset_name": "Vampire Hunter"
+    },
+    {
+      "avatar_item_desc": "b33dbeee-5bdd-443d-aa6a-761248054e08",
+      "category": 104,
+      "asset_name": "Jersey Team"
+    },
+    {
+      "avatar_item_desc": "24b8b757-4168-4b3b-ba11-46f29d19044d",
+      "category": 104,
+      "asset_name": "Jersey Team Emissive"
+    },
+    {
+      "avatar_item_desc": "74e6878f-94e0-41f2-93ea-de6412238385",
+      "category": 200,
+      "asset_name": "Party Band"
+    },
+    {
+      "avatar_item_desc": "52VsI_lKlkSUAOJlfDnyrQ",
+      "category": 200,
+      "asset_name": "80s Windbreaker"
+    },
+    {
+      "avatar_item_desc": "5b01eaa3-0cac-40c0-b72a-b3f6a868ae0c",
+      "category": 200,
+      "asset_name": "Archer Glove"
+    },
+    {
+      "avatar_item_desc": "88739d79-aeb9-471a-b25b-776f46bba9f6",
+      "category": 200,
+      "asset_name": "Astronaut Glove"
+    },
+    {
+      "avatar_item_desc": "125a3a62-1005-47dc-9fd8-ee09ea803e9f",
+      "category": 200,
+      "asset_name": "Aviator"
+    },
+    {
+      "avatar_item_desc": "ce81210f-8eb8-4cd2-95d5-046d4da229c8",
+      "category": 200,
+      "asset_name": "Barbershop"
+    },
+    {
+      "avatar_item_desc": "4025e4c4-abaa-4729-a2a3-a7175313e5ed",
+      "category": 200,
+      "asset_name": "Beekeeper"
+    },
+    {
+      "avatar_item_desc": "7a6fe0e6-f930-4fb8-9b2f-4c857a273dd9",
+      "category": 200,
+      "asset_name": "Bike Glove"
+    },
+    {
+      "avatar_item_desc": "abc25091-ed5f-4c72-9364-fffeef1bc239",
+      "category": 200,
+      "asset_name": "Bishop Glove"
+    },
+    {
+      "avatar_item_desc": "b904304b-cce0-466f-8569-c621eeadd4f7",
+      "category": 200,
+      "asset_name": "Boxing Glove"
+    },
+    {
+      "avatar_item_desc": "8fc7aaef-adec-4534-8f91-445e4e7095d5",
+      "category": 200,
+      "asset_name": "Conductor"
+    },
+    {
+      "avatar_item_desc": "3bb50a88-09ae-48c7-a42c-df5879680eff",
+      "category": 200,
+      "asset_name": "Construction Glove"
+    },
+    {
+      "avatar_item_desc": "t9co2516nkuJO4LIJA1bJA",
+      "category": 200,
+      "asset_name": "Countess"
+    },
+    {
+      "avatar_item_desc": "9eb7f505-5afd-4b28-9886-7996d38c59c6",
+      "category": 200,
+      "asset_name": "Cowboy Glove"
+    },
+    {
+      "avatar_item_desc": "b1c3ccc8-91d7-434e-b9cc-bd632fffc01b",
+      "category": 200,
+      "asset_name": "Deep Sea Diver"
+    },
+    {
+      "avatar_item_desc": "4d533b3a-b5fa-446a-842d-92798ad5b493",
+      "category": 200,
+      "asset_name": "Drum Major Glove"
+    },
+    {
+      "avatar_item_desc": "5800d2b5-75b8-442f-8b10-63bd3d73a1b8",
+      "category": 200,
+      "asset_name": "Fighter Pilot"
+    },
+    {
+      "avatar_item_desc": "473c672d-2b79-48a2-a49d-fd68160c5bde",
+      "category": 200,
+      "asset_name": "Flapper Glove"
+    },
+    {
+      "avatar_item_desc": "tkbHKZ9wu0W00VGeUbIaaw",
+      "category": 200,
+      "asset_name": "Frankenstein"
+    },
+    {
+      "avatar_item_desc": "eada710d-ea0c-473f-b9c6-23e210607b24",
+      "category": 200,
+      "asset_name": "Golfer"
+    },
+    {
+      "avatar_item_desc": "ilDgmey2ZUWlFiuEAN7YoQ",
+      "category": 200,
+      "asset_name": "Ice Queen"
+    },
+    {
+      "avatar_item_desc": "9bf9d502-8a3c-4b24-9565-0a2c2d9864fd",
+      "category": 200,
+      "asset_name": "Knight Gauntlet"
+    },
+    {
+      "avatar_item_desc": "3044adce-90c0-4f66-81f5-39c4fca86fdf",
+      "category": 200,
+      "asset_name": "Laser Tag Glove"
+    },
+    {
+      "avatar_item_desc": "2dFMy4zc7ky_Fd5fzfgInw",
+      "category": 200,
+      "asset_name": "Letterman"
+    },
+    {
+      "avatar_item_desc": "eS_or4AnMka9M_bD7YN28g",
+      "category": 200,
+      "asset_name": "Magical Girl"
+    },
+    {
+      "avatar_item_desc": "08d56627-4500-4724-8692-a23c96ddb3ec",
+      "category": 200,
+      "asset_name": "Mobster"
+    },
+    {
+      "avatar_item_desc": "zpjkkb1HtUORoPaODFuuxg",
+      "category": 200,
+      "asset_name": "Mummy"
+    },
+    {
+      "avatar_item_desc": "64ad8789-1645-45f7-819a-a413ff7c9622",
+      "category": 200,
+      "asset_name": "Paintball Glove"
+    },
+    {
+      "avatar_item_desc": "eceb7d49-be41-4228-86a9-2973d62e7135",
+      "category": 200,
+      "asset_name": "Pirate Captain"
+    },
+    {
+      "avatar_item_desc": "28374ebc-4050-4ea0-b3b6-41ebe75cedf7",
+      "category": 200,
+      "asset_name": "Punk"
+    },
+    {
+      "avatar_item_desc": "74365234-cb72-409d-8cf5-9a7209f707e1",
+      "category": 200,
+      "asset_name": "Safari Glove"
+    },
+    {
+      "avatar_item_desc": "50c9c6f8-2963-4ef3-95d5-e999a898269f",
+      "category": 200,
+      "asset_name": "Saija Glove"
+    },
+    {
+      "avatar_item_desc": "b9e0f03b-2609-4911-82e9-1e324dbbe8be",
+      "category": 200,
+      "asset_name": "Scallywag Bracelet"
+    },
+    {
+      "avatar_item_desc": "9d68e9f4-6ea0-4717-bb78-f2783a14a6b6",
+      "category": 200,
+      "asset_name": "Scientist Glove"
+    },
+    {
+      "avatar_item_desc": "3dec4865-cf23-4c19-a460-dd2db80ee851",
+      "category": 200,
+      "asset_name": "Smuggler"
+    },
+    {
+      "avatar_item_desc": "94eb7ef3-528f-4f59-92a0-48b0ec287527",
+      "category": 200,
+      "asset_name": "Soccer"
+    },
+    {
+      "avatar_item_desc": "4763436c-2dcc-482a-bf37-a6b16d7aae6e",
+      "category": 200,
+      "asset_name": "Space Marine Glove"
+    },
+    {
+      "avatar_item_desc": "qxovV6Vym0ufL2cTCyKjOQ",
+      "category": 200,
+      "asset_name": "Steam Punk"
+    },
+    {
+      "avatar_item_desc": "BR0mZKsKaE-t4R8CzEwuyg",
+      "category": 200,
+      "asset_name": "Thriller"
+    },
+    {
+      "avatar_item_desc": "_OWVy3z6iU-M3-zbQgSLig",
+      "category": 200,
+      "asset_name": "Vampire Hunter"
+    },
+    {
+      "avatar_item_desc": "3a790be3-2937-44d4-be01-b5d65353bd3d",
+      "category": 200,
+      "asset_name": "Winter"
+    },
+    {
+      "avatar_item_desc": "wy2cfgb8mUqjMrIOwHH2ew",
+      "category": 200,
+      "asset_name": "Witch"
+    },
+    {
+      "avatar_item_desc": "1974dd48-aa44-434f-879a-eaff0c7c06e6",
+      "category": 200,
+      "asset_name": "Witch Hunter Glove"
+    },
+    {
+      "avatar_item_desc": "22ef1089-d073-4fe8-b038-6f34adf0b85f",
+      "category": 200,
+      "asset_name": "Wizard"
+    },
+    {
+      "avatar_item_desc": "ecc1dbe6-ca06-4564-b2a6-30956194d1e9",
+      "category": 200,
+      "asset_name": "Wrist Band"
+    },
+    {
+      "avatar_item_desc": "71921831-ba6f-408b-a00e-2fd97663636f",
+      "category": 200,
+      "asset_name": "Wrist Tape"
+    },
+    {
+      "avatar_item_desc": "6d48c545-22bb-46c1-a29d-0a38af387143",
+      "category": 203,
+      "asset_name": "Wrist Band Team"
+    },
+    {
+      "avatar_item_desc": "e41c32ac-61b7-4e59-9d0e-b231ebdc2a68",
+      "category": 203,
+      "asset_name": "Wrist Band Team Emissive"
+    }
+  ],
+  "default_unlocked_outfit_selections": [
+    "1d27b674-f9e2-4ffc-9d8c-a58a1be06457,,,",
+    "d84c0ff9-8fbe-4ed8-abf3-7996e81888ab,,,",
+    "e5b83dfc-b2e1-4dcb-a4ab-9d3a4c8a34ae,,,",
+    "7dd6f7b0-7ba0-429f-a04f-e32d3a79ee61,,,",
+    "eb9611c6-bb50-41a2-93e9-7f959815a846,,,",
+    "1fd69ef8-0b74-4962-af5a-67f0bf0358f2,,,",
+    "a12f724f-4a73-4ab8-aad4-6bfc662b4dd6,,,",
+    "0753d7a4-8247-4fca-a6fc-359c26086140,,,",
+    "77d3c585-4928-4471-a425-89036efe7299,,,",
+    "92302d9d-c527-418c-ac5d-1fa869727505,,,",
+    "f9dd08f8-16d3-4c39-af4f-89f7bb6e80d3,,,",
+    "b148cb1e-df81-442f-aea6-ab1727aad00e,,,",
+    "e36bcd98-7e85-43fa-89f8-57e4ec33823a,,,",
+    "880a3cc0-7407-4b61-b759-f9dd890fe9e5,,,",
+    "21599b51-c50f-43d8-ac5f-62c30cd02ca5,,,",
+    "193a3bf9-abc0-4d78-8d63-92046908b1c5,,,",
+    "79b90274-6eec-4664-acfb-4a123334661e,,,",
+    "da4e7b34-2095-4a9e-801e-4f409039e0dd,,,",
+    "9d9fadb6-97eb-480e-a224-4e0179082071,,,",
+    "d8280c0c-d803-4513-be10-a0ba96d8821e,,,",
+    "e286863c-2967-4d00-b837-b49487b9484a,,,",
+    "2cb4f372-3372-4583-8b57-c4e3988e3c28,,,",
+    "06306723-ca20-4aa6-b7b3-917113f41ac3,,,",
+    "c70005d5-6276-4a98-acb3-6a77bc19379a,,,",
+    "8d10cc78-6b00-45f3-affb-205e9cc5b03f,,,",
+    "cc96f8a5-bc5b-4f89-83b7-ecd53905ada7,,,",
+    "c6c08eb5-381a-4193-9722-80da95d62abe,,,",
+    "4d507dfa-4a99-4ac0-8537-229e9dc0eb4a,,,",
+    "d0a9262f-5504-46a7-bb10-7507503db58e,,,",
+    "d0a9262f-5504-46a7-bb10-7507503db58e,95e4cc30-cb68-473d-a395-feadf5b51512,0440f08f-ef1d-49d8-942b-523056e8bb45,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,,,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,,,",
+    "8aa79563-ace1-4ba7-ad0c-f3210a78142f,,,",
+    "8aa79563-ace1-4ba7-ad0c-f3210a78142f,95e4cc30-cb68-473d-a395-feadf5b51512,05f0ee6e-c824-470e-9178-5ed576c6fe0c,",
+    "21caa68e-c3fa-474c-af5e-af1e742b7a60,,,",
+    "21caa68e-c3fa-474c-af5e-af1e742b7a60,c5deba2a-6e35-4b13-8e94-8ba5457f39df,b75ef67d-00c3-4ac1-9b72-212032460294,",
+    "21caa68e-c3fa-474c-af5e-af1e742b7a60,758752bd-db2f-43d2-b580-55b3e1efffd5,b75ef67d-00c3-4ac1-9b72-212032460294,",
+    "2296ed0d-df56-4d46-b33a-aae9230a47fc,,,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,,,",
+    "71921831-ba6f-408b-a00e-2fd97663636f,,,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,55901f12-d5b5-4fa8-b4c8-e479689ee39d,f600037d-c9c0-43fa-b45b-02f456f9dd5f,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,bf82f2f6-9af8-431e-a296-0890dea48ba7,d015cae7-a905-49e4-8823-6dec069689a6,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,EfdMcnfHt0mr0PQ_maaYOg,DRJcNhkqvkKFEaZpOguR6w,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,6d703981-2734-4c45-8983-cdd5f328902f,a0271cd0-e172-4d3f-aa2f-9806f21a82d2,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,5c4a2b35-0e1c-44de-8c3a-96d4a6458b1b,9c03f381-7357-4d0f-8cda-8737d4c43d25,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,d2a692e6-e1a9-4cfe-8154-10b52be7f8c8,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,ad61c418-6d77-4a99-8ac5-9f10f5a3d42f,b292eb4b-07e3-4a48-99b5-3c6587a1e02e,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,48abd952-214f-48b2-a8f1-1146f6f69aa2,b78008e8-abbd-4ece-be34-9a911f721fcc,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,8377ab96-c908-457f-9fee-b784c9a759f3,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,dee70c38-7a99-4c2b-9181-665f1bf75aca,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,7d8e55fe-3c34-4b4b-9753-0021f6cc6454,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,018a5c07-e956-457d-a540-a5e2cd68da09,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,cbe29e9f-f2ac-47fb-97e1-8bad16abb89d,018a5c07-e956-457d-a540-a5e2cd68da09,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,dee70c38-7a99-4c2b-9181-665f1bf75aca,018a5c07-e956-457d-a540-a5e2cd68da09,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,6dd95046-acf8-42fe-ab78-80a334096a9d,56a92c8d-af53-413e-929e-4a9a3cfad780,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,dee70c38-7a99-4c2b-9181-665f1bf75aca,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,cbe29e9f-f2ac-47fb-97e1-8bad16abb89d,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,8377ab96-c908-457f-9fee-b784c9a759f3,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "fcfcaf63-deb4-45f7-b711-c051c9ea45cb,,,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,,,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,6f2e74bf-1e95-463d-97db-d5d1a53b2c28,be2b9293-1d3c-4b1c-b4c5-fad3ab16cf54,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,9374bf66-2ee5-493b-8439-efce4b201904,be2b9293-1d3c-4b1c-b4c5-fad3ab16cf54,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,272fe8eb-5061-4729-a7a8-414ff667a82f,be2b9293-1d3c-4b1c-b4c5-fad3ab16cf54,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,0ffad843-d6c9-425a-8686-7217009c867e,be2b9293-1d3c-4b1c-b4c5-fad3ab16cf54,",
+    "9c8fc7f0-8f99-4aad-a34f-8d979f6ae352,e0397982-c2c2-4733-9a40-46e18675b5af,dafa658e-753b-46cb-bd85-85c1de5e6ea7,",
+    "9c8fc7f0-8f99-4aad-a34f-8d979f6ae352,,,",
+    "9c8fc7f0-8f99-4aad-a34f-8d979f6ae352,49f5864f-9d40-497c-88c8-e87f64d41d74,dafa658e-753b-46cb-bd85-85c1de5e6ea7,",
+    "9c8fc7f0-8f99-4aad-a34f-8d979f6ae352,c5deba2a-6e35-4b13-8e94-8ba5457f39df,dafa658e-753b-46cb-bd85-85c1de5e6ea7,",
+    "6d815b35-6f68-4ed4-817d-70f141e1a571,f750de46-3758-4f7d-9709-0a84b1027009,2c8924aa-68f8-4912-9759-18992f72f08a,",
+    "6d815b35-6f68-4ed4-817d-70f141e1a571,d66aa400-aa5a-4539-a25d-5f8ce94dc281,2c8924aa-68f8-4912-9759-18992f72f08a,",
+    "6d815b35-6f68-4ed4-817d-70f141e1a571,6564acf1-4d70-4f92-92ac-08e2b76dbb6b,2c8924aa-68f8-4912-9759-18992f72f08a,",
+    "6d815b35-6f68-4ed4-817d-70f141e1a571,,,",
+    "241506f6-bf88-4b46-b5fe-513a225421f4,,,",
+    "6b9e022c-0b68-48fd-8eca-da8573c18900,d6edbc00-3c1d-4f49-8412-3ef8c7c5f4c2,cf119781-5bd9-4b85-9a0b-12e82e988c23,",
+    "2296ed0d-df56-4d46-b33a-aae9230a47fc,6d703981-2734-4c45-8983-cdd5f328902f,cfabdefe-0890-436e-b2a3-b5c712e22955,",
+    "2296ed0d-df56-4d46-b33a-aae9230a47fc,830be2fa-60a5-48cc-931f-34b670eae4bd,cfabdefe-0890-436e-b2a3-b5c712e22955,",
+    "2296ed0d-df56-4d46-b33a-aae9230a47fc,bbfa08e3-8e6b-4e0f-b264-1b398d7cd44a,cfabdefe-0890-436e-b2a3-b5c712e22955,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,484b6c13-af22-4ad5-8c43-34c0de095d49,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,f8b0cfe8-e129-4578-8bb5-f60af5d38599,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,67bcca75-4ab1-4964-8688-9908c464d355,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,dee70c38-7a99-4c2b-9181-665f1bf75aca,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "7b857a8c-92ad-4028-a2c2-b3c20cdab5f2,8377ab96-c908-457f-9fee-b784c9a759f3,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "6b9e022c-0b68-48fd-8eca-da8573c18900,5c4a2b35-0e1c-44de-8c3a-96d4a6458b1b,cf119781-5bd9-4b85-9a0b-12e82e988c23,",
+    "6b9e022c-0b68-48fd-8eca-da8573c18900,6dd95046-acf8-42fe-ab78-80a334096a9d,cf119781-5bd9-4b85-9a0b-12e82e988c23,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,dee70c38-7a99-4c2b-9181-665f1bf75aca,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,f8b0cfe8-e129-4578-8bb5-f60af5d38599,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,8377ab96-c908-457f-9fee-b784c9a759f3,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,,,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,67bcca75-4ab1-4964-8688-9908c464d355,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "24a240f4-1574-420b-b898-a7e91f170759,,,",
+    "c45ed7b8-99bd-4a4b-a9ff-e16edf5d7a18,,,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,484b6c13-af22-4ad5-8c43-34c0de095d49,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,,,",
+    "14ef6b00-debf-4a85-9755-b4d37df496d3,67bcca75-4ab1-4964-8688-9908c464d355,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "896c2491-2f96-4986-9cbd-b3b31ef5d8c5,,,",
+    "896c2491-2f96-4986-9cbd-b3b31ef5d8c5,55901f12-d5b5-4fa8-b4c8-e479689ee39d,d344b8cc-85a8-4ace-9f92-38c84f396e99,",
+    "896c2491-2f96-4986-9cbd-b3b31ef5d8c5,4828b50c-95b6-466a-bb25-514891d78202,d344b8cc-85a8-4ace-9f92-38c84f396e99,",
+    "896c2491-2f96-4986-9cbd-b3b31ef5d8c5,d6823e01-69f0-4f85-b94a-74894356a2cf,d344b8cc-85a8-4ace-9f92-38c84f396e99,",
+    "09177621-9ecd-4f6a-b6a5-64490139141d,,,",
+    "95ab7a7c-c35d-4da5-9955-0921064470b6,,,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,0ecb8a2a-cffc-47db-aeda-fb0684aef1e5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,484b6c13-af22-4ad5-8c43-34c0de095d49,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,51ef8d39-2b94-4f9e-9620-07b6b0a913a5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,cbe29e9f-f2ac-47fb-97e1-8bad16abb89d,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "40528de7-38a3-4a7c-8f93-6d3bfa5573f2,8377ab96-c908-457f-9fee-b784c9a759f3,018a5c07-e956-457d-a540-a5e2cd68da09,",
+    "62ce4109-8dee-4895-bf1b-bfa143db4c7e,,,",
+    "62ce4109-8dee-4895-bf1b-bfa143db4c7e,cd5d7285-202d-42d0-b93f-04245875793e,0f36bb97-c61b-4281-929f-ff1d0d11be86,",
+    "62ce4109-8dee-4895-bf1b-bfa143db4c7e,ad61c418-6d77-4a99-8ac5-9f10f5a3d42f,0f36bb97-c61b-4281-929f-ff1d0d11be86,",
+    "8b9f1413-e786-4a30-946c-9292f207875a,,,",
+    "5cd08cfb-c729-4c30-96d9-6a99bb934d91,,,",
+    "1a71064b-794f-40fa-9109-8ad36602b6e1,,,",
+    "84cd594c-1cd8-4b4d-8409-85c8fd5fb02a,761a3193-60f0-4190-80c7-285b8192e794,91a451c1-b285-4c48-b14d-59ded8cc006f,",
+    "84cd594c-1cd8-4b4d-8409-85c8fd5fb02a,a819f49b-6c7a-49d3-9e6a-d9d79ef5019f,91a451c1-b285-4c48-b14d-59ded8cc006f,",
+    "84cd594c-1cd8-4b4d-8409-85c8fd5fb02a,64850553-cdfe-455a-ac00-dafbe63d613e,91a451c1-b285-4c48-b14d-59ded8cc006f,",
+    "84cd594c-1cd8-4b4d-8409-85c8fd5fb02a,,,",
+    "71921831-ba6f-408b-a00e-2fd97663636f,1b1d08f2-12ca-43dd-a44f-ea2820b919b4,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "71921831-ba6f-408b-a00e-2fd97663636f,7d8e55fe-3c34-4b4b-9753-0021f6cc6454,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,0ecb8a2a-cffc-47db-aeda-fb0684aef1e5,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "ecc1dbe6-ca06-4564-b2a6-30956194d1e9,7d8e55fe-3c34-4b4b-9753-0021f6cc6454,0b2395e1-ebcc-47e9-aaf1-faf9e9cec4cd,",
+    "6b9e022c-0b68-48fd-8eca-da8573c18900,,,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,0iSsaY-HgkmLaRHCn5vEdw,PioQ0o3yP0a6szPZ4EKs2A,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,jGj28vhq8EGwP2RuM074aQ,PioQ0o3yP0a6szPZ4EKs2A,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,kmj5zOjcwku_WWKroCeiVQ,PioQ0o3yP0a6szPZ4EKs2A,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,FAviMCQ_EE2Mpt6QPo5OEw,PioQ0o3yP0a6szPZ4EKs2A,",
+    "2e59d8d0-91a0-4449-bfdc-a5d663fd9343,MFrcSQ1DYUm8imvy4ypgvw,PioQ0o3yP0a6szPZ4EKs2A,",
+    "de0ac50d-2adb-4114-bd2e-68953b13d706,05ac07e1-67f0-486c-abf5-a62866475abb,be2b9293-1d3c-4b1c-b4c5-fad3ab16cf54,",
+    "0088603e-ec3b-4478-8694-e6fb1989b3f2,,,",
+    "ffea7a65-613f-4835-921e-6dd15f357b7e,,,",
+    "45f5e714-8a5f-4385-a97f-675066167011,,,",
+    "9bf5d259-7774-4cbe-a90f-7f188cc0dce7,,,",
+    "a6cbfe76-534a-4655-a8a8-3fed13d001c7,,,",
+    "CTcrvbo3OEepIV4oW8bx4w,,,",
+    "-twtjyBdQ02EAdOfBGTiEw,,,"
+  ]
+}

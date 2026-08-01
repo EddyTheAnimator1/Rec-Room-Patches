@@ -138,18 +138,34 @@ async def _close_websocket(websocket, code: int, reason: str = "") -> None:
         pass
 
 
-def _registered_peer_ids(player_id: int) -> list[int]:
+async def _registered_peer_ids(context, player_id: int) -> list[int]:
     # Keep 24 March startup quiet for the connecting client; peers still need presence updates.
-    return [registered_id for registered_id in _NOTIFICATION_BASE._registered_player_ids() if registered_id != player_id]
+    return [
+        registered_id
+        for registered_id in await _NOTIFICATION_BASE._registered_player_ids(
+            context, API_VERSION
+        )
+        if registered_id != player_id
+    ]
 
 
 async def _publish_presence_to_peers(context, player_id: int, payload: dict, *, default_online: bool = True) -> None:
-    presence = _NOTIFICATION_BASE._presence_payload_from_client(context, player_id, payload, default_online=default_online)
-    _NOTIFICATION_BASE._save_presence(context, player_id, presence)
+    presence = await _NOTIFICATION_BASE._presence_payload_from_client(
+        context,
+        player_id,
+        payload,
+        default_online=default_online,
+        api_version=API_VERSION,
+    )
+    await _NOTIFICATION_BASE._save_presence(
+        context, player_id, presence, API_VERSION
+    )
     await _NOTIFICATION_BASE._broadcast_notification(
-        _registered_peer_ids(player_id),
+        await _registered_peer_ids(context, player_id),
         _NOTIFICATION_BASE._SUBSCRIPTION_UPDATE_PRESENCE,
         presence,
+        context,
+        API_VERSION,
     )
 
 
@@ -177,10 +193,13 @@ async def handle_websocket(*, websocket, route_path: str, context) -> None:
 
     await websocket.accept()
     player_id = 0
+    connection_id = None
     try:
         handshake = _NOTIFICATION_BASE._json_object_from_text(await websocket.receive_text())
         player_id = _NOTIFICATION_BASE._ensure_local_profile(websocket, context, handshake)
-        await _NOTIFICATION_BASE._register_notification_client(websocket, player_id)
+        connection_id = await _NOTIFICATION_BASE._register_notification_client(
+            websocket, player_id, context, API_VERSION
+        )
         session_id = int(time.time() * 1000)
         await websocket.send_text(json.dumps({"SessionId": session_id}))
         await _publish_presence_to_peers(context, player_id, handshake)
@@ -191,10 +210,16 @@ async def handle_websocket(*, websocket, route_path: str, context) -> None:
                 context,
             )
     except WebSocketDisconnect:
-        await _NOTIFICATION_BASE._unregister_notification_client(websocket, context)
+        await _NOTIFICATION_BASE._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
     except HTTPException as exc:
-        await _NOTIFICATION_BASE._unregister_notification_client(websocket, context)
+        await _NOTIFICATION_BASE._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
         await _close_websocket(websocket, 1008, str(exc.detail))
     except Exception:
-        await _NOTIFICATION_BASE._unregister_notification_client(websocket, context)
+        await _NOTIFICATION_BASE._unregister_notification_client(
+            connection_id, player_id, context, API_VERSION
+        )
         raise

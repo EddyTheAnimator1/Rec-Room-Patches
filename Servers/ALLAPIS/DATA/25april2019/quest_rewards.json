@@ -1,0 +1,141 @@
+{
+  "rank_rewards": {
+    "4002": {
+      "name": "Golden Trophy Knight Gauntlets",
+      "avatar_item_desc": "9bf9d502-8a3c-4b24-9565-0a2c2d9864fd",
+      "rarity": 0
+    },
+    "4001": {
+      "name": "Golden Trophy Knight Cape",
+      "avatar_item_desc": "2e5afc40-7e25-418c-8b1b-316b8ef479a7",
+      "rarity": 10
+    },
+    "4000": {
+      "name": "Golden Trophy Knight Armor",
+      "avatar_item_desc": "739fd42a-8a8c-44a5-afa3-e0974802c6ae",
+      "rarity": 20
+    },
+    "4003": {
+      "name": "Golden Trophy Knight Helmet",
+      "avatar_item_desc": "e614df5d-3cfe-4bca-b9c2-30c267b9c94e",
+      "rarity": 30
+    },
+    "4012": {
+      "name": "Crimson Cauldron Witch Gloves",
+      "avatar_item_desc": "wy2cfgb8mUqjMrIOwHH2ew",
+      "rarity": 0
+    },
+    "4011": {
+      "name": "Crimson Cauldron Witch Shirt",
+      "avatar_item_desc": "7LSm-xCYakmgcAr--Fn-JA",
+      "rarity": 10
+    },
+    "4010": {
+      "name": "Crimson Cauldron Witch Hunter Gloves",
+      "avatar_item_desc": "1974dd48-aa44-434f-879a-eaff0c7c06e6",
+      "rarity": 20
+    },
+    "4013": {
+      "name": "Crimson Cauldron Witch Hunter Hat",
+      "avatar_item_desc": "6d36091e-7083-4e3d-8729-94612602c8cb",
+      "rarity": 30
+    },
+    "4102": {
+      "name": "Lost Skulls Pirate Eyepatch",
+      "avatar_item_desc": "e1a13235-e3b3-4b39-8e6f-e6449d4321b7",
+      "rarity": 0
+    },
+    "4101": {
+      "name": "Lost Skulls Pirate Cuffs",
+      "avatar_item_desc": "eceb7d49-be41-4228-86a9-2973d62e7135",
+      "rarity": 10
+    },
+    "4100": {
+      "name": "Lost Skulls Pirate Neckwear",
+      "avatar_item_desc": "38b38e24-d636-41c6-b80e-a285ae3106dc",
+      "rarity": 20
+    },
+    "4103": {
+      "name": "Lost Skulls Pirate Coat",
+      "avatar_item_desc": "3b00c71f-79c2-4a04-9fc0-a23b4c85562f",
+      "rarity": 30
+    },
+    "4104": {
+      "name": "Lost Skulls Pirate Hat",
+      "avatar_item_desc": "3df394de-9c3e-4141-aba4-12eac4742102",
+      "rarity": 50
+    },
+    "4202": {
+      "name": "Crescendo Countess Gloves",
+      "avatar_item_desc": "t9co2516nkuJO4LIJA1bJA",
+      "rarity": 0
+    },
+    "4201": {
+      "name": "Crescendo Countess Dress",
+      "avatar_item_desc": "QCtqxbvYOkan79YFugH_Cw",
+      "rarity": 10
+    },
+    "4200": {
+      "name": "Crescendo Vampire Hunter Gloves",
+      "avatar_item_desc": "_OWVy3z6iU-M3-zbQgSLig",
+      "rarity": 20
+    },
+    "4203": {
+      "name": "Crescendo Vampire Hunter Collar",
+      "avatar_item_desc": "jiBzrzDPkkuL6DqIFKpcCw",
+      "rarity": 30
+    },
+    "4204": {
+      "name": "Crescendo Vampire Hunter Coat",
+      "avatar_item_desc": "JWfs9IiQs0Weu8MmyGpqLQ",
+      "rarity": 50
+    },
+    "4206": {
+      "name": "Crescendo Dracula Cape",
+      "avatar_item_desc": "h_To9WQYdEusYQxlbMmMmQ",
+      "rarity": 50
+    },
+    "4502": {
+      "name": "Jumbotron Visor",
+      "avatar_item_desc": "KNZ1DvCLC0WHyH4opYAXtw",
+      "rarity": 0
+    },
+    "4501": {
+      "name": "Jumbotron Space Marine Gloves",
+      "avatar_item_desc": "4763436c-2dcc-482a-bf37-a6b16d7aae6e",
+      "rarity": 10
+    },
+    "4500": {
+      "name": "Jumbotron Space Marine Armor",
+      "avatar_item_desc": "4ce7a70f-15a0-4cad-98ee-5cbb40827338",
+      "rarity": 20
+    },
+    "4503": {
+      "name": "Jumbotron Space Marine Helmet",
+      "avatar_item_desc": "59d9560d-e5af-4205-b860-3afea1cc31a9",
+      "rarity": 30
+    }
+  },
+  "consumable_rewards": {
+    "4004": {
+      "name": "Golden Trophy Goblin King Film",
+      "consumable_item_desc": "6SyCoJCgo0Wd6qlPlnMOtg"
+    },
+    "4014": {
+      "name": "Crimson Cauldron Witch Film",
+      "consumable_item_desc": "mL3zCEuy2UWZxAV4V-OsMA"
+    },
+    "4105": {
+      "name": "Lost Skulls High Five O'Gunpowder",
+      "consumable_item_desc": "YEfbJTnsR0yT_p7e7tb_kQ"
+    },
+    "4205": {
+      "name": "Crescendo Dracula Film",
+      "consumable_item_desc": "oG7CdvW7p0-S8sVe9w5vRw"
+    },
+    "4504": {
+      "name": "Jumbotron Film",
+      "consumable_item_desc": "Il4VmrnjDkqjmjzddqoIEw"
+    }
+  }
+}

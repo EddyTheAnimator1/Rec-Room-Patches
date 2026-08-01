@@ -1,0 +1,8 @@
+{
+  "default_image_name": "LogoOrg.png",
+  "community_board_video_extensions": [
+    ".m4v",
+    ".mov",
+    ".mp4"
+  ]
+}

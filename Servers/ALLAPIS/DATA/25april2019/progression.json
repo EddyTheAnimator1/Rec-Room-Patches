@@ -1,0 +1,15 @@
+{
+  "max_player_level": 30,
+  "starting_player_level": 15,
+  "level_curve": {
+    "base": 250,
+    "linear": 25,
+    "quadratic": 3
+  },
+  "objective_xp": {
+    "base": 100,
+    "minimum_award": 10,
+    "per_level_taper": 0.02,
+    "minimum_multiplier": 0.4
+  }
+}
