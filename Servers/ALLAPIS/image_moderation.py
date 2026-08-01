@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import io
 import json
@@ -124,6 +125,10 @@ class NsfwJsEngine:
         self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
         self._lock = threading.Lock()
 
+    @property
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
     def _start(self) -> None:
         if self._process is not None and self._process.poll() is None:
             return
@@ -209,6 +214,7 @@ class NsfwJsEngine:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait(timeout=5)
 
 
 class ImageModerationManager:
@@ -230,6 +236,7 @@ class ImageModerationManager:
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._nudenet: Any | None = None
+        self._model_last_used_at: float | None = None
         self._nsfwjs = NsfwJsEngine(self.root_dir / "tools" / "nsfwjs_worker.js")
 
     @property
@@ -301,7 +308,7 @@ class ImageModerationManager:
         self._task = None
         if task is not None:
             await task
-        await asyncio.to_thread(self._nsfwjs.close)
+        await asyncio.to_thread(self._release_models_if_idle, force=True)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
@@ -317,6 +324,7 @@ class ImageModerationManager:
                 except Exception as exc:
                     await asyncio.to_thread(self._retry_job, job, exc)
                 continue
+            await asyncio.to_thread(self._release_models_if_idle)
             try:
                 await asyncio.wait_for(
                     self._wake.wait(),
@@ -444,6 +452,7 @@ class ImageModerationManager:
         return dict(row)
 
     def _evaluate(self, image_path: Path) -> dict[str, Any]:
+        self._model_last_used_at = time.monotonic()
         if self._nudenet is None:
             from nudenet import NudeDetector
 
@@ -536,6 +545,7 @@ class ImageModerationManager:
                 and confirmed_nsfw_score
                 >= float(confirmation["minimum_nsfwjs_score"])
             )
+        self._model_last_used_at = time.monotonic()
         return {
             "rejected": rejected,
             "very_confident": very_confident,
@@ -545,6 +555,25 @@ class ImageModerationManager:
             "max_nudenet_score": max_nudenet,
             "max_nsfwjs_score": max_nsfwjs,
         }
+
+    def _release_models_if_idle(self, *, force: bool = False) -> bool:
+        last_used = self._model_last_used_at
+        idle_seconds = max(
+            0.0,
+            float(self.config.get("model_idle_timeout_seconds", 30)),
+        )
+        if not force and (
+            last_used is None or time.monotonic() - last_used < idle_seconds
+        ):
+            return False
+        had_nudenet = self._nudenet is not None
+        had_nsfwjs = self._nsfwjs.is_running
+        self._nudenet = None
+        self._nsfwjs.close()
+        self._model_last_used_at = None
+        if had_nudenet:
+            gc.collect()
+        return had_nudenet or had_nsfwjs
 
     def _record_rejected(
         self, job: dict[str, Any], evaluation: dict[str, Any]
@@ -915,5 +944,6 @@ class ImageModerationManager:
         return {
             "enabled": bool(self.config.get("enabled", True)),
             "running": self._task is not None and not self._task.done(),
+            "models_resident": self._nudenet is not None or self._nsfwjs.is_running,
             "jobs": {str(row["status"]): int(row["count"]) for row in rows},
         }

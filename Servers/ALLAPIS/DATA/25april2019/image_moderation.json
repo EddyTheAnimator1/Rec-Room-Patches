@@ -4,6 +4,7 @@
   "target_height": 1440,
   "queue_delay_seconds": 3,
   "idle_poll_interval_seconds": 30,
+  "model_idle_timeout_seconds": 30,
   "lease_seconds": 180,
   "retry_max_seconds": 300,
   "nudenet_320n": {
