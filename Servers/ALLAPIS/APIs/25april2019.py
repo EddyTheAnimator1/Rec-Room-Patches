@@ -15177,6 +15177,12 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         try:
             while True:
                 message = await websocket.receive()
+                await context.require_transient().refresh_connection(
+                    connection_id=hub_connection_id,
+                    api_version=API_VERSION,
+                    transport=HUB_TRANSPORT,
+                    player_id=player_id,
+                )
                 if message.get("type") == "websocket.disconnect":
                     break
                 data = message.get("text") or (message.get("bytes") or b"").decode("utf-8", errors="ignore")

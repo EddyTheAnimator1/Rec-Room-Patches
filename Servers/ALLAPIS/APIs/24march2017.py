@@ -204,8 +204,12 @@ async def handle_websocket(*, websocket, route_path: str, context) -> None:
         await websocket.send_text(json.dumps({"SessionId": session_id}))
         await _publish_presence_to_peers(context, player_id, handshake)
         while True:
+            message = await websocket.receive_text()
+            await _NOTIFICATION_BASE._refresh_notification_client(
+                connection_id, player_id, context, API_VERSION
+            )
             await _handle_notification_client_message(
-                await websocket.receive_text(),
+                message,
                 player_id,
                 context,
             )

@@ -110,6 +110,11 @@ redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
 redis.call('ZADD', KEYS[3], ARGV[3], ARGV[6])
 redis.call('ZADD', KEYS[4], ARGV[3], ARGV[6])
+redis.call('ZADD', KEYS[5], ARGV[3], ARGV[4])
+redis.call('EXPIRE', KEYS[5], ARGV[5])
+if redis.call('EXISTS', KEYS[6]) == 1 then
+  redis.call('EXPIRE', KEYS[6], ARGV[2])
+end
 return 1
 """
 
@@ -118,12 +123,19 @@ redis.call('DEL', KEYS[1])
 redis.call('ZREM', KEYS[2], ARGV[1])
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', ARGV[2])
 local remaining = redis.call('ZCARD', KEYS[2])
+redis.call('ZREM', KEYS[6], ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[6], '-inf', ARGV[2])
+local route_remaining = redis.call('ZCARD', KEYS[6])
+if route_remaining == 0 then
+  redis.call('DEL', KEYS[6])
+  redis.call('ZREM', KEYS[5], ARGV[3])
+end
 if remaining == 0 then
   redis.call('DEL', KEYS[2])
   redis.call('DEL', KEYS[3])
   redis.call('ZREM', KEYS[4], ARGV[3])
 end
-return remaining
+return {remaining, route_remaining}
 """
 
     _MEMBERSHIP_UPDATE_SCRIPT = """
@@ -244,6 +256,7 @@ return 1
         self._redis = Redis(connection_pool=self._pool)
         self._started = False
         self._subscriber_task: asyncio.Task[None] | None = None
+        self._lease_refresh_task: asyncio.Task[None] | None = None
         self._local_sockets: dict[tuple[str, str, str], dict[str, WebSocket]] = defaultdict(dict)
         self._local_connection_route: dict[str, tuple[str, str, str]] = {}
         self.fanout_concurrency = _positive_int(
@@ -283,6 +296,9 @@ return 1
                 self._subscriber_task = asyncio.create_task(
                     self._subscriber_loop(), name="recroom-redis-realtime-subscriber"
                 )
+                self._lease_refresh_task = asyncio.create_task(
+                    self._lease_refresh_loop(), name="recroom-redis-lease-refresh"
+                )
                 print(
                     "Redis transient state connected: "
                     f"{safe_redis_endpoint(self.redis_url)}; prefix={self.prefix}; "
@@ -302,14 +318,17 @@ return 1
 
     async def close(self) -> None:
         self._started = False
-        task = self._subscriber_task
+        tasks = tuple(
+            task
+            for task in (self._subscriber_task, self._lease_refresh_task)
+            if task is not None
+        )
         self._subscriber_task = None
-        if task is not None:
+        self._lease_refresh_task = None
+        for task in tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self._redis.aclose()
         await self._pool.aclose()
         self._local_sockets.clear()
@@ -548,11 +567,15 @@ return 1
         try:
             await self.redis.eval(
                 self._LEASE_UPSERT_SCRIPT,
-                4,
+                6,
                 lease_key,
                 player_key,
                 all_players_key,
                 route_players_key,
+                self._key(
+                    "route-connections", api_version, transport, player
+                ),
+                self._key("presence", api_version, player),
                 json.dumps(lease, separators=(",", ":")),
                 self.presence_ttl_seconds,
                 expires_at,
@@ -576,6 +599,53 @@ return 1
         if membership not in (None, "", 0, "0"):
             await self.set_membership(player, membership)
 
+    async def refresh_local_connection_leases(self) -> None:
+        routes = tuple(self._local_connection_route.items())
+
+        async def refresh(
+            connection_id: str,
+            route: tuple[str, str, str],
+        ) -> None:
+            if self._local_connection_route.get(connection_id) != route:
+                return
+            api_version, transport, player = route
+            try:
+                await self.refresh_connection(
+                    connection_id=connection_id,
+                    api_version=api_version,
+                    transport=transport,
+                    player_id=player,
+                )
+            except HTTPException:
+                return
+            if self._local_connection_route.get(connection_id) != route:
+                await self._remove_lease(
+                    connection_id=connection_id,
+                    api_version=api_version,
+                    transport=transport,
+                    player=player,
+                )
+
+        batch_size = self.fanout_concurrency
+        for offset in range(0, len(routes), batch_size):
+            await asyncio.gather(
+                *(
+                    refresh(connection_id, route)
+                    for connection_id, route in routes[offset : offset + batch_size]
+                )
+            )
+
+    async def _lease_refresh_loop(self) -> None:
+        while self._started:
+            try:
+                await asyncio.sleep(self.heartbeat_seconds)
+                if self._started:
+                    await self.refresh_local_connection_leases()
+            except asyncio.CancelledError:
+                raise
+            except (HTTPException, RedisError, OSError):
+                continue
+
     async def unregister_connection(self, connection_id: str) -> bool:
         route = self._local_connection_route.pop(connection_id, None)
         if route is None:
@@ -589,6 +659,7 @@ return 1
         return await self._remove_lease(
             connection_id=connection_id,
             api_version=api_version,
+            transport=transport,
             player=player,
         )
 
@@ -597,23 +668,28 @@ return 1
         *,
         connection_id: str,
         api_version: str,
+        transport: str,
         player: str,
     ) -> bool:
         try:
             remaining = await self.redis.eval(
                 self._LEASE_REMOVE_SCRIPT,
-                4,
+                6,
                 self._key("connection", connection_id),
                 self._key("player-connections", player),
                 self._key("presence", api_version, player),
                 self._key("online-players"),
+                self._key("route-players", api_version, transport),
+                self._key(
+                    "route-connections", api_version, transport, player
+                ),
                 connection_id,
                 int(time.time()),
                 player,
             )
         except RedisError as exc:
             raise self._unavailable(exc) from exc
-        return int(remaining) > 0
+        return int(remaining[0]) > 0
 
     async def update_http_presence(
         self,
@@ -637,6 +713,7 @@ return 1
         await self._remove_lease(
             connection_id=connection_id,
             api_version=api_version,
+            transport="http-presence",
             player=player,
         )
 
@@ -970,6 +1047,14 @@ return 1
                         if api_version:
                             pipe.delete(self._key("presence", api_version, player))
                         if api_version and transport:
+                            pipe.delete(
+                                self._key(
+                                    "route-connections",
+                                    api_version,
+                                    transport,
+                                    player,
+                                )
+                            )
                             pipe.zrem(
                                 self._key(
                                     "route-players", api_version, transport

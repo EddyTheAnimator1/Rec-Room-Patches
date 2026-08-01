@@ -220,6 +220,20 @@ async def _register_notification_client(
     )
 
 
+async def _refresh_notification_client(
+    connection_id: str,
+    player_id: int,
+    context,
+    api_version: str | None = None,
+) -> None:
+    await context.require_transient().refresh_connection(
+        connection_id=connection_id,
+        api_version=api_version or API_VERSION,
+        transport=NOTIFICATION_TRANSPORT,
+        player_id=player_id,
+    )
+
+
 async def _unregister_notification_client(
     connection_id: str | None, player_id: int, context, api_version: str | None = None
 ) -> None:
@@ -733,7 +747,11 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         await websocket.send_text(json.dumps({"SessionId": session_id}))
         await _publish_presence(context, player_id, handshake)
         while True:
-            await _handle_notification_client_message(await websocket.receive_text(), player_id, context)
+            message = await websocket.receive_text()
+            await _refresh_notification_client(
+                connection_id, player_id, context
+            )
+            await _handle_notification_client_message(message, player_id, context)
     except WebSocketDisconnect:
         await _unregister_notification_client(connection_id, player_id, context)
     except Exception:

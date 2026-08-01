@@ -275,8 +275,12 @@ async def handle_websocket(*, websocket: WebSocket, route_path: str, context) ->
         )
 
         while True:
+            message = await websocket.receive_text()
+            await _SHARED._refresh_notification_client(
+                connection_id, player_id, context, API_VERSION
+            )
             await _SHARED._handle_notification_client_message(
-                await websocket.receive_text(), player_id, context, API_VERSION
+                message, player_id, context, API_VERSION
             )
 
     except WebSocketDisconnect:
