@@ -90,6 +90,7 @@ def build_table_markdown(rows, manifest_root: Path, patch_filename: str) -> str:
         unpatched_rows = sorted(
             (row for row in by_year[year] if row["manifest_id"] not in patched_ids),
             key=lambda row: row["dt"],
+            reverse=True,
         )
         for row in patched_rows + unpatched_rows:
             patched = "✅" if row["manifest_id"] in patched_ids else "❌"

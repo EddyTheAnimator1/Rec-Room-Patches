@@ -2,6 +2,9 @@
   "$schema": "https://schema.railpack.com",
   "provider": "python",
   "deploy": {
+    "aptPackages": [
+      "ffmpeg"
+    ],
     "startCommand": "python -m uvicorn BASE:app --host 0.0.0.0 --port $PORT"
   }
 }

@@ -59,10 +59,16 @@ ALLOWED_VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v"}
 SQLITE_SIDECAR_RE = re.compile(r"^database\.sqlite3(?:-(?:journal|wal|shm))?$")
 DEFAULT_LOCAL_PORT = 7979
 DEFAULT_RAILWAY_PUBLIC_BASE_URL = "https://brand-new-all-production.up.railway.app"
+DEFAULT_RAILWAY_PUBLIC_WEBSOCKET_URL = "ws://thomas.proxy.rlwy.net:44698"
 PUBLIC_BASE_URL_ENV_NAMES = (
     "RECROOM_PUBLIC_BASE_URL",
     "RECROOM_API_PUBLIC_BASE_URL",
     "RECROOM_SERVER_PUBLIC_BASE_URL",
+)
+PUBLIC_WEBSOCKET_URL_ENV_NAMES = (
+    "RECROOM_PUBLIC_WEBSOCKET_URL",
+    "RECROOM_PUBLIC_WS_URL",
+    "RECROOM_WEBSOCKET_PUBLIC_URL",
 )
 TLS_CERTFILE_ENV_NAME = "RECROOM_TLS_CERTFILE"
 TLS_KEYFILE_ENV_NAME = "RECROOM_TLS_KEYFILE"
@@ -265,6 +271,44 @@ def _configured_public_base_url() -> str | None:
     return None
 
 
+def _normalize_websocket_origin(raw: str) -> str:
+    value = raw.strip()
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"ws://{value}"
+    parsed = urllib.parse.urlsplit(value)
+    scheme = parsed.scheme.casefold()
+    if scheme == "http":
+        scheme = "ws"
+    elif scheme == "https":
+        scheme = "wss"
+    if scheme not in {"ws", "wss"} or not parsed.netloc:
+        return ""
+    return urllib.parse.urlunsplit(
+        (scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+    )
+
+
+def _configured_public_websocket_url() -> str | None:
+    for name in PUBLIC_WEBSOCKET_URL_ENV_NAMES:
+        value = os.getenv(name)
+        if value:
+            normalized = _normalize_websocket_origin(value)
+            if normalized:
+                return normalized
+
+    railway_domain = os.getenv("RAILWAY_TCP_PROXY_DOMAIN")
+    railway_port = os.getenv("RAILWAY_TCP_PROXY_PORT")
+    if railway_domain and railway_port:
+        normalized = _normalize_websocket_origin(
+            f"ws://{railway_domain}:{railway_port}"
+        )
+        if normalized:
+            return normalized
+    return None
+
+
 def _request_origin(request: Request, settings: Any | None = None) -> str:
     proto = _first_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme or "http"
     host = (
@@ -382,6 +426,27 @@ def public_api_origin(request: Request, context: Any, api_version: str) -> str:
 
 def public_api_base_url(request: Request, context: Any, api_version: str) -> str:
     origin = public_api_origin(request, context, api_version)
+    return f"{origin.rstrip('/')}/{api_version.strip('/')}/"
+
+
+def public_websocket_origin(request: Request, context: Any, api_version: str) -> str:
+    settings = getattr(context, "settings", None)
+    if getattr(settings, "is_railway", False):
+        return (
+            _configured_public_websocket_url()
+            or DEFAULT_RAILWAY_PUBLIC_WEBSOCKET_URL
+        )
+
+    api_origin = public_api_origin(request, context, api_version)
+    parsed = urllib.parse.urlsplit(api_origin)
+    scheme = "wss" if parsed.scheme.casefold() == "https" else "ws"
+    return urllib.parse.urlunsplit(
+        (scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+    )
+
+
+def public_websocket_base_url(request: Request, context: Any, api_version: str) -> str:
+    origin = public_websocket_origin(request, context, api_version)
     return f"{origin.rstrip('/')}/{api_version.strip('/')}/"
 
 
@@ -1715,6 +1780,12 @@ class ServerContext:
 
     def public_api_base_url(self, request: Request, api_version: str) -> str:
         return public_api_base_url(request, self, api_version)
+
+    def public_websocket_origin(self, request: Request, api_version: str) -> str:
+        return public_websocket_origin(request, self, api_version)
+
+    def public_websocket_base_url(self, request: Request, api_version: str) -> str:
+        return public_websocket_base_url(request, self, api_version)
 
     def get_motd(self, api_version: str | None = None) -> str:
         """Return the shared canonical MOTD.

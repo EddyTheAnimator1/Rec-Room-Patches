@@ -114,6 +114,7 @@ _EVENT_LOCK = threading.RLock()
 _PLAYER_STATE_LOCK = threading.RLock()
 _NOTIFICATION_LOCK = threading.RLock()
 _INVENTION_LOCK = threading.RLock()
+_COMMUNITY_BOARD_THUMBNAIL_LOCK = threading.Lock()
 
 HUB_NEGOTIATION_MAX_AGE_SECONDS = 10 * 60
 PRESENCE_ONLINE_MAX_AGE_SECONDS = 90
@@ -138,6 +139,16 @@ DEFAULT_IMAGE_NAME = str(_MEDIA_CONFIG["default_image_name"])
 COMMUNITY_BOARD_VIDEO_EXTENSIONS = {
     str(value).casefold() for value in _MEDIA_CONFIG["community_board_video_extensions"]
 }
+_COMMUNITY_BOARD_THUMBNAIL_CONFIG = _MEDIA_CONFIG["community_board_thumbnail"]
+COMMUNITY_BOARD_THUMBNAIL_POSITIONS = tuple(
+    float(value) for value in _COMMUNITY_BOARD_THUMBNAIL_CONFIG["candidate_positions"]
+)
+COMMUNITY_BOARD_THUMBNAIL_MIN_LUMA = float(
+    _COMMUNITY_BOARD_THUMBNAIL_CONFIG["minimum_luma"]
+)
+COMMUNITY_BOARD_THUMBNAIL_CACHE_VERSION = int(
+    _COMMUNITY_BOARD_THUMBNAIL_CONFIG["cache_version"]
+)
 
 # Video metadata is version-owned JSON; unlisted supported files are auto-added.
 COMMUNITY_BOARD_VIDEO_CATALOG = load_version_json(
@@ -307,7 +318,7 @@ COACH_ROOM_IMAGE_TEXTURES = load_version_json(
 
 ROOM_IMAGE_DATA_DIR = Path(__file__).resolve().parents[1] / "DATA" / "IMAGES" / "RR"
 COMMUNITY_BOARD_VIDEO_DIR = Path(__file__).resolve().parents[1] / "DATA" / "Videos"
-COMMUNITY_BOARD_THUMBNAIL_DIR = ROOM_IMAGE_DATA_DIR
+COMMUNITY_BOARD_THUMBNAIL_SUBDIR = Path("IMAGES") / "RR"
 
 def _retarget_module(module) -> None:
     module.API_VERSION = API_VERSION
@@ -3929,11 +3940,82 @@ def _room_engagement_sort_key(record: dict[str, Any]) -> tuple[int, int, int, in
     )
 
 
-def _community_board_video_thumbnail(video_path: Path) -> str:
+def _video_frame_luma(ffmpeg: str, video_path: Path, timestamp: float) -> float | None:
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{timestamp:.6f}",
+                "-i",
+                str(video_path),
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale=64:-2,signalstats,metadata=print:file=-",
+                "-an",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    values = re.findall(
+        r"lavfi\.signalstats\.YAVG=([0-9.]+)",
+        result.stdout + result.stderr,
+    )
+    if not values:
+        return None
+    return sum(float(value) for value in values) / len(values)
+
+
+def _community_board_thumbnail_time(
+    ffmpeg: str,
+    video_path: Path,
+    duration: float,
+) -> float:
+    midpoint = duration / 2.0
+    best_timestamp = midpoint
+    best_luma = -1.0
+    seen: set[float] = set()
+    for position in COMMUNITY_BOARD_THUMBNAIL_POSITIONS:
+        timestamp = min(max(duration * position, 0.0), max(0.0, duration - 0.05))
+        timestamp_key = round(timestamp, 3)
+        if timestamp_key in seen:
+            continue
+        seen.add(timestamp_key)
+        luma = _video_frame_luma(ffmpeg, video_path, timestamp)
+        if luma is None:
+            continue
+        if luma > best_luma:
+            best_timestamp = timestamp
+            best_luma = luma
+        if luma >= COMMUNITY_BOARD_THUMBNAIL_MIN_LUMA:
+            return timestamp
+    return best_timestamp
+
+
+def _community_board_video_thumbnail(video_path: Path, thumbnail_dir: Path) -> str:
+    with _COMMUNITY_BOARD_THUMBNAIL_LOCK:
+        return _community_board_video_thumbnail_locked(video_path, thumbnail_dir)
+
+
+def _community_board_video_thumbnail_locked(video_path: Path, thumbnail_dir: Path) -> str:
     safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "-", video_path.stem).strip("-")[:48]
-    digest = hashlib.sha256(video_path.name.casefold().encode("utf-8")).hexdigest()[:12]
+    cache_identity = (
+        f"{COMMUNITY_BOARD_THUMBNAIL_CACHE_VERSION}:{video_path.name.casefold()}"
+    )
+    digest = hashlib.sha256(cache_identity.encode("utf-8")).hexdigest()[:12]
     thumbnail_name = f"CommunityBoardVideo_{safe_stem or 'video'}_{digest}.png"
-    thumbnail_path = COMMUNITY_BOARD_THUMBNAIL_DIR / thumbnail_name
+    thumbnail_path = thumbnail_dir / thumbnail_name
     try:
         if (
             thumbnail_path.is_file()
@@ -3946,7 +4028,10 @@ def _community_board_video_thumbnail(video_path: Path) -> str:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if not ffmpeg or not ffprobe:
-        return DEFAULT_IMAGE_NAME
+        return thumbnail_name if thumbnail_path.is_file() else DEFAULT_IMAGE_NAME
+    temporary_path = thumbnail_path.with_name(
+        f".{thumbnail_path.stem}.{secrets.token_hex(6)}.tmp.png"
+    )
     try:
         duration_result = subprocess.run(
             [
@@ -3965,44 +4050,47 @@ def _community_board_video_thumbnail(video_path: Path) -> str:
             timeout=15,
         )
         duration = max(0.0, float(duration_result.stdout.strip()))
-        midpoint = duration / 2.0
-        detect_start = max(0.0, midpoint - 1.0)
+        frame_time = _community_board_thumbnail_time(ffmpeg, video_path, duration)
+        detect_start = max(0.0, frame_time - 1.0)
         detect_duration = min(2.0, max(0.1, duration - detect_start))
-        crop_result = subprocess.run(
-            [
-                ffmpeg,
-                "-hide_banner",
-                "-ss",
-                f"{detect_start:.6f}",
-                "-i",
-                str(video_path),
-                "-t",
-                f"{detect_duration:.6f}",
-                "-vf",
-                "cropdetect=limit=24:round=2:reset=0",
-                "-an",
-                "-f",
-                "null",
-                "-",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        crops = re.findall(r"\bcrop=(\d+:\d+:\d+:\d+)", crop_result.stderr)
+        crops = []
+        try:
+            crop_result = subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-ss",
+                    f"{detect_start:.6f}",
+                    "-i",
+                    str(video_path),
+                    "-t",
+                    f"{detect_duration:.6f}",
+                    "-vf",
+                    "cropdetect=limit=24:round=2:reset=0",
+                    "-an",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            crops = re.findall(r"\bcrop=(\d+:\d+:\d+:\d+)", crop_result.stderr)
+        except (OSError, subprocess.SubprocessError):
+            pass
         crop = Counter(crops).most_common(1)[0][0] if crops else ""
-        COMMUNITY_BOARD_THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
-        temporary_path = thumbnail_path.with_suffix(".tmp.png")
+        thumbnail_dir.mkdir(parents=True, exist_ok=True)
         command = [
             ffmpeg,
             "-hide_banner",
             "-loglevel",
             "error",
+            "-ss",
+            f"{frame_time:.6f}",
             "-i",
             str(video_path),
-            "-ss",
-            f"{midpoint:.6f}",
             "-frames:v",
             "1",
         ]
@@ -4019,15 +4107,16 @@ def _community_board_video_thumbnail(video_path: Path) -> str:
         return thumbnail_name
     except (OSError, ValueError, subprocess.SubprocessError):
         try:
-            thumbnail_path.with_suffix(".tmp.png").unlink(missing_ok=True)
+            temporary_path.unlink(missing_ok=True)
         except OSError:
             pass
-        return DEFAULT_IMAGE_NAME
+        return thumbnail_name if thumbnail_path.is_file() else DEFAULT_IMAGE_NAME
 
 
-def _community_board_videos() -> list[dict[str, Any]]:
+def _community_board_videos(context) -> list[dict[str, Any]]:
     if not COMMUNITY_BOARD_VIDEO_DIR.is_dir():
         return []
+    thumbnail_dir = context.data_dir / COMMUNITY_BOARD_THUMBNAIL_SUBDIR
     files = {
         child.name.casefold(): child
         for child in COMMUNITY_BOARD_VIDEO_DIR.iterdir()
@@ -4049,7 +4138,7 @@ def _community_board_videos() -> list[dict[str, Any]]:
                 "Description": str(entry.get("Description") or ""),
                 "ThumbnailBlobName": (
                     configured_thumbnail
-                    or _community_board_video_thumbnail(path)
+                    or _community_board_video_thumbnail(path, thumbnail_dir)
                 ),
                 "SourceUrl": str(entry.get("SourceUrl") or ""),
             }
@@ -4065,6 +4154,7 @@ def _community_board_videos() -> list[dict[str, Any]]:
 async def _handle_community_board(context) -> Response:
     featured_records = _all_ugc_records(context, public_only=True)
     featured_records.sort(key=_room_engagement_sort_key, reverse=True)
+    videos = await asyncio.to_thread(_community_board_videos, context)
     featured_rooms = [
         {
             "RoomName": str(record["metadata"].get("name") or record["row"]["name"]),
@@ -4085,7 +4175,7 @@ async def _handle_community_board(context) -> Response:
                 "MoreInfoUrl": "",
             },
             "InstagramImages": [],
-            "Videos": _community_board_videos(),
+            "Videos": videos,
         },
         headers={"Cache-Control": "no-store"},
     )
@@ -13233,19 +13323,16 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
 
     # 1. Name Server root request
     if path == "" or path == "/":
-        origin = context.public_api_origin(request, API_VERSION)
-        proto = urllib.parse.urlsplit(origin).scheme
-        host = urllib.parse.urlsplit(origin).netloc
-        ws_proto = "wss" if proto == "https" else "ws"
-        wss_origin = f"{ws_proto}://{host}"
+        api_base_url = context.public_api_base_url(request, API_VERSION)
+        websocket_base_url = context.public_websocket_base_url(request, API_VERSION)
 
         return JSONResponse({
-            "Auth": f"{origin}/{API_VERSION}/",
-            "API": f"{origin}/{API_VERSION}/",
-            "WWW": "https://rec.net/",
-            "Notifications": f"{wss_origin}/{API_VERSION}/",
-            "Images": f"{origin}/{API_VERSION}/",
-            "Commerce": f"{origin}/{API_VERSION}/"
+            "Auth": api_base_url,
+            "API": api_base_url,
+            "WWW": api_base_url,
+            "Notifications": websocket_base_url,
+            "Images": api_base_url,
+            "Commerce": api_base_url,
         })
 
     # 2. Version Check
@@ -14427,6 +14514,11 @@ async def handle_http(*, request: Request, route_path: str, context) -> Response
         path.casefold() == DEFAULT_IMAGE_NAME.casefold()
         or any(path.casefold() == name.casefold() for name in COACH_ROOM_IMAGE_TEXTURES.values())
         or re.fullmatch(r"[0-9a-f-]{36}\.(?:jpg|jpeg|png)", path, flags=re.IGNORECASE)
+        or re.fullmatch(
+            r"CommunityBoardVideo_[A-Za-z0-9_-]+_[0-9a-f]{12}\.png",
+            path,
+            flags=re.IGNORECASE,
+        )
     ):
         if method == "GET":
             return await _handle_uploaded_image(path, request, context)
