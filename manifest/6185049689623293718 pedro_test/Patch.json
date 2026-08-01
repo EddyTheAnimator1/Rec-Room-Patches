@@ -28,11 +28,11 @@
       "file": "resources.assets",
       "replacements": [
         {
-          "find": "6ebb7d66-6984-464d-a4ac-59b553e52000",
+          "find": "9372aa8d-d3f4-44a0-986d-419e145a2b83",
           "replace": "80f7725b-95cc-401f-b0c4-d4c181a5f25f"
         },
         {
-          "find": "37d5603e-b72f-4c1a-bc5c-3f318559c2b8",
+          "find": "e93ae440-f238-4b6c-848f-1df89faf14f5",
           "replace": "5c6571c8-96e6-4df1-ba38-977dd144713a"
         }
       ]
