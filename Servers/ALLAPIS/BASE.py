@@ -3259,8 +3259,19 @@ class ServerContext:
                     return asset_path
                 return None
 
-        image_dir = (self.data_dir / IMAGE_DATA_DIR_NAME).resolve()
-        if image_dir.is_dir():
+        image_dirs = (
+            (self.data_dir / IMAGE_DATA_DIR_NAME).resolve(),
+            (self.settings.root_dir / "DATA" / IMAGE_DATA_DIR_NAME).resolve(),
+        )
+        searched: set[Path] = set()
+        for image_dir in image_dirs:
+            if image_dir in searched or not image_dir.is_dir():
+                continue
+            searched.add(image_dir)
+            for bucket_name in IMAGE_BUCKET_NAMES:
+                candidate = (image_dir / bucket_name / clean_name).resolve()
+                if candidate.is_file() and image_dir in candidate.parents:
+                    return candidate
             for child in image_dir.rglob("*"):
                 if child.is_file() and child.name.casefold() == clean_name.casefold():
                     return child.resolve()
