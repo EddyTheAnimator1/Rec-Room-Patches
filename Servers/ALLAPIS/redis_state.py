@@ -186,26 +186,34 @@ return 1
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[4])
 if not redis.call('ZSCORE', KEYS[1], ARGV[1]) or
    not redis.call('ZSCORE', KEYS[1], ARGV[2]) then
-  return {-1, 0, 0}
+  return {-1, 0, 0, '', 0}
 end
+local started = 0
 if ARGV[3] == '1' then
   redis.call('SADD', KEYS[2], ARGV[1])
+  if not redis.call('GET', KEYS[5]) then
+    redis.call('SET', KEYS[5], ARGV[1])
+    started = 1
+  end
 else
   redis.call('SREM', KEYS[2], ARGV[1])
 end
 redis.call('EXPIRE', KEYS[2], ARGV[5])
+redis.call('EXPIRE', KEYS[5], ARGV[5])
 local members = redis.call('ZCARD', KEYS[1])
 local eligible = members - 1
 local required = math.max(1, math.floor(eligible / 2) + 1)
 local votes = redis.call('SCARD', KEYS[2])
+local initiator = redis.call('GET', KEYS[5]) or ''
 if votes >= required then
   redis.call('ZREM', KEYS[1], ARGV[2])
   redis.call('DEL', KEYS[2])
   redis.call('DEL', KEYS[3])
   redis.call('DEL', KEYS[4])
-  return {1, votes, required}
+  redis.call('DEL', KEYS[5])
+  return {1, votes, required, initiator, started}
 end
-return {0, votes, required}
+return {0, votes, required, initiator, started}
 """
 
     _REMOVE_SESSION_MEMBER_SCRIPT = """
@@ -1188,15 +1196,16 @@ return 1
         voter_id: Any,
         target_id: Any,
         vote_yes: bool,
-    ) -> tuple[str, int, int]:
+    ) -> tuple[str, int, int, int, bool]:
         try:
             result = await self.redis.eval(
                 self._VOTE_TO_KICK_SCRIPT,
-                4,
+                5,
                 self._key("session-members", game_session_id),
                 self._key("votekick", game_session_id, target_id),
                 self._key("membership", target_id),
                 self._key("membership-session", target_id),
+                self._key("votekick-initiator", game_session_id, target_id),
                 str(voter_id),
                 str(target_id),
                 "1" if vote_yes else "0",
@@ -1210,6 +1219,8 @@ return 1
             "not_members" if status < 0 else "kicked" if status > 0 else "recorded",
             int(result[1]),
             int(result[2]),
+            int(result[3] or 0),
+            bool(int(result[4])),
         )
 
     @_redis_operation

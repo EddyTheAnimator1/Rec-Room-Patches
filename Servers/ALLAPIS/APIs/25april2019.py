@@ -63,6 +63,9 @@ CURRENCY_TYPE_NAMES = dict(_STOREFRONT_CONFIG["currency_type_names"])
 STOREFRONT_BALANCE_AWARDS = int_keyed_dict(
     _STOREFRONT_CONFIG["balance_awards"], filename="storefronts.json"
 )
+ORIENTATION_BALANCE_ADD_TYPES = frozenset(
+    int(value) for value in _STOREFRONT_CONFIG["orientation_balance_add_types"]
+)
 COMMERCE_CATALOG = tuple(_STOREFRONT_CONFIG["commerce_catalog"])
 
 GAME_INSTANCES_SETTING = f"{API_VERSION}.game_instances"
@@ -94,6 +97,15 @@ def _large_token_award(*identity: Any) -> int:
     return TOKEN_REWARD_MIN + (
         int.from_bytes(digest[:8], "big") % steps
     ) * TOKEN_REWARD_STEP
+
+
+def _storefront_balance_award(balance_add_type: int) -> int:
+    configured_award = int(STOREFRONT_BALANCE_AWARDS.get(balance_add_type, 0))
+    if balance_add_type in ORIENTATION_BALANCE_ADD_TYPES:
+        return configured_award
+    if configured_award <= 0:
+        return 0
+    return _large_token_award("storefront-balance-add", balance_add_type)
 
 # Version-owned Charades and generated-name content.
 _CHARADES_WORD_DATA = load_version_json(API_VERSION, "charades_words.json", list)
@@ -4151,14 +4163,29 @@ async def _handle_community_board(context) -> Response:
     featured_records = _all_ugc_records(context, public_only=True)
     featured_records.sort(key=_room_engagement_sort_key, reverse=True)
     videos = await asyncio.to_thread(_community_board_videos, context)
-    featured_rooms = [
-        {
-            "RoomName": str(record["metadata"].get("name") or record["row"]["name"]),
-            "RoomId": int(record["version"]["room_id"]),
-            "ImageName": str(record["metadata"].get("image_name") or DEFAULT_IMAGE_NAME),
-        }
-        for record in featured_records
-    ]
+    featured_rooms = []
+    for record in featured_records:
+        image_name = str(record["metadata"].get("image_name") or "").strip()
+        if not image_name or context.find_image_path(image_name) is None:
+            image_name = DEFAULT_IMAGE_NAME
+        featured_rooms.append(
+            {
+                "RoomName": str(
+                    record["metadata"].get("name") or record["row"]["name"]
+                ),
+                "RoomId": int(record["version"]["room_id"]),
+                "ImageName": image_name,
+            }
+        )
+    if not featured_rooms:
+        fallback = _serialize_coach_room(_coach_room_record(BUILD_COACH_ROOMS[0]))
+        featured_rooms.append(
+            {
+                "RoomName": fallback["Name"],
+                "RoomId": fallback["RoomId"],
+                "ImageName": DEFAULT_IMAGE_NAME,
+            }
+        )
     return JSONResponse(
         {
             "FeaturedPlayer": {"Id": 0, "TitleOverride": "", "UrlOverride": ""},
@@ -8246,13 +8273,12 @@ async def _handle_modify_storefront_balance(request: Request, context) -> Respon
             }
             updates.append({"UpdateResponse": 1, "Data": reward})
             continue
-        configured_award = int(STOREFRONT_BALANCE_AWARDS[add_type])
-        base_award = (
-            _large_token_award("storefront-balance-add", add_type)
-            if configured_award > 0
-            else 0
+        base_award = _storefront_balance_award(add_type)
+        total = (
+            base_award
+            if add_type in ORIENTATION_BALANCE_ADD_TYPES
+            else max(0, int(round(base_award * multiplier)))
         )
-        total = max(0, int(round(base_award * multiplier)))
         current_balance += total
         current_count += 1
         counts[str(add_type)] = current_count
@@ -9783,12 +9809,7 @@ async def _handle_balance_add_config(
     balance_add_type: int, currency_type: int, request: Request, context
 ) -> Response:
     _authenticated_player(request, context)
-    configured_award = int(STOREFRONT_BALANCE_AWARDS.get(balance_add_type, 0))
-    base_award = (
-        _large_token_award("storefront-balance-add", balance_add_type)
-        if configured_award > 0
-        else 0
-    )
+    base_award = _storefront_balance_award(balance_add_type)
     return JSONResponse({
         "CurrencyType": currency_type,
         "BalanceAddType": balance_add_type,
@@ -13112,6 +13133,7 @@ async def _finalize_session_kick(
     is_ban: bool = False,
     server_wide: bool = False,
     is_host_kick: bool = True,
+    report_category: int = -1,
     duration_seconds: int = 0,
     message: str | None = None,
     queue_if_offline: bool = True,
@@ -13125,7 +13147,7 @@ async def _finalize_session_kick(
             target_id,
             22,
             {
-                "ReportCategory": -1,
+                "ReportCategory": int(report_category),
                 "Duration": max(0, int(duration_seconds)),
                 "GameSessionId": game_session_id,
                 "PlayerIdReporter": reporter_id,
@@ -13272,6 +13294,9 @@ async def _handle_vote_to_kick(request: Request, context) -> Response:
     )
     if target_id <= 0 or game_session_id <= 0 or target_id == source_id:
         return JSONResponse({"Success": False, "Message": "Invalid vote-to-kick request."})
+    target = _find_player_by_legacy_id_25april2019(context, target_id)
+    if target is None or bool(target.get("is_coach", False)) or target_id == 1:
+        return JSONResponse({"Success": False, "Message": "Target player cannot be vote kicked."})
 
     with context.db.connection() as conn:
         instances = _read_game_instances(conn)
@@ -13281,7 +13306,8 @@ async def _handle_vote_to_kick(request: Request, context) -> Response:
         )
         if instance is None:
             return JSONResponse({"Success": False, "Message": "Game session not found."})
-    vote_status, _votes, _required = await context.require_transient().vote_to_kick(
+    transient = context.require_transient()
+    vote_status, _votes, _required, initiator_id, started = await transient.vote_to_kick(
         game_session_id=game_session_id,
         voter_id=source_id,
         target_id=target_id,
@@ -13289,9 +13315,39 @@ async def _handle_vote_to_kick(request: Request, context) -> Response:
     )
     if vote_status == "not_members":
         return JSONResponse({"Success": False, "Message": "Both players must be in the game session."})
+    if started and vote_status != "kicked":
+        member_ids = {
+            int(value)
+            for value in await transient.session_member_ids(game_session_id)
+            if str(value).lstrip("-").isdigit()
+        }
+        now = datetime.now(timezone.utc)
+        prompt = {
+            "Id": int(now.timestamp() * 1_000_000) * 1000 + secrets.randbelow(1000),
+            "FromPlayerId": target_id,
+            "SentTime": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "Type": 5,
+            "Data": "",
+            "RoomId": int(instance.get("RoomId") or 0) or None,
+            "PlayerEventId": None,
+        }
+        for voter_id in sorted(member_ids - {source_id, target_id}):
+            await _send_hub_notification(
+                voter_id,
+                2,
+                prompt,
+                context=context,
+                queue_if_offline=False,
+            )
     if vote_status == "kicked":
         await _finalize_session_kick(
-            target_id, game_session_id, reporter_id=source_id, context=context
+            target_id,
+            game_session_id,
+            reporter_id=initiator_id or source_id,
+            context=context,
+            is_host_kick=False,
+            report_category=10,
+            message="Vote kicked by the room.",
         )
         return JSONResponse({"Success": True, "Message": "Player removed from the game session."})
     return JSONResponse({"Success": True, "Message": "Vote recorded."})

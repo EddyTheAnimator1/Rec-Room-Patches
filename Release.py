@@ -1718,6 +1718,18 @@ def find_launch_executable(build_dir: Path) -> Path | None:
     return best
 
 
+def find_mode_launchers(build_dir: Path) -> list[tuple[str, Path]]:
+    launchers = []
+    for filename, label in (
+        ("screenmode.bat", "Screen Mode"),
+        ("vr.bat", "VR"),
+    ):
+        path = build_dir / filename
+        if path.is_file():
+            launchers.append((label, path))
+    return launchers
+
+
 def historical_year_from_text(value: str) -> int | None:
     match = HISTORICAL_BUILD_YEAR_RE.search(value)
     return int(match.group(1)) if match else None
@@ -2267,6 +2279,26 @@ def launch_build(build: LocalBuild, settings: dict) -> None:
     Noir.ok(f"Launched: {exe_path.name}")
 
 
+def launch_build_mode(
+    build: LocalBuild,
+    settings: dict,
+    label: str,
+    launcher_path: Path,
+) -> None:
+    if not handle_windows11_historical_launch(build, settings):
+        Noir.warn("Launch canceled.")
+        return
+    if os.name == "nt":
+        subprocess.Popen(
+            ["cmd.exe", "/d", "/c", "call", launcher_path.name],
+            cwd=str(launcher_path.parent),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    else:
+        open_path(launcher_path)
+    Noir.ok(f"Launched {label}: {launcher_path.name}")
+
+
 def build_actions(build: LocalBuild, settings: dict) -> None:
     historical = is_historical_melonloader_build(build)
     while True:
@@ -2276,20 +2308,31 @@ def build_actions(build: LocalBuild, settings: dict) -> None:
         Noir.kv("Path", str(build.path))
         Noir.kv("Manifest", build.manifest_id)
         Noir.kv("Launcher", build.launcher)
-        rows = [
-            ("1", "Open folder"),
-            ("2", "Launch"),
-        ]
-        choices = {"1", "2", "0"}
+        rows = [("1", "Open folder")]
+        choices = {"1", "0"}
+        launch_actions: dict[str, tuple[str, Path] | None] = {}
+        mode_launchers = find_mode_launchers(build.path)
+        if mode_launchers:
+            for label, launcher_path in mode_launchers:
+                action = str(len(rows) + 1)
+                rows.append((action, label))
+                choices.add(action)
+                launch_actions[action] = (label, launcher_path)
+        else:
+            rows.append(("2", "Launch"))
+            choices.add("2")
+            launch_actions["2"] = None
         melonloader_installed = melonloader_is_installed(build.path)
+        melonloader_choice = ""
         if historical:
             melonloader_action = (
                 "Remove MelonLoader"
                 if melonloader_installed
                 else f"Install MelonLoader {MELONLOADER_RELEASE_TAG}"
             )
-            rows.append(("3", melonloader_action))
-            choices.add("3")
+            melonloader_choice = str(len(rows) + 1)
+            rows.append((melonloader_choice, melonloader_action))
+            choices.add(melonloader_choice)
         rows.append(("0", "Back"))
         Noir.menu(rows)
         Noir.line(color=Noir.DARK)
@@ -2300,10 +2343,15 @@ def build_actions(build: LocalBuild, settings: dict) -> None:
             open_path(build.path)
             Noir.ok("Build folder opened.")
             press_enter()
-        elif choice == "2":
-            launch_build(build, settings)
+        elif choice in launch_actions:
+            mode_launcher = launch_actions[choice]
+            if mode_launcher is None:
+                launch_build(build, settings)
+            else:
+                label, launcher_path = mode_launcher
+                launch_build_mode(build, settings, label, launcher_path)
             press_enter()
-        elif choice == "3":
+        elif choice == melonloader_choice:
             if melonloader_installed:
                 remove_melonloader_for_build(build, settings)
             else:

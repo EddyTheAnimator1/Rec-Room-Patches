@@ -47,5 +47,9 @@
     "1100": 100,
     "1200": 100
   },
+  "orientation_balance_add_types": [
+    10,
+    11
+  ],
   "commerce_catalog": []
 }
