@@ -49,79 +49,79 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
-| 28 June 2016 | `4180590405597713716` | ✅ |
-| 29 June 2016 | `7926661550074548930` | ✅ |
-| 30 June 2016 | `5937396277352677720` | ✅ |
-| 6 July 2016 | `5234716332756009057` | ✅ |
-| 8 July 2016 | `675319925160172554` | ✅ |
-| 13 July 2016 | `394418314086580303` | ✅ |
-| 13 July 2016 | `2793222674831519927` | ✅ |
-| 20 July 2016 | `3518826461438877478` | ✅ |
-| 20 July 2016 | `1105116417500379163` | ✅ |
-| 22 July 2016 | `4041085561776802553` | ✅ |
-| 22 July 2016 | `2224171743476188630` | ✅ |
-| 27 July 2016 | `797475839536905254` | ✅ |
-| 29 July 2016 | `3601417244482181468` | ✅ |
-| 2 August 2016 | `356844315186453937` | ✅ |
-| 11 August 2016 | `2459083052223685832` | ✅ |
-| 11 August 2016 | `5704849664609135853` | ✅ |
-| 11 August 2016 | `20170328095030222` | ✅ |
-| 17 August 2016 | `6017726618797772377` | ✅ |
-| 17 August 2016 | `8414822626868729817` | ✅ |
-| 17 August 2016 | `7115392148801672603` | ✅ |
-| 24 August 2016 | `5360232407282512201` | ✅ |
-| 31 August 2016 | `3233729662911539772` | ✅ |
-| 31 August 2016 | `3798172550462140867` | ✅ |
-| 8 September 2016 | `394935228226334493` | ✅ |
-| 15 September 2016 | `6639491001730954404` | ✅ |
-| 21 September 2016 | `7007068986923462121` | ✅ |
-| 21 September 2016 | `386252387837028876` | ✅ |
-| 28 September 2016 | `4329015347430869236` | ✅ |
-| 6 October 2016 | `1591673639619502502` | ✅ |
-| 7 October 2016 | `2501384732285060244` | ✅ |
-| 18 October 2016 | `5317305413924462757` | ✅ |
-| 26 October 2016 | `1604792277333790762` | ✅ |
-| 29 October 2016 | `5383238034238139872` | ✅ |
-| 4 November 2016 | `976486110269581733` | ✅ |
-| 8 November 2016 | `3009411680931499705` | ✅ |
-| 9 November 2016 | `860756852849299734` | ✅ |
-| 16 November 2016 | `424546141649632564` | ✅ |
-| 23 November 2016 | `2999110564380282122` | ✅ |
-| 24 November 2016 | `8464629802564135940` | ✅ |
-| 29 November 2016 | `1964111244192991547` | ✅ |
-| 9 December 2016 | `8224493981844824938` | ✅ |
-| 9 December 2016 | `1341823113150898819` | ✅ |
-| 16 December 2016 | `8356502470941083689` | ✅ |
 | 23 December 2016 | `44843189150346366` | ✅ |
+| 16 December 2016 | `8356502470941083689` | ✅ |
+| 9 December 2016 | `1341823113150898819` | ✅ |
+| 9 December 2016 | `8224493981844824938` | ✅ |
+| 29 November 2016 | `1964111244192991547` | ✅ |
+| 24 November 2016 | `8464629802564135940` | ✅ |
+| 23 November 2016 | `2999110564380282122` | ✅ |
+| 16 November 2016 | `424546141649632564` | ✅ |
+| 9 November 2016 | `860756852849299734` | ✅ |
+| 8 November 2016 | `3009411680931499705` | ✅ |
+| 4 November 2016 | `976486110269581733` | ✅ |
+| 29 October 2016 | `5383238034238139872` | ✅ |
+| 26 October 2016 | `1604792277333790762` | ✅ |
+| 18 October 2016 | `5317305413924462757` | ✅ |
+| 7 October 2016 | `2501384732285060244` | ✅ |
+| 6 October 2016 | `1591673639619502502` | ✅ |
+| 28 September 2016 | `4329015347430869236` | ✅ |
+| 21 September 2016 | `386252387837028876` | ✅ |
+| 21 September 2016 | `7007068986923462121` | ✅ |
+| 15 September 2016 | `6639491001730954404` | ✅ |
+| 8 September 2016 | `394935228226334493` | ✅ |
+| 31 August 2016 | `3798172550462140867` | ✅ |
+| 31 August 2016 | `3233729662911539772` | ✅ |
+| 24 August 2016 | `5360232407282512201` | ✅ |
+| 17 August 2016 | `7115392148801672603` | ✅ |
+| 17 August 2016 | `8414822626868729817` | ✅ |
+| 17 August 2016 | `6017726618797772377` | ✅ |
+| 11 August 2016 | `20170328095030222` | ✅ |
+| 11 August 2016 | `5704849664609135853` | ✅ |
+| 11 August 2016 | `2459083052223685832` | ✅ |
+| 2 August 2016 | `356844315186453937` | ✅ |
+| 29 July 2016 | `3601417244482181468` | ✅ |
+| 27 July 2016 | `797475839536905254` | ✅ |
+| 22 July 2016 | `2224171743476188630` | ✅ |
+| 22 July 2016 | `4041085561776802553` | ✅ |
+| 20 July 2016 | `1105116417500379163` | ✅ |
+| 20 July 2016 | `3518826461438877478` | ✅ |
+| 13 July 2016 | `2793222674831519927` | ✅ |
+| 13 July 2016 | `394418314086580303` | ✅ |
+| 8 July 2016 | `675319925160172554` | ✅ |
+| 6 July 2016 | `5234716332756009057` | ✅ |
+| 30 June 2016 | `5937396277352677720` | ✅ |
+| 29 June 2016 | `7926661550074548930` | ✅ |
+| 28 June 2016 | `4180590405597713716` | ✅ |
 
 # 2017
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
-| 7 January 2017 | `1355637356417786081` | ✅ |
-| 11 January 2017 | `4426211608086196524` | ✅ |
-| 18 January 2017 | `4350859901318817364` | ✅ |
-| 18 January 2017 | `7500062053385944746` | ✅ |
-| 20 January 2017 | `8061750969870240553` | ✅ |
-| 26 January 2017 | `151686977716385839` | ✅ |
-| 1 February 2017 | `2184174500936477594` | ✅ |
-| 3 February 2017 | `4682896605443297458` | ✅ |
-| 10 February 2017 | `2420201992531381519` | ✅ |
-| 11 February 2017 | `7694317481478922956` | ✅ |
-| 13 February 2017 | `7169987427560345612` | ✅ |
-| 14 February 2017 | `7452447116407047837` | ✅ |
-| 22 February 2017 | `2859847576718116651` | ✅ |
-| 23 February 2017 | `6859627191769621156` | ✅ |
-| 24 February 2017 | `1736465827698404753` | ✅ |
-| 1 March 2017 | `6135625719507137531` | ✅ |
-| 9 March 2017 | `512603081605663477` | ✅ |
-| 10 March 2017 | `3013939933633696253` | ✅ |
-| 13 March 2017 | `1917087114031565919` | ✅ |
-| 13 March 2017 | `7031178245801109076` | ✅ |
-| 17 March 2017 | `1867696127010072960` | ✅ |
-| 23 March 2017 | `4635637071237364407` | ✅ |
-| 23 March 2017 | `157323939332896781` | ✅ |
 | 24 March 2017 | `1655320907991352027` | ✅ |
+| 23 March 2017 | `157323939332896781` | ✅ |
+| 23 March 2017 | `4635637071237364407` | ✅ |
+| 17 March 2017 | `1867696127010072960` | ✅ |
+| 13 March 2017 | `7031178245801109076` | ✅ |
+| 13 March 2017 | `1917087114031565919` | ✅ |
+| 10 March 2017 | `3013939933633696253` | ✅ |
+| 9 March 2017 | `512603081605663477` | ✅ |
+| 1 March 2017 | `6135625719507137531` | ✅ |
+| 24 February 2017 | `1736465827698404753` | ✅ |
+| 23 February 2017 | `6859627191769621156` | ✅ |
+| 22 February 2017 | `2859847576718116651` | ✅ |
+| 14 February 2017 | `7452447116407047837` | ✅ |
+| 13 February 2017 | `7169987427560345612` | ✅ |
+| 11 February 2017 | `7694317481478922956` | ✅ |
+| 10 February 2017 | `2420201992531381519` | ✅ |
+| 3 February 2017 | `4682896605443297458` | ✅ |
+| 1 February 2017 | `2184174500936477594` | ✅ |
+| 26 January 2017 | `151686977716385839` | ✅ |
+| 20 January 2017 | `8061750969870240553` | ✅ |
+| 18 January 2017 | `7500062053385944746` | ✅ |
+| 18 January 2017 | `4350859901318817364` | ✅ |
+| 11 January 2017 | `4426211608086196524` | ✅ |
+| 7 January 2017 | `1355637356417786081` | ✅ |
 | 25 March 2017 | `429961858648164484` | ❌ |
 | 28 March 2017 | `7797052052086516007` | ❌ |
 | 29 March 2017 | `557226448350250124` | ❌ |
@@ -253,6 +253,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
+| 25 April 2019 | `6185049689623293718` | ✅ |
 | 18 January 2019 | `7700717833951446611` | ❌ |
 | 25 January 2019 | `4470782925300260923` | ❌ |
 | 29 January 2019 | `2756916550375388368` | ❌ |
@@ -263,7 +264,6 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 | 19 March 2019 | `504190851593979573` | ❌ |
 | 23 April 2019 | `619033774873095936` | ❌ |
 | 24 April 2019 | `9085878949463109094` | ❌ |
-| 25 April 2019 | `6185049689623293718` | ❌ |
 | 30 April 2019 | `859918154791893432` | ❌ |
 | 2 May 2019 | `6305737476812342641` | ❌ |
 | 5 June 2019 | `5317899065588351359` | ❌ |
@@ -307,7 +307,7 @@ Any specific versions? Have any advice? I'm always listening to the pull request
 
 # 2020
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -362,7 +362,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2021
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -416,7 +416,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2022
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -467,7 +467,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2023
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -517,7 +517,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2024
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -568,7 +568,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2025
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
@@ -622,7 +622,7 @@ I won't be patching these builds or newer ones. . . They are still there to down
 
 # 2026
 
-I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like.
+I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)
 
 | Date | Manifest | Patched? |
 | --- | --- | --- |
