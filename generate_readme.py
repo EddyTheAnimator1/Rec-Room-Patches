@@ -7,7 +7,7 @@ from pathlib import Path
 
 START_MARKER = "<!-- AUTO_TABLE_START -->"
 END_MARKER = "<!-- AUTO_TABLE_END -->"
-NOTE_2020 = "I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like."
+NOTE_2020 = "I won't be patching these builds or newer ones. . . They are still there to download though, if you'd like to try that. (50/50 percent change of them downloading)"
 
 
 def extract_manifest_id(raw: str) -> str:
@@ -48,11 +48,25 @@ def load_rows(csv_path: Path):
     return rows
 
 
-def is_patched(manifest_root: Path, manifest_id: str, patch_filename: str) -> bool:
-    return (manifest_root / manifest_id / patch_filename).is_file()
+def find_patched_manifest_ids(manifest_root: Path, patch_filename: str) -> set[str]:
+    patched_ids = set()
+    if not manifest_root.is_dir():
+        return patched_ids
+
+    expected_name = patch_filename.casefold()
+    for folder in manifest_root.iterdir():
+        if not folder.is_dir():
+            continue
+        match = re.match(r"^(\d+)(?:\s|$)", folder.name)
+        if not match:
+            continue
+        if any(path.is_file() and path.name.casefold() == expected_name for path in folder.iterdir()):
+            patched_ids.add(match.group(1))
+    return patched_ids
 
 
 def build_table_markdown(rows, manifest_root: Path, patch_filename: str) -> str:
+    patched_ids = find_patched_manifest_ids(manifest_root, patch_filename)
     by_year = defaultdict(list)
     for row in rows:
         by_year[row["year"]].append(row)
@@ -68,8 +82,17 @@ def build_table_markdown(rows, manifest_root: Path, patch_filename: str) -> str:
         chunks.append("| Date | Manifest | Patched? |")
         chunks.append("| --- | --- | --- |")
 
-        for row in by_year[year]:
-            patched = "✅" if is_patched(manifest_root, row["manifest_id"], patch_filename) else "❌"
+        patched_rows = sorted(
+            (row for row in by_year[year] if row["manifest_id"] in patched_ids),
+            key=lambda row: row["dt"],
+            reverse=True,
+        )
+        unpatched_rows = sorted(
+            (row for row in by_year[year] if row["manifest_id"] not in patched_ids),
+            key=lambda row: row["dt"],
+        )
+        for row in patched_rows + unpatched_rows:
+            patched = "✅" if row["manifest_id"] in patched_ids else "❌"
             chunks.append(f"| {row['date_only']} | `{row['manifest_id']}` | {patched} |")
 
         chunks.append("")
@@ -112,7 +135,8 @@ def main():
     generated = build_table_markdown(rows, manifest_root, args.patch_filename)
     write_output(output_path, generated)
 
-    patched_count = sum(is_patched(manifest_root, row["manifest_id"], args.patch_filename) for row in rows)
+    patched_ids = find_patched_manifest_ids(manifest_root, args.patch_filename)
+    patched_count = sum(row["manifest_id"] in patched_ids for row in rows)
     print(f"Processed {len(rows)} rows.")
     print(f"Patched manifests found: {patched_count}")
     print(f"Wrote: {output_path}")
