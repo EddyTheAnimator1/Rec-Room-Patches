@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import hmac
 import hashlib
 import importlib.util
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import warnings
 from collections import defaultdict, deque
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -32,6 +34,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette import status
+
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from content_filter import (
     ContentFilter,
@@ -78,6 +82,7 @@ DEFAULT_LOCAL_TLS_KEYFILE = "20january2022-localhost.key"
 LOCAL_TRANSPORT_POLICY_FILE = "transport_policy.json"
 DEFAULT_LOCAL_HTTPS_FROM_DATE = "2022-01-01"
 DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024
+MAX_UPLOADED_IMAGE_PIXELS = 40_000_000
 DEFAULT_CREATED_PLAYER_EMAIL = "idontwanttoguess@gmail.com"
 DEV_PERMISSIONS = ["DEV"]
 COACH_PLAYER_ID = "00000000-0000-0000-0000-000000000099"
@@ -3029,6 +3034,7 @@ class ServerContext:
         mime_type: str,
         purpose: str | None = None,
         metadata: dict[str, Any] | None = None,
+        target_size: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
         ext = file_ext.lower()
         if ext not in {".png", ".jpg", ".jpeg"}:
@@ -3037,11 +3043,82 @@ class ServerContext:
         if mime_type not in {"image/png", "image/jpeg"} or guessed_ext.lower() not in {".png", ".jpg", ".jpeg"}:
             raise ValueError("Unsupported image MIME type.")
 
+        stored_content = content
+        stored_metadata = dict(metadata or {})
+        if target_size is not None:
+            if len(target_size) != 2 or any(value <= 0 for value in target_size):
+                raise ValueError("Target image dimensions must be positive.")
+            expected_format = "PNG" if mime_type == "image/png" else "JPEG"
+            if (expected_format == "PNG" and ext != ".png") or (
+                expected_format == "JPEG" and ext not in {".jpg", ".jpeg"}
+            ):
+                raise ValueError("Image extension does not match its MIME type.")
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", Image.DecompressionBombWarning)
+                    with Image.open(io.BytesIO(content), formats=(expected_format,)) as source:
+                        source.verify()
+                    with Image.open(io.BytesIO(content), formats=(expected_format,)) as source:
+                        original_size = source.size
+                        if source.width <= 0 or source.height <= 0:
+                            raise ValueError("Image dimensions must be positive.")
+                        if source.width * source.height > MAX_UPLOADED_IMAGE_PIXELS:
+                            raise ValueError("Image dimensions are too large.")
+                        source.load()
+                        oriented = ImageOps.exif_transpose(source)
+                        if expected_format == "JPEG":
+                            oriented = oriented.convert("RGB")
+                        elif oriented.mode not in {"RGB", "RGBA"}:
+                            oriented = oriented.convert("RGBA")
+                        normalized = ImageOps.fit(
+                            oriented,
+                            target_size,
+                            method=Image.Resampling.LANCZOS,
+                        )
+                        clean_image = Image.new(normalized.mode, target_size)
+                        clean_image.paste(normalized)
+                        output = io.BytesIO()
+                        if expected_format == "JPEG":
+                            clean_image.save(
+                                output,
+                                format="JPEG",
+                                quality=90,
+                                optimize=True,
+                                progressive=True,
+                                exif=b"",
+                                icc_profile=None,
+                            )
+                        else:
+                            clean_image.save(
+                                output,
+                                format="PNG",
+                                optimize=True,
+                                icc_profile=None,
+                            )
+                        stored_content = output.getvalue()
+            except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+                raise ValueError("Image dimensions are too large.") from None
+            except (UnidentifiedImageError, OSError, SyntaxError, ValueError) as exc:
+                if isinstance(exc, ValueError) and str(exc) in {
+                    "Image dimensions must be positive.",
+                    "Image dimensions are too large.",
+                }:
+                    raise
+                raise ValueError("The uploaded file is not a valid PNG or JPEG image.") from exc
+            stored_metadata.update(
+                {
+                    "original_width": original_size[0],
+                    "original_height": original_size[1],
+                    "width": target_size[0],
+                    "height": target_size[1],
+                }
+            )
+
         asset_id = str(uuid.uuid4())
         filename = f"{asset_id}{ext}"
         bucket_name = PLAYER_IMAGE_DIR_NAME if owner_player_id else BACKEND_IMAGE_DIR_NAME
         path = validate_image_write_path(self.data_dir, filename, bucket_name)
-        path.write_bytes(content)
+        path.write_bytes(stored_content)
         relative_path = f"{IMAGE_DATA_DIR_NAME}/{bucket_name}/{filename}"
 
         now = utc_now()
@@ -3061,7 +3138,7 @@ class ServerContext:
                     mime_type,
                     ext,
                     purpose,
-                    json.dumps(metadata or {}),
+                    json.dumps(stored_metadata),
                     now,
                 ),
             )
@@ -3071,7 +3148,7 @@ class ServerContext:
             "mime_type": mime_type,
             "file_ext": ext,
             "purpose": purpose,
-            "metadata": metadata or {},
+            "metadata": stored_metadata,
         }
 
     def find_image_path(self, filename: str) -> Path | None:
