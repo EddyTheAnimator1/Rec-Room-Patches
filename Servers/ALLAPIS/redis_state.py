@@ -1327,6 +1327,7 @@ return 1
                 self._key("realtime"),
                 json.dumps(envelope, separators=(",", ":"), ensure_ascii=False),
             )
+            await self._deliver_local(envelope)
         except RedisError as exc:
             raise self._unavailable(exc) from exc
 
@@ -1358,7 +1359,11 @@ return 1
                         envelope = json.loads(message.get("data") or "{}")
                     except (TypeError, ValueError):
                         continue
-                    if isinstance(envelope, dict):
+                    if (
+                        isinstance(envelope, dict)
+                        and str(envelope.get("source_instance_id") or "")
+                        != self.instance_id
+                    ):
                         await self._deliver_local(envelope)
             except asyncio.CancelledError:
                 raise
@@ -1388,16 +1393,20 @@ return 1
 
         async def send(connection_id: str, websocket: WebSocket) -> None:
             async with self._fanout_semaphore:
+                failed = False
                 try:
                     for payload in messages:
                         await websocket.send_text(payload)
                     if disconnect_code is not None:
                         await websocket.close(code=int(disconnect_code), reason=disconnect_reason)
                 except Exception:
-                    try:
-                        await self.unregister_connection(connection_id)
-                    except Exception:
-                        pass
+                    failed = True
+                finally:
+                    if failed or disconnect_code is not None:
+                        try:
+                            await self.unregister_connection(connection_id)
+                        except Exception:
+                            pass
 
         batch_size = self.fanout_concurrency
         for offset in range(0, len(deliveries), batch_size):
