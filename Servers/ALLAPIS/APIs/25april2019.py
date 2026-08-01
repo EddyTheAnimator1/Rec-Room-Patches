@@ -261,6 +261,38 @@ BUILD_EQUIPMENT_SKIN_ASSET_NAMES = tuple(
     str(item["asset_name"]) for item in _EQUIPMENT_SKIN_DATA["skins"]
 )
 
+
+def _equipment_skin_friendly_name(skin_asset_name: str, prefab: str) -> str:
+    """Create a readable store label from a SkinData asset name."""
+    equipment_key = prefab.strip("[]")
+    remainder = skin_asset_name
+    if remainder.casefold().startswith(equipment_key.casefold()):
+        remainder = remainder[len(equipment_key):]
+    style_key = "_".join(
+        part
+        for part in remainder.strip("_").split("_")
+        if part and part.casefold() != "skin"
+    )
+
+    def humanize(value: str) -> str:
+        value = value.replace("PSPLUS", "PS Plus").replace("SciFi", "Sci-Fi")
+        value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value.replace("_", " "))
+        words = [
+            word.capitalize() if word.islower() or word.isupper() else word
+            for word in value.split()
+        ]
+        return (
+            " ".join(words)
+            .replace("Jackolantern", "Jack-o'-lantern")
+            .replace("Coop", "Co-op")
+            .replace("Ps Plus", "PS Plus")
+        )
+
+    equipment_name = humanize(equipment_key)
+    style_name = humanize(style_key)
+    return f"{style_name} {equipment_name} Skin" if style_name else f"{equipment_name} Skin"
+
+
 # Version-owned Coach room catalog.
 BUILD_COACH_ROOMS = tuple(
     room
