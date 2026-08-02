@@ -570,9 +570,9 @@ class ImageModerationManager:
             return
         asset = self._asset_for_job(job)
         image_path = (self.context.data_dir / str(asset["relative_path"])).resolve()
-        quarantine_root = (self.context.data_dir / QUARANTINE_DIR_NAME).resolve()
-        if quarantine_root not in image_path.parents or not image_path.is_file():
-            raise FileNotFoundError("Queued image is missing from quarantine.")
+        data_root = self.context.data_dir.resolve()
+        if data_root not in image_path.parents or not image_path.is_file():
+            raise FileNotFoundError("Queued image is missing from image storage.")
         evaluation = await asyncio.to_thread(self._evaluate, image_path)
         if evaluation["rejected"]:
             await asyncio.to_thread(self._record_rejected, job, evaluation)
@@ -772,7 +772,9 @@ class ImageModerationManager:
             self.context.data_dir / IMAGE_DIR_NAME / bucket / filename
         ).resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_file():
+        if source == destination and source.is_file():
+            pass
+        elif source.is_file():
             os.replace(source, destination)
         elif not destination.is_file():
             raise FileNotFoundError("Approved image disappeared before publication.")
@@ -839,6 +841,7 @@ class ImageModerationManager:
             )
 
     async def _report_rejection(self, job: dict[str, Any]) -> None:
+        await asyncio.to_thread(self._quarantine_rejected_asset, job)
         case_result = await asyncio.to_thread(self._create_rejection_cases, job)
         now = utc_text()
         with self.db.transaction() as conn:
@@ -862,6 +865,31 @@ class ImageModerationManager:
             await self.context.transient.revoke_player_transient_state(
                 owner_player_id,
                 aliases=self.context.transient_player_aliases(owner_player_id),
+            )
+
+    def _quarantine_rejected_asset(self, job: dict[str, Any]) -> None:
+        asset = self._asset_for_job(job)
+        source = (self.context.data_dir / str(asset["relative_path"])).resolve()
+        data_root = self.context.data_dir.resolve()
+        quarantine_root = (data_root / QUARANTINE_DIR_NAME).resolve()
+        quarantine_root.mkdir(parents=True, exist_ok=True)
+        if data_root not in source.parents:
+            raise ValueError("Rejected image path escaped the data directory.")
+        filename = Path(str(asset["relative_path"])).name
+        destination = (quarantine_root / filename).resolve()
+        if quarantine_root not in destination.parents:
+            raise ValueError("Invalid rejected image quarantine path.")
+        if source == destination and source.is_file():
+            pass
+        elif source.is_file():
+            os.replace(source, destination)
+        elif not destination.is_file():
+            raise FileNotFoundError("Rejected image disappeared before quarantine.")
+        relative_path = f"{QUARANTINE_DIR_NAME}/{filename}"
+        with self.db.transaction() as conn:
+            conn.execute(
+                "UPDATE data_assets SET relative_path = ? WHERE asset_id = ?",
+                (relative_path, str(job["asset_id"])),
             )
 
     def _create_rejection_cases(self, job: dict[str, Any]) -> dict[str, Any]:

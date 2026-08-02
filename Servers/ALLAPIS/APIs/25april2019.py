@@ -11769,7 +11769,7 @@ async def _handle_list_saved_images(request: Request, context) -> Response:
             WHERE owner_player_id = ? AND purpose = ?
               AND NOT EXISTS (
                   SELECT 1 FROM image_moderation_jobs AS imj
-                  WHERE imj.asset_id = da.asset_id AND imj.decision != 'safe'
+                  WHERE imj.asset_id = da.asset_id AND imj.decision = 'rejected'
               )
               AND NOT EXISTS (
                   SELECT 1 FROM moderation_content_controls AS mcc
@@ -11882,7 +11882,7 @@ def _public_slideshow_asset_rows(context) -> list[Any]:
             WHERE da.purpose = ?
               AND NOT EXISTS (
                   SELECT 1 FROM image_moderation_jobs AS imj
-                  WHERE imj.asset_id = da.asset_id AND imj.decision != 'safe'
+                  WHERE imj.asset_id = da.asset_id AND imj.decision = 'rejected'
               )
               AND NOT EXISTS (
                   SELECT 1 FROM moderation_content_controls AS mcc
@@ -12151,6 +12151,7 @@ async def _save_2019_moderated_image(
             moderation={
                 "activation_type": activation_type,
                 "activation": activation or {},
+                "publish_immediately": True,
             },
         )
     except ValueError as exc:
@@ -12285,11 +12286,6 @@ async def _handle_upload_transient_image(request: Request, context) -> Response:
     job_id = str(asset.get("job_id") or "")
     if not job_id:
         raise HTTPException(status_code=503, detail="Image moderation job was not created.")
-    moderation_status = await manager.wait_for_job_completion(job_id)
-    if moderation_status == "rejected":
-        raise HTTPException(status_code=422, detail="Image rejected by moderation.")
-    if moderation_status != "approved":
-        raise HTTPException(status_code=503, detail="Image moderation did not complete in time.")
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 
@@ -12324,11 +12320,6 @@ async def _handle_upload_saved_image(request: Request, context) -> Response:
     job_id = str(asset.get("job_id") or "")
     if not job_id:
         raise HTTPException(status_code=503, detail="Image moderation job was not created.")
-    moderation_status = await manager.wait_for_job_completion(job_id)
-    if moderation_status == "rejected":
-        raise HTTPException(status_code=422, detail="Image rejected by moderation.")
-    if moderation_status != "approved":
-        raise HTTPException(status_code=503, detail="Image moderation did not complete in time.")
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 

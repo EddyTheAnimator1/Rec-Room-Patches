@@ -3168,7 +3168,11 @@ class ServerContext:
 
         asset_id = str(uuid.uuid4())
         filename = f"{asset_id}{ext}"
-        if moderation is not None:
+        publish_immediately = bool(
+            moderation is not None
+            and moderation.get("publish_immediately", False)
+        )
+        if moderation is not None and not publish_immediately:
             quarantine_dir = (self.data_dir / image_moderation.QUARANTINE_DIR_NAME).resolve()
             quarantine_dir.mkdir(parents=True, exist_ok=True)
             path = (quarantine_dir / filename).resolve()
@@ -3234,7 +3238,7 @@ class ServerContext:
                 "SELECT decision FROM image_moderation_jobs WHERE asset_id = ?",
                 (str(asset_id),),
             ).fetchone()
-        if job is not None and str(job["decision"]) != "safe":
+        if job is not None and str(job["decision"]) == "rejected":
             return False
         return not self.is_content_quarantined("image", asset_id)
 
