@@ -12318,6 +12318,17 @@ async def _handle_upload_saved_image(request: Request, context) -> Response:
         purpose=f"{API_VERSION}.saved_image",
         metadata=metadata,
     )
+    manager = context.image_moderation
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Image moderation is unavailable.")
+    job_id = str(asset.get("job_id") or "")
+    if not job_id:
+        raise HTTPException(status_code=503, detail="Image moderation job was not created.")
+    moderation_status = await manager.wait_for_job_completion(job_id)
+    if moderation_status == "rejected":
+        raise HTTPException(status_code=422, detail="Image rejected by moderation.")
+    if moderation_status != "approved":
+        raise HTTPException(status_code=503, detail="Image moderation did not complete in time.")
     return JSONResponse({"ImageName": Path(asset["relative_path"]).name})
 
 

@@ -840,7 +840,10 @@ return 1
         while self._started:
             try:
                 await asyncio.sleep(self.heartbeat_seconds)
-                if self._started:
+                # Refreshing an empty route set performs no Redis work. Calling
+                # the decorated refresh method anyway would still count as local
+                # Redis activity and continuously postpone idle suspension.
+                if self._started and self._local_connection_route:
                     await self.refresh_local_connection_leases()
             except asyncio.CancelledError:
                 raise

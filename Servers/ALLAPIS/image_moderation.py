@@ -215,6 +215,112 @@ class NsfwJsEngine:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+class NudeNetEngine:
+    """Run NudeNet outside the API process so ONNX memory can be released."""
+
+    def __init__(self, script_path: Path, *, timeout_seconds: int = 90):
+        self.script_path = script_path.resolve()
+        self.timeout_seconds = timeout_seconds
+        self._process: subprocess.Popen[str] | None = None
+        self._responses: queue.Queue[dict[str, Any]] = queue.Queue()
+        self._lock = threading.Lock()
+
+    @property
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def _start(self) -> None:
+        if self.is_running:
+            return
+        if not self.script_path.is_file():
+            raise RuntimeError(f"NudeNet worker is missing: {self.script_path}")
+        self.close()
+        env = dict(os.environ)
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        self._process = subprocess.Popen(
+            [sys.executable, "-u", str(self.script_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            env=env,
+        )
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+
+    def _read_stdout(self) -> None:
+        process = self._process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict) and payload.get("id"):
+                self._responses.put(payload)
+
+    def detect(self, image_path: Path | str) -> list[dict[str, Any]]:
+        with self._lock:
+            self._start()
+            process = self._process
+            if process is None or process.stdin is None:
+                raise RuntimeError("NudeNet worker did not start.")
+            request_id = str(uuid.uuid4())
+            process.stdin.write(
+                json.dumps(
+                    {"id": request_id, "path": str(Path(image_path).resolve())},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            expires_at = time.monotonic() + self.timeout_seconds
+            while True:
+                remaining = expires_at - time.monotonic()
+                if remaining <= 0:
+                    self.close()
+                    raise TimeoutError("NudeNet classification timed out.")
+                try:
+                    response = self._responses.get(timeout=remaining)
+                except queue.Empty:
+                    self.close()
+                    raise TimeoutError("NudeNet classification timed out.") from None
+                if response.get("id") != request_id:
+                    continue
+                if not response.get("ok"):
+                    raise RuntimeError(
+                        str(response.get("error") or "NudeNet classification failed.")
+                    )
+                detections = response.get("detections")
+                if not isinstance(detections, list):
+                    raise RuntimeError("NudeNet returned an invalid detection payload.")
+                return [item for item in detections if isinstance(item, dict)]
+
+    def close(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 class ImageModerationManager:
@@ -236,6 +342,7 @@ class ImageModerationManager:
         self._task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._nudenet: Any | None = None
+        self._nudenet_worker_path = self.root_dir / "tools" / "nudenet_worker.py"
         self._model_last_used_at: float | None = None
         self._nsfwjs = NsfwJsEngine(self.root_dir / "tools" / "nsfwjs_worker.js")
 
@@ -491,9 +598,7 @@ class ImageModerationManager:
     def _evaluate(self, image_path: Path) -> dict[str, Any]:
         self._model_last_used_at = time.monotonic()
         if self._nudenet is None:
-            from nudenet import NudeDetector
-
-            self._nudenet = NudeDetector()
+            self._nudenet = NudeNetEngine(self._nudenet_worker_path)
         views = [("published", image_path)]
         detections: list[dict[str, Any]] = []
         nsfwjs_views: dict[str, dict[str, float]] = {}
@@ -603,8 +708,12 @@ class ImageModerationManager:
             last_used is None or time.monotonic() - last_used < idle_seconds
         ):
             return False
-        had_nudenet = self._nudenet is not None
+        nudenet = self._nudenet
+        had_nudenet = nudenet is not None
         had_nsfwjs = self._nsfwjs.is_running
+        close_nudenet = getattr(nudenet, "close", None)
+        if callable(close_nudenet):
+            close_nudenet()
         self._nudenet = None
         self._nsfwjs.close()
         self._model_last_used_at = None
