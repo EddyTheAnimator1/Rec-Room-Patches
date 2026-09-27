@@ -20,7 +20,8 @@ Do not use developer features to harass, disrupt, impersonate, moderate, punish,
 
 **This project is intended for archival and educational use only.**
 
-
+# Credits to whoswhip X Cheezit for RecAgain (Rec Room archive)
+- This project provides patches so that it's users can play the game. RecAgain acts as a service used to DOWNLOAD those builds first.
 # Need help?
 There is a discord server available! https://discord.gg/nrpWndwvwy
 
